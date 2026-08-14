@@ -1,0 +1,7 @@
+# このプロジェクトが使う外部ライブラリ（参照・記録用）。
+# ※ オフラインの社内BO環境では pip install は使えない。comken は共有サーバーを直接参照する。
+#    ネット接続がある開発環境で仮想環境を作るときに使う。
+
+comken
+requests    # comken.salesforce が使う
+pywin32     # comken.credentials（DPAPI）が使う

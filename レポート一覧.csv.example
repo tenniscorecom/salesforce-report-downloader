@@ -1,0 +1,4 @@
+名前,レポートURL,置き場所
+案件一覧,https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view,\\server\案件集計\input
+売上,https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view,\\server\売上帳票\input
+売上,https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view,\\server\別集計\input
