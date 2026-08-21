@@ -46,3 +46,39 @@ path = download_report(CUSTOMER_LIST, "案件集計")   # その場で Salesforc
 ```
 
 詳しくは comken の [docs/salesforce-downloader.md](https://github.com/tenniscorecom/original_libs/blob/master/docs/salesforce-downloader.md) を参照してください。
+
+## 取得スケジュールのたたき台
+
+スケジュールは「1行につき1つの取得ルール」として管理します。同じレポートを月・水・金に
+取得する場合は、スケジュール管理表に3行登録します。
+
+| スケジュールキー | レポートキー | 取得頻度 | 曜日 | 取得時刻 | 祝日対応 | 有効 |
+|---|---|---|---|---|---|---|
+| S001 | R001 | 毎週 | 月 | 09:00 | 取得しない | ○ |
+| S002 | R001 | 毎週 | 水 | 09:00 | 取得しない | ○ |
+| S003 | R001 | 毎週 | 金 | 09:00 | 取得しない | ○ |
+
+Python側では、表の1行を `ScheduleRule.from_row()` に渡して判定します。
+
+```python
+from datetime import datetime
+
+from comken.services.salesforce_downloader.schedule import ScheduleRule
+
+rule = ScheduleRule.from_row(
+    {
+        "スケジュールキー": "S001",
+        "レポートキー": "R001",
+        "取得頻度": "毎週",
+        "曜日": "月",
+        "取得時刻": "09:00",
+        "祝日対応": "取得しない",
+        "有効": "○",
+    }
+)
+
+if rule.is_due(datetime.now(), holidays=set()):
+    print("このレポートを取得する")
+```
+
+`src/schedule.py` はスケジュール判定だけを担当し、Salesforceへの接続や履歴の保存は行いません。
