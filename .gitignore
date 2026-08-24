@@ -12,3 +12,6 @@ build/
 # ログ
 logs/
 *.log
+
+# 設定
+config.ini

@@ -3,7 +3,7 @@
 **定期取得の対象になっている Salesforce レポートを、毎日まとめて落とすバッチ。**
 
 中身は数行しかありません。何を落とすか・どこへ置くかは、共通ライブラリ
-[comken](https://github.com/tenniscorecom/original_libs) が持つ**管理表（Excel）**に書いてあります。
+[comken](https://github.com/tenniscorecom/comken) が持つ**管理表（Excel）**に書いてあります。
 
 ```python
 from comken.services.salesforce_downloader import download_scheduled
@@ -45,7 +45,7 @@ CUSTOMER_LIST = 1001
 path = download_report(CUSTOMER_LIST, "案件集計")   # その場で Salesforce へ取りに行く
 ```
 
-詳しくは comken の [docs/salesforce-downloader.md](https://github.com/tenniscorecom/original_libs/blob/master/docs/salesforce-downloader.md) を参照してください。
+詳しくは comken の [docs/salesforce-downloader.md](https://github.com/tenniscorecom/comken/blob/master/docs/salesforce-downloader.md) を参照してください。
 
 ## 取得スケジュールのたたき台
 

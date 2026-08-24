@@ -4,7 +4,7 @@
   //
   // 実行.bat の COMKEN_ROOT と同じ場所を指すこと。
   // JSON では \ が特殊文字なので、区切りは / で書く（\\server\share → //server/share）。
-  "python.analysis.extraPaths": ["F:/dev/original_libs"],
+  "python.analysis.extraPaths": ["F:/dev/comken"],
 
   // 社内 BO 環境には .venv が無い（pip が使えないため）。
   // その場合はこの指定が外れるので、VS Code 右下の Python バージョン表示をクリックして
