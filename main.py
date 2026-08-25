@@ -28,7 +28,7 @@ if __name__ == "__main__":
     #   from comken import dry_run
     #   with dry_run():
     #       main()
-    comken_logger.local()
+    comken_logger.setup_local_logging()
     try:
         main()
     except ComkenError as e:
@@ -40,9 +40,9 @@ if __name__ == "__main__":
         raise
 
 # ── 社内 RPA 基盤から実行する場合 ─────────────────────────────────────────────
-# 上の `comken_logger.local()` と `main()` の2行を、次の形に差し替える。
+# 上の `comken_logger.setup_local_logging()` と `main()` の2行を、次の形に差し替える。
 # 基盤が設定の初期化・時間計測・ログ設定をしてから main を呼ぶので、
-# comken_logger.local() は呼ばない（呼んでも二重設定にはならないが、基盤の設定が正になる）。
+# comken_logger.setup_local_logging() は呼ばない（呼んでも二重設定にはならないが、基盤の設定が正になる）。
 #
 #     from comken.internal.rpa import backoffice   # イントラネットのツールなら intranet に変える
 #
