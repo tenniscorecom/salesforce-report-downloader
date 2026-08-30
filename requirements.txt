@@ -3,5 +3,6 @@
 #    ネット接続がある開発環境で仮想環境を作るときに使う。
 
 comken
+comken-salesforce-downloader   # download_scheduled() が使う（実行時は共有サーバー直接参照）
 requests    # comken.salesforce が使う
 pywin32     # comken.credentials（DPAPI）が使う

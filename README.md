@@ -6,7 +6,7 @@
 [comken](https://github.com/tenniscorecom/comken) が持つ**管理表（Excel）**に書いてあります。
 
 ```python
-from comken.services.salesforce_downloader import download_scheduled
+from comken_salesforce_downloader import download_scheduled
 
 download_scheduled("Salesforceレポートダウンローダー")   # 「定期」かつ有効なものを全部
 ```
@@ -39,7 +39,7 @@ download_scheduled("Salesforceレポートダウンローダー")   # 「定期�
 **このバッチを増やさないでください。** そのプロジェクト側から直接呼べます。
 
 ```python
-from comken.services.salesforce_downloader import download_report
+from comken_salesforce_downloader import download_report
 
 CUSTOMER_LIST = 1001
 path = download_report(CUSTOMER_LIST, "案件集計")   # その場で Salesforce へ取りに行く
@@ -63,7 +63,7 @@ Python側では、表の1行を `ScheduleRule.from_row()` に渡して判定し�
 ```python
 from datetime import datetime
 
-from comken.services.salesforce_downloader.schedule import ScheduleRule
+from comken_salesforce_downloader.schedule import ScheduleRule
 
 rule = ScheduleRule.from_row(
     {
