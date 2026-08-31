@@ -1,11 +1,11 @@
 @echo off
 setlocal
 rem このツールの起動用。ダブルクリックで main.py を実行します。
-rem comken / comken-salesforce-downloader を別の場所へ移したときは、ここと .vscode\settings.json の両方を直してください。
+rem comken を別の場所へ移したときは、ここの COMKEN_ROOT と .vscode\settings.json の両方を直してください。
+rem comken_salesforce_downloader パッケージはこのリポジトリに内包されているため、PYTHONPATH への追加は不要です。
 
 set "COMKEN_ROOT=F:\dev\comken"
-set "COMKEN_SALESFORCE_DOWNLOADER_ROOT=F:\dev\comken-salesforce-downloader"
-set "PYTHONPATH=%COMKEN_ROOT%;%COMKEN_SALESFORCE_DOWNLOADER_ROOT%;%PYTHONPATH%"
+set "PYTHONPATH=%COMKEN_ROOT%;%PYTHONPATH%"
 
 rem 共有フォルダ（\\サーバー名\...）から起動されても動くよう pushd を使う（cd は UNC 不可）
 pushd "%~dp0"
