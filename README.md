@@ -51,7 +51,7 @@ download_scheduled("Salesforceレポートダウンローダー")   # 「定期�
 **編集した直後に `check` で読み込みを確かめる:**
 
 ```bat
-python -m comken.services.salesforce_downloader check
+python -m comken sfdl check
 ```
 
 `check` は、管理表を編集したあとに「プログラムから正しく読めるか」を確かめるためのもの。
