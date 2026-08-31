@@ -1,8 +1,58 @@
-# Ruff（リント・フォーマット）の設定。comken 本体と揃える。
+[project]
+name = "salesforce-report-downloader"
+version = "0.1.0"
+description = "Salesforce レポートの集約取得ライブラリ + 定期実行バッチ（comken-salesforce-downloader を内包）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "comken",
+    "requests>=2.31",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["comken_salesforce_downloader*", "src*"]
+
+# Ruff（リント・フォーマット）の設定。既存のルールを踏襲する。
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [".pytest-tmp", ".pytest-*"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]  # E=style, F=pyflakes, W=warning, I=import order
-ignore = []
+select = ["E", "F", "W", "I", "B", "UP", "C4", "LOG", "G", "DTZ", "RUF", "TID"]
+ignore = [
+    # 日本語のコード・コメント・docstring を「紛らわしい文字」として大量に誤検知するため
+    "RUF001", "RUF002", "RUF003",
+    # __all__ は意味のまとまり順に並べているため、アルファベット順の強制は受け入れない
+    "RUF022",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# column() は dataclasses.field() を返すので、dataclass のデフォルトに置いてよい
+# （呼び出しの結果を共有してしまう「可変デフォルト」には当たらない）
+extend-immutable-calls = ["comken.toolbox.master_table.column", "comken_salesforce_downloader.report_master.column"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# 相対 import は禁止。ドットを数える作業を残さないため。
+# 必ず `from comken_salesforce_downloader.X import Y` のようにパッケージルートから書く（CONVENTIONS.md 参照）
+ban-relative-imports = "all"
+
+[tool.ruff.lint.mccabe]
+# 分岐の絡み合いの上限。
+# 10 は「いま全部通る一番きつい値」。測ったら最大が 10 だったので、
+# これ以上ややこしくなった時点で落ちる。
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+# 管理者・利用者が結果を画面で確認する CLI ツールでは print が出力手段になる。
+"comken_salesforce_downloader/cli.py" = ["T20"]
+"comken_salesforce_downloader/__main__.py" = ["T20"]
+
+# テストは assert のための仮実装・cleanup の try/except が読みやすさ優先で残るため、
+# bugbear 系（try/except/Pass 等）の警告を抑止する。
+"tests/**" = ["B017", "SIM105"]

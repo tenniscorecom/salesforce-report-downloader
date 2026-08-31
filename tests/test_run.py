@@ -22,9 +22,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import comken.core.logger
-import comken_salesforce_downloader.service as _service
 from _pytest.logging import LogCaptureFixture
 from _pytest.monkeypatch import MonkeyPatch
+
+import comken_salesforce_downloader.service as _service
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
