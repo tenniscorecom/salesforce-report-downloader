@@ -1,13 +1,13 @@
 @echo off
 setlocal
-rem ‚±‚Ìƒc[ƒ‹‚Ì‹N“®—pBƒ_ƒuƒ‹ƒNƒŠƒbƒN‚Å main.py ‚ðŽÀs‚µ‚Ü‚·B
-rem comken ‚ð•Ê‚ÌêŠ‚ÖˆÚ‚µ‚½‚Æ‚«‚ÍA‚±‚±‚Ì COMKEN_ROOT ‚Æ .vscode\settings.json ‚Ì—¼•û‚ð’¼‚µ‚Ä‚­‚¾‚³‚¢B
-rem comken_salesforce_downloader ƒpƒbƒP[ƒW‚Í‚±‚ÌƒŠƒ|ƒWƒgƒŠ‚É“à•ï‚³‚ê‚Ä‚¢‚é‚½‚ßAPYTHONPATH ‚Ö‚Ì’Ç‰Á‚Í•s—v‚Å‚·B
+rem ï¿½ï¿½ï¿½Ìƒcï¿½[ï¿½ï¿½ï¿½Ì‹Nï¿½ï¿½ï¿½pï¿½Bï¿½_ï¿½uï¿½ï¿½ï¿½Nï¿½ï¿½ï¿½bï¿½Nï¿½ï¿½ main.py ï¿½ï¿½ï¿½ï¿½ï¿½sï¿½ï¿½ï¿½Ü‚ï¿½ï¿½B
+rem comken ï¿½ï¿½Ê‚ÌêŠï¿½ÖˆÚ‚ï¿½ï¿½ï¿½ï¿½Æ‚ï¿½ï¿½ÍAï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ COMKEN_ROOT ï¿½ï¿½ .vscode\settings.json ï¿½Ì—ï¿½ï¿½ï¿½ï¿½ð’¼‚ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½B
+rem comken.services.salesforce_downloader ãƒ‘ãƒƒã‚±ãƒ¼ã‚¸ã¯ comken æœ¬ä½“ã«ã‚ã‚‹ãŸã‚ã€PYTHONPATH ã¸ã®è¿½åŠ ã¯ä¸è¦ã§ã™ã€‚
 
 set "COMKEN_ROOT=F:\dev\comken"
 set "PYTHONPATH=%COMKEN_ROOT%;%PYTHONPATH%"
 
-rem ‹¤—LƒtƒHƒ‹ƒ_i\\ƒT[ƒo[–¼\...j‚©‚ç‹N“®‚³‚ê‚Ä‚à“®‚­‚æ‚¤ pushd ‚ðŽg‚¤icd ‚Í UNC •s‰Âj
+rem ï¿½ï¿½ï¿½Lï¿½tï¿½Hï¿½ï¿½ï¿½_ï¿½i\\ï¿½Tï¿½[ï¿½oï¿½[ï¿½ï¿½\...ï¿½jï¿½ï¿½ï¿½ï¿½Nï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä‚ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½æ‚¤ pushd ï¿½ï¿½ï¿½gï¿½ï¿½ï¿½icd ï¿½ï¿½ UNC ï¿½sï¿½Âj
 pushd "%~dp0"
 python main.py
 if errorlevel 1 pause

@@ -1,23 +1,4 @@
-[project]
-name = "salesforce-report-downloader"
-version = "0.1.0"
-description = "Salesforce レポートの集約取得ライブラリ + 定期実行バッチ（comken-salesforce-downloader を内包）"
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-    "comken",
-    "requests>=2.31",
-]
-
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["comken_salesforce_downloader*", "src*"]
-
-# Ruff（リント・フォーマット）の設定。既存のルールを踏襲する。
+# Ruff（リント・フォーマット）の設定。comken 本体と揃える。
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -35,11 +16,11 @@ ignore = [
 [tool.ruff.lint.flake8-bugbear]
 # column() は dataclasses.field() を返すので、dataclass のデフォルトに置いてよい
 # （呼び出しの結果を共有してしまう「可変デフォルト」には当たらない）
-extend-immutable-calls = ["comken.toolbox.master_table.column", "comken_salesforce_downloader.report_master.column"]
+extend-immutable-calls = ["comken.toolbox.master_table.column"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 # 相対 import は禁止。ドットを数える作業を残さないため。
-# 必ず `from comken_salesforce_downloader.X import Y` のようにパッケージルートから書く（CONVENTIONS.md 参照）
+# 必ず `from comken.X import Y` のようにパッケージルートから書く（CONVENTIONS.md 参照）
 ban-relative-imports = "all"
 
 [tool.ruff.lint.mccabe]
@@ -49,10 +30,10 @@ ban-relative-imports = "all"
 max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
-# 管理者・利用者が結果を画面で確認する CLI ツールでは print が出力手段になる。
-"comken_salesforce_downloader/cli.py" = ["T20"]
-"comken_salesforce_downloader/__main__.py" = ["T20"]
-
 # テストは assert のための仮実装・cleanup の try/except が読みやすさ優先で残るため、
 # bugbear 系（try/except/Pass 等）の警告を抑止する。
 "tests/**" = ["B017", "SIM105"]
+
+[tool.pyright]
+# 開発時は隣接するcomkenリポジトリを直接参照する。実行環境ではPYTHON_LIBRARYを使う。
+extraPaths = ["../comken"]

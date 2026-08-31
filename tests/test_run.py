@@ -22,10 +22,9 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import comken.core.logger
+import comken.services.salesforce_downloader.service as _service
 from _pytest.logging import LogCaptureFixture
 from _pytest.monkeypatch import MonkeyPatch
-
-import comken_salesforce_downloader.service as _service
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,7 +67,7 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
     実行し、両関数がモックに到達することを確かめる。
     """
     _ensure_path()
-    # ``comken_salesforce_downloader`` の __init__ は ``download_scheduled`` を
+    # ``comken.services.salesforce_downloader`` の __init__ は ``download_scheduled`` を
     # ``__getattr__`` で遅延 import し、初回アクセス時に ``__init__.__dict__`` にキャッシュする。
     # テスト 1 で ``import src.run`` が走るとこのキャッシュが残り、ここでの monkeypatch では
     # 古い wrapper が取り出されてしまう。__init__ も捨てて再 import で fresh にする。
@@ -76,7 +75,7 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
         "main",
         "src",
         "src.run",
-        "comken_salesforce_downloader",
+        "comken.services.salesforce_downloader",
     )
 
     fake_setup = MagicMock()
@@ -116,7 +115,7 @@ def test_run_calls_download_scheduled_with_project_name(
     件数ログが出ること。
     """
     _ensure_path()
-    _reload("src", "src.run", "comken_salesforce_downloader")
+    _reload("src", "src.run", "comken.services.salesforce_downloader")
 
     fake_download = MagicMock(return_value=["a.xlsx", "b.xlsx"])
     monkeypatch.setattr(_service, "download_scheduled", fake_download)

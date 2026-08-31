@@ -6,7 +6,7 @@ r"""src/run.py — 定期取得の対象になっているレポートを、ま�
 
     レポート管理表.xlsx（非エンジニアが編集）
             ↓
-    comken_salesforce_downloader.download_scheduled()
+    comken.services.salesforce_downloader.download_scheduled()
             ↓
     Salesforce ──→ 管理表に書かれた保存先
 
@@ -20,7 +20,7 @@ r"""src/run.py — 定期取得の対象になっているレポートを、ま�
 
 import logging
 
-from comken_salesforce_downloader import download_scheduled
+from comken.services.salesforce_downloader import download_scheduled
 
 logger = logging.getLogger(__name__)
 
