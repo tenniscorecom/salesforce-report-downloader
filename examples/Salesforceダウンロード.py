@@ -22,11 +22,11 @@ r"""examples/Salesforceダウンロード.py — 定期取得済みキャッシ�
 サンプル。
 """
 
-import csv
 import logging
 
 from comken.exceptions import CachedReportNotFoundError
 from comken.services.salesforce_downloader import cached_report, cached_report_path
+from comken.toolbox.csv import CSV
 
 logger = logging.getLogger(__name__)
 
@@ -58,15 +58,19 @@ def read_cached_table() -> None:
 
 
 def read_cached_file_directly() -> None:
-    r"""`cached_report_path()` で得たパスを、素の `csv` 標準ライブラリで直接開く例。
+    r"""`cached_report_path()` で得たパスを、comken の `CSV` で直接開く例。
 
-    comken を import できない・comken の `Table` に依存したくない別プログラム
-    （別リポジトリのスクリプト、社内の他ツール等）が、このバッチの定期取得済み
-    CSV を読みたいときの形。実際にこのバッチの利用先で使われている形に近い。
+    `cached_report()` は「管理表を引く → パスを組み立てる → 存在確認 → CSV で
+    読む」を1回でやる便利関数。それに対しこちらは、パスを別の理由で先に
+    持っている（例えば他ツールへパスだけ渡したあと、自分でも中身を見たい）
+    ときのように、`CSV` を自分で直接使いたい場面を示す。**内部で
+    `cached_report()` がやっていることと同じ**なので、パスを別用途で
+    使う予定が無いなら素直に `cached_report()` を使えばよい。
 
     `cached_report_path()` は`cached_report()`と違い**取りに行かないし、
     ファイルの存在確認もしない**（パスを組み立てて返すだけ）。そのため
     ファイルが無いかどうかは呼び出し側で `Path.is_file()` を見て判断する。
+    保存形式は常に CSV なので、拡張子を判定する分岐は要らない。
     """
     # `cached_report_path` は comken 側で PEP 562 の `__getattr__` 経由で遅延 import
     # されるため、pyright の静的解析からは callable に見えない。実行時は問題ない。
@@ -75,10 +79,9 @@ def read_cached_file_directly() -> None:
         logger.warning("本日のキャッシュがまだ無いため、今回はスキップします")
         return
 
-    # 保存形式は常に CSV。comken を経由せず、素の csv モジュールで直接開ける。
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.DictReader(f))
-    logger.info("読み取った行数: %d（%s）", len(rows), path)
+    with CSV(path, read_only=True) as csv_file:
+        table = csv_file.read()
+    logger.info("読み取った行数: %d（%s）", len(table.read_rows()), path)
 
 
 if __name__ == "__main__":
