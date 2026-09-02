@@ -1,6 +1,6 @@
 # Salesforceレポートダウンローダー
 
-**定期取得の対象になっている Salesforce レポートを、毎日まとめて落とすバッチ。**
+**定期取得の対象になっている Salesforce レポートを、まとめて落とすバッチ。**
 
 ライブラリ本体は comken（[`comken.services.salesforce_downloader`](https://github.com/tenniscorecom/comken)）
 に統合済みのため、このリポジトリは**実行バッチのみ**を置きます。
@@ -8,6 +8,7 @@
 ```
 src/                            ← このバッチの入口（download_scheduled を呼ぶだけ）
 main.py                         ← バッチの実行ファイル
+タスクスケジューラ登録.bat       ← Windows タスクスケジューラへの登録スクリプト
 ```
 
 何を落とすか・どこへ置くかは、comken が持つ **管理表（Excel）** に書いてあります。
@@ -15,14 +16,45 @@ main.py                         ← バッチの実行ファイル
 ```python
 from comken.services.salesforce_downloader import download_scheduled
 
-download_scheduled("Salesforceレポートダウンローダー")   # 「定期」かつ有効なものを全部
+download_scheduled("Salesforceレポートダウンローダー")   # スケジュールに従い、今取るべきものを全部
 ```
+
+`download_scheduled()` は内部で「スケジュールに従うか」「今日すでに成功済みか」を
+判定するため、**頻繁に呼んでも二重取得は起きない**。呼ぶ頻度を上げるほど、
+「取るべき時刻」に早く追従できる、というだけの違い。
 
 ## 使い方
 
 ```bat
-認証情報の登録.bat    :: 初回だけ。sandbox の client_id / client_secret を登録する
-実行.bat              :: 定期取得（スケジューラから毎日1回呼ぶ）
+認証情報の登録.bat      :: 初回だけ。sandbox の client_id / client_secret を登録する
+実行.bat                :: 定期取得。タスクスケジューラから高頻度（既定 1 時間おき）で呼ぶ
+タスクスケジューラ登録.bat :: 上の 実行.bat をタスクスケジューラへ登録する（会社PCで 1 回実行）
+```
+
+`実行.bat` は、**タスクスケジューラから高頻度（例: 1 時間おき）で繰り返し呼ぶ**
+運用に変更しました。`download_scheduled()` が「取るべき時刻」と「本日の成功済み」を
+内部で判定するため、1 日に何度動いても安全です。
+
+タスクスケジューラへの登録は `タスクスケジューラ登録.bat` で行います。スクリプトは
+リポジトリに同梱しているだけなので、開発機では登録されません。共有サーバーへ
+配置したあと、会社PC で `タスクスケジューラ登録.bat` を右クリック →
+「管理者として実行」をしてください（`schtasks /create` は管理者権限が必要なため）。
+**登録動作はこのスクリプト自体が起こすため、`schtasks /create` を手動で打つ
+必要はありません。**
+
+間隔を変えるには `タスクスケジューラ登録.bat` 冒頭の `INTERVAL_HOURS` を編集してから
+実行してください。タスク名も `TASK_NAME` で変更できます。
+
+登録内容の確認:
+
+```bat
+schtasks /query /tn "Salesforceレポートダウンローダー_定期取得"
+```
+
+登録したタスクの削除:
+
+```bat
+schtasks /delete /tn "Salesforceレポートダウンローダー_定期取得" /f
 ```
 
 失敗があれば**終了コード 1 で止まります**（取得できたものは保存済み）。ログだけ出して
@@ -38,10 +70,11 @@ download_scheduled("Salesforceレポートダウンローダー")   # 「定期�
 | ID | 社内で決める管理番号（1001, 1002…）。Salesforce のレポート ID ではない |
 | 概要 | 人が読んで分かる説明 |
 | Salesforce URL | レポートを開いたときのアドレスをそのまま貼る |
-| 実行方式 | `定期`（このバッチが取る）か `個別`（呼ばれたときだけ） |
 | 保存先 | 落としたファイルを置くフォルダ |
 | 有効 | 使わなくなったら `無効`（行は消さない） |
 | 0件あり | 0 件が普通のレポートなら `○`、普通はデータがあるなら `×` |
+| グループ名 | 記録用（必須・自由文字列）。comken の処理では使わない |
+| 担当者 | 記録用（必須・自由文字列）。comken の処理では使わない |
 
 **管理表（Excel）は非エンジニアが手動で用意・編集するものであり、コード側で
 雛形を自動生成する機能は持たない。** 雛形が必要な場合は、
@@ -60,20 +93,32 @@ python -m comken sfdl check
 
 ## 1日に何度も最新が必要なとき
 
-**このバッチを増やさないでください。** そのプロジェクト側から直接呼べます。
+**このバッチを増やすのは避けてください。** 取ってきた「本日の最新キャッシュ」を
+別プログラムから読む方が速くて安全です。
 
 ```python
-from comken.services.salesforce_downloader import download_report
+from comken.services.salesforce_downloader import cached_report, cached_report_path
 
-CUSTOMER_LIST = 1001
-path = download_report(CUSTOMER_LIST, "案件集計")   # その場で Salesforce へ取りに行く
+CUSTOMER_LIST = "1001"
+table = cached_report(CUSTOMER_LIST)              # 本日のキャッシュを Table で受け取る
+path = cached_report_path(CUSTOMER_LIST)          # パスだけ欲しいとき
 ```
+
+`cached_report()` / `cached_report_path()` は**取りに行かない**。
+本日の定期取得がまだ走っていない等の理由でキャッシュが無いときは
+`CachedReportNotFoundError`（`from comken.exceptions import ...`）が出るので、
+「今回は諦めて次回のポーリングに任せる」「ログだけ出してスキップする」等の
+ポリシーを呼び出し側で決めてください。
+
+1 日に何度も欲しいレポートを**このバッチの中**で完結させたいときは、
+comken 側の「スケジュール」シートにスケジュールキーを分けて複数行登録すれば、
+このバッチの次の実行時刻に自動で追従します。
 
 ## comken への依存が必須
 
 このバッチは comken を**外部ライブラリとして**利用します。共通例外（`ComkenError`
-/ `SalesforceReportIDNotFoundError` など）は引き続き `from comken.exceptions import ...`
-で読みます。**単体では動きません。**
+/ `SalesforceReportIDNotFoundError` / `CachedReportNotFoundError` など）は引き続き
+`from comken.exceptions import ...` で読みます。**単体では動きません。**
 
 ## 業務での配置
 
@@ -87,6 +132,8 @@ comken と同じ「共有サーバー直接参照（PYTHONPATH）」方式を使
   の2か所（仕様の詳細は comken 側の
   [`docs/salesforce-downloader.md`](https://github.com/tenniscorecom/comken/blob/master/docs/salesforce-downloader.md)
   の「配置するときの設定」を参照）
+- 配置後に会社PC で `タスクスケジューラ登録.bat` を 1 回実行し、定期実行のタスクを
+  登録する
 
 ## comken への再統合の経緯
 

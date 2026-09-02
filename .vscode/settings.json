@@ -1,10 +1,10 @@
 {
-  // comken / comken-salesforce-downloader の場所を VS Code に教える。ここを書かないと補完も「定義へ移動」も効かない。
+  // comken の場所を VS Code に教える。ここを書かないと補完も「定義へ移動」も効かない。
   // （実行.bat は動かすときだけ PYTHONPATH を設定するので、編集中の VS Code は別途この指定が要る）
   //
-  // 実行.bat の COMKEN_ROOT / COMKEN_SALESFORCE_DOWNLOADER_ROOT と同じ場所を指すこと。
+  // 実行.bat の COMKEN_ROOT と同じ場所を指すこと。
   // JSON では \ が特殊文字なので、区切りは / で書く（\\server\share → //server/share）。
-  "python.analysis.extraPaths": ["F:/dev/comken", "F:/dev/comken-salesforce-downloader"],
+  "python.analysis.extraPaths": ["F:/dev/comken"],
 
   // 社内 BO 環境には .venv が無い（pip が使えないため）。
   // その場合はこの指定が外れるので、VS Code 右下の Python バージョン表示をクリックして
