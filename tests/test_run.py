@@ -23,9 +23,10 @@ from unittest.mock import MagicMock
 
 import comken.core.logger
 import comken.services.salesforce_downloader.master as _master
-import comken.services.salesforce_downloader.service as _service
 from _pytest.logging import LogCaptureFixture
 from _pytest.monkeypatch import MonkeyPatch
+
+import src.salesforce_downloader.service as _service
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,14 +69,17 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
     実行し、両関数がモックに到達することを確かめる。
     """
     _ensure_path()
-    # ``comken.services.salesforce_downloader`` の __init__ は ``download_scheduled`` を
-    # ``__getattr__`` で遅延 import し、初回アクセス時に ``__init__.__dict__`` にキャッシュする。
-    # テスト 1 で ``import src.run`` が走るとこのキャッシュが残り、ここでの monkeypatch では
-    # 古い wrapper が取り出されてしまう。__init__ も捨てて再 import で fresh にする。
+    # ``src.salesforce_downloader`` の __init__ は ``download_scheduled`` を
+    # ``service`` から import して ``__init__.__dict__`` にキャッシュする。同様に
+    # ``comken.services.salesforce_downloader`` の __init__ も ``load_master`` を
+    # ``master`` から import してキャッシュする。テスト 1 で ``import src.run`` が
+    # 走るとこの両方のキャッシュが残り、ここでの monkeypatch では古い wrapper が
+    # 取り出されてしまう。両方の __init__ も捨てて再 import で fresh にする。
     _reload(
         "main",
         "src",
         "src.run",
+        "src.salesforce_downloader",
         "comken.services.salesforce_downloader",
     )
 
@@ -87,8 +91,7 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
     # そちら側の ``setup_local_logging`` を差し替える。
     monkeypatch.setattr(comken.core.logger, "setup_local_logging", fake_setup)
 
-    # ``download_scheduled`` は ``__getattr__`` で遅延 import される。
-    # 遅延 import 先（service モジュール）の関数を直接差し替える。
+    # ``download_scheduled`` の実体（``service`` モジュール）を直接差し替える。
     monkeypatch.setattr(_service, "download_scheduled", fake_download)
 
     # ``src.run.run()`` は ``browser_fetch_reports`` を組み立てるために ``load_master()``
@@ -124,7 +127,7 @@ def test_run_calls_download_scheduled_with_project_name(
     確かめる。
     """
     _ensure_path()
-    _reload("src", "src.run", "comken.services.salesforce_downloader")
+    _reload("src", "src.run", "src.salesforce_downloader", "comken.services.salesforce_downloader")
 
     fake_download = MagicMock(return_value=["a.xlsx", "b.xlsx"])
     monkeypatch.setattr(_service, "download_scheduled", fake_download)

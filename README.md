@@ -2,25 +2,40 @@
 
 **定期取得の対象になっている Salesforce レポートを、まとめて落とすバッチ。**
 
-ライブラリ本体は comken（[`comken.services.salesforce_downloader`](https://github.com/tenniscorecom/comken)）
-に統合済みのため、このリポジトリは**実行バッチのみ**を置きます。
+管理表・履歴の**形式**（列定義・読み取り関数）は comken
+（[`comken.services.salesforce_downloader`](https://github.com/tenniscorecom/comken)）
+側の共有契約のままですが、**実際に Salesforce へ取りに行き、保存し、履歴へ書く実行部分は
+2026-09 にこのリポジトリへ戻しました**（`src/salesforce_downloader/`）。理由は下の
+「comken との分担の経緯」を参照。
 
 ```
-src/                            ← このバッチの入口（download_scheduled を呼ぶだけ）
-main.py                         ← バッチの実行ファイル
+src/
+  run.py                         ← バッチの入口（download_scheduled を呼ぶだけ）
+  salesforce_downloader/
+    service.py                   ← 取得・保存・スケジュール判定の本体
+    history_writer.py            ← 履歴CSVへの書き込み
+main.py                          ← バッチの実行ファイル
 ```
 
 何を落とすか・どこへ置くかは、comken が持つ **管理表（Excel）** に書いてあります。
 
 ```python
-from comken.services.salesforce_downloader import download_scheduled
+from src.salesforce_downloader import download_scheduled
 
-download_scheduled("Salesforceレポートダウンローダー")   # スケジュールに従い、今取るべきものを全部
+download_scheduled("Salesforceレポートダウンローダー")  # スケジュールに従い、今取るべきものを全部
 ```
 
 `download_scheduled()` は内部で「スケジュールに従うか」「今日すでに成功済みか」を
 判定するため、**頻繁に呼んでも二重取得は起きない**。呼ぶ頻度を上げるほど、
 「取るべき時刻」に早く追従できる、というだけの違い。
+
+**現状は `src/run.py` が管理表の全管理番号を `browser_fetch_reports` に渡し、
+一律ブラウザ経由（画面のエクスポート機能）で取得している（暫定）。** レポートAPIには
+2000行の上限があるが、個々のレポートがそれを超えるかどうかを事前に判断するのが
+難しいため。ブラウザ経由は事前に人が一度だけ手動ログインしておく必要がある
+（詳しくは `src/salesforce_downloader/service.py` の `_fetch_via_browser()` を参照）。
+SOQL化が進んで特定のレポートをAPI経由に戻したくなったら、`src/run.py` の
+`browser_fetch_reports` から該当の管理番号を外すだけでよい。
 
 ## 使い方
 
@@ -79,8 +94,8 @@ python -m comken sfdl check
 from comken.services.salesforce_downloader import cached_report, cached_report_path
 
 CUSTOMER_LIST = "1001"
-table = cached_report(CUSTOMER_LIST)              # 本日のキャッシュを Table で受け取る
-path = cached_report_path(CUSTOMER_LIST)          # パスだけ欲しいとき
+table = cached_report(CUSTOMER_LIST)  # 本日のキャッシュを Table で受け取る
+path = cached_report_path(CUSTOMER_LIST)  # パスだけ欲しいとき
 ```
 
 `cached_report()` / `cached_report_path()` は**取りに行かない**。
@@ -95,34 +110,42 @@ comken 側の「スケジュール」シートにスケジュールキーを分�
 
 ## comken への依存が必須
 
-このバッチは comken を**外部ライブラリとして**利用します。共通例外（`ComkenError`
-/ `SalesforceReportIDNotFoundError` / `CachedReportNotFoundError` など）は引き続き
-`from comken.exceptions import ...` で読みます。**単体では動きません。**
+このバッチは comken を**外部ライブラリとして**利用します。管理表・履歴の形式
+（`ReportEntry` / `HistoryRow` / `COLUMNS` / パスの置き場所）・読み取り関数
+（`cached_report()` など）・共通例外（`ComkenError` / `SalesforceReportIDNotFoundError` /
+`CachedReportNotFoundError` など）はすべて comken 側から import します。**単体では
+動きません。**
 
 ## 業務での配置
 
 comken と同じ「共有サーバー直接参照（PYTHONPATH）」方式を使います。
 
 - 利用側プロジェクトの `実行.bat` で、**`COMKEN_ROOT` だけを `PYTHONPATH` に足す**。
-  `comken.services.salesforce_downloader` パッケージは comken 内にあるため、
-  別途 `PYTHONPATH` に足す必要はない。
 - 配置時に書き換えるファイルは comken 側の
-  `comken/services/salesforce_downloader/_paths.py` の `MASTER_PATH` / `HISTORY_PATH`
+  `comken/services/salesforce_downloader/paths.py` の `MASTER_PATH` / `HISTORY_PATH`
   の2か所（仕様の詳細は comken 側の
   [`docs/salesforce-downloader.md`](https://github.com/tenniscorecom/comken/blob/master/docs/salesforce-downloader.md)
   の「配置するときの設定」を参照）
 - 定期実行の登録（何時間おきに呼ぶか）は WinActor（社内RPA基盤）側の設定で行う。
   このリポジトリには持たせない
 
-## comken への再統合の経緯
+## comken との分担の経緯
 
-このリポジトリはかつて `comken_salesforce_downloader` という独立ライブラリを内包していたが、
+このリポジトリと comken の分担は何度か変わっている（新しい方を先に書く）:
 
+- **2026-09: 取得を実行する側（`download_scheduled()` / `service.py`）を、再び
+  comken の外（このリポジトリ）へ切り出した。** `download_scheduled()` を実際に
+  呼ぶプロジェクトは今のところこのリポジトリだけで、しかもここで完結している。
+  単一消費者の実行部分を comken に置き続ける理由が無くなっていたため。
+  管理表・履歴の**形式**（列定義・読み取り関数）は、将来別プロジェクトが
+  `cached_report()` で読みに来たときのために、引き続き comken 側に残した。
+- 2026-08-30 にこのリポジトリ（当時 `comken-salesforce-downloader`）へ分離
 - 他のプロジェクトが呼び出すたびに comken 用とは別の `PYTHONPATH` / `pip install`
-  設定が必要になる不便が判明したこと
-- comken 本体側で完結する方が、ドキュメント・テスト・リリースが揃えられること
+  設定が必要になる不便が判明したため、2026-08-31 に comken 本体へ再統合
+  （この時点では取得実行部分も含めて丸ごと comken 側にあった）
 
-から、2026-08-31 に comken 本体へ再統合しました。このリポジトリは**実行バッチのみ**を残します。
+経緯の詳細は comken 側の `comken/services/salesforce_downloader/__init__.py` の
+履歴メモを参照。
 
 ## ドキュメント
 
