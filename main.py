@@ -9,7 +9,7 @@ main.py — エントリポイント
 
 import logging
 
-from comken import comken_logger
+from comken import comken_logger, debug
 from comken.exceptions import ComkenError
 
 from src.run import run
@@ -28,9 +28,14 @@ if __name__ == "__main__":
     #   from comken import dry_run
     #   with dry_run():
     #       main()
-    comken_logger.setup_local_logging()
+    comken_logger.setup_local_logging(console_level=logging.DEBUG, file_level=logging.DEBUG)
     try:
-        main()
+        # `debug()` は @measure 付き関数（load_master 等）の開始・完了・所要時間の
+        # ログを有効にする（既定は素通しで出さない）。file_level=DEBUG だけでは
+        # このログは出ない——@measure 側が is_debug() を見て呼び出し自体を
+        # スキップするため（comken/core/timer.py 参照）
+        with debug():
+            main()
     except ComkenError as e:
         # comken のエラーはメッセージに対処法が入っている（docs/ERRORS.md も参照）
         logger.error("処理を中断しました: %s", e)
