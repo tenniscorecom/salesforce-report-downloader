@@ -22,7 +22,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import comken.core.logger
-import comken.services.salesforce_downloader.master as _master
 from _pytest.logging import LogCaptureFixture
 from _pytest.monkeypatch import MonkeyPatch
 
@@ -70,17 +69,15 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
     """
     _ensure_path()
     # ``src.salesforce_downloader`` の __init__ は ``download_scheduled`` を
-    # ``service`` から import して ``__init__.__dict__`` にキャッシュする。同様に
-    # ``comken.services.salesforce_downloader`` の __init__ も ``load_master`` を
-    # ``master`` から import してキャッシュする。テスト 1 で ``import src.run`` が
-    # 走るとこの両方のキャッシュが残り、ここでの monkeypatch では古い wrapper が
-    # 取り出されてしまう。両方の __init__ も捨てて再 import で fresh にする。
+    # ``service`` から import して ``__init__.__dict__`` にキャッシュする。
+    # テスト 1 で ``import src.run`` が走るとこのキャッシュが残り、ここでの
+    # monkeypatch では古い wrapper が取り出されてしまう。__init__ も捨てて
+    # 再 import で fresh にする。
     _reload(
         "main",
         "src",
         "src.run",
         "src.salesforce_downloader",
-        "comken.services.salesforce_downloader",
     )
 
     fake_setup = MagicMock()
@@ -93,10 +90,6 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
 
     # ``download_scheduled`` の実体（``service`` モジュール）を直接差し替える。
     monkeypatch.setattr(_service, "download_scheduled", fake_download)
-
-    # ``src.run.run()`` は ``browser_fetch_reports`` を組み立てるために ``load_master()``
-    # を呼ぶ（本物の管理表パスは開発環境に無いので差し替える）。
-    monkeypatch.setattr(_master, "load_master", MagicMock(return_value={"1001": MagicMock()}))
 
     # root logger にテスト由来の handler が残らないよう、実行後の差分を掃除する。
     root_logger = logging.getLogger()
@@ -119,28 +112,24 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
 def test_run_calls_download_scheduled_with_project_name(
     monkeypatch: MonkeyPatch, caplog: LogCaptureFixture
 ) -> None:
-    """``src.run.run()`` が ``download_scheduled(PROJECT_NAME, browser_fetch_reports=...)`` を
-    呼び、件数ログが出ること。
+    """``src.run.run()`` が ``download_scheduled(PROJECT_NAME)`` を呼び、
+    件数ログが出ること。
 
-    現状は暫定で全件ブラウザ経由にしているため（``src/run.py`` モジュール docstring
-    参照）、``browser_fetch_reports`` には管理表に載っている管理番号が全て渡ることを
-    確かめる。
+    API・ブラウザ経由・SOQLのどれで取るかは管理表の列で決まるため
+    （``src/run.py`` モジュール docstring参照）、``run()`` 自体は管理表を
+    読まずに ``download_scheduled()`` を呼ぶだけでよい。
     """
     _ensure_path()
-    _reload("src", "src.run", "src.salesforce_downloader", "comken.services.salesforce_downloader")
+    _reload("src", "src.run", "src.salesforce_downloader")
 
     fake_download = MagicMock(return_value=["a.xlsx", "b.xlsx"])
     monkeypatch.setattr(_service, "download_scheduled", fake_download)
-    fake_load_master = MagicMock(return_value={"1001": MagicMock(), "1002": MagicMock()})
-    monkeypatch.setattr(_master, "load_master", fake_load_master)
 
     from src.run import PROJECT_NAME, run
 
     with caplog.at_level(logging.INFO, logger="src.run"):
         run()
 
-    fake_download.assert_called_once_with(
-        PROJECT_NAME, browser_fetch_reports=frozenset({"1001", "1002"})
-    )
+    fake_download.assert_called_once_with(PROJECT_NAME)
     assert PROJECT_NAME == "Salesforceレポートダウンローダー"
     assert any("2 件を取得しました" in record.getMessage() for record in caplog.records)

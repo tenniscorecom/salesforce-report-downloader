@@ -8,6 +8,7 @@ MASTER_PATH / HISTORY_PATH は `monkeypatch.setattr` で一時ディレクトリ
 """
 
 import datetime as dt
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -170,7 +171,7 @@ def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
 
 
 def fake_browser_site(rows: list[dict] | None = None) -> MagicMock:
-    """export_reports() が CSV を書き出すブラウザ版サイトクラス（`browser_fetch_reports` 用）。"""
+    """export_reports() が CSV を書き出すブラウザ版サイトクラス（「2000件超」列用）。"""
     values = ROWS if rows is None else rows
     lines = "\n".join(f"{r['名前']},{r['金額']}" for r in values)
     csv_bytes = f"名前,金額\n{lines}\n".encode()
@@ -350,26 +351,24 @@ class TestDownloadScheduledRecord:
         with pytest.raises(ReportNotRegisteredError):
             download_scheduled(filters_by_report={"9999": filters})
 
-    def test_uses_browser_fetch_for_specified_report(self, paths):
-        """browser_fetch_reports に挙げた管理番号は、Report API ではなくブラウザ経由になる。
+    def test_uses_browser_fetch_for_report_marked_exceeds_row_limit(self, paths):
+        """管理表の「2000件超」列が○の管理番号は、Report API ではなくブラウザ経由になる。
 
-        どのレポートをブラウザ経由にするかは呼び出し側（プロジェクト）が
-        呼び出しごとに指定する（comken 側に固定で書かない設計）。
+        どのレポートをブラウザ経由にするかは管理表の列で決まる（呼び出し側の
+        コードでは指定しない設計）。ここではテスト用に、実体は `paths` fixture の
+        本物の管理表から読んだ行を `exceeds_row_limit=True` に差し替えて使う。
         """
+        entry = replace(load_master(paths["master_path"])["1001"], exceeds_row_limit=True)
         browser_site = fake_browser_site()
         with (
+            patch("src.salesforce_downloader.service.load_master", return_value={"1001": entry}),
             patch("src.salesforce_downloader.service.site_for") as api_site_for,
             patch("comken.toolbox.salesforce.browser.sites.site_for", return_value=browser_site),
         ):
-            download_scheduled(browser_fetch_reports=frozenset({"1001"}))
+            download_scheduled()
 
         api_site_for.assert_not_called()
         browser_site.return_value.go_login.assert_called_once()
-
-    def test_rejects_browser_fetch_for_unregistered_report(self, paths):
-        """管理番号の誤記で対象が黙って無視されない。"""
-        with pytest.raises(ReportNotRegisteredError):
-            download_scheduled(browser_fetch_reports=frozenset({"9999"}))
 
     def test_saves_file_with_csv_extension(self, paths, monkeypatch):
         """レポートは `.csv` で保存される。

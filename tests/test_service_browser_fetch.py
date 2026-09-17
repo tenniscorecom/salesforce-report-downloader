@@ -1,19 +1,20 @@
-"""_fetch() のブラウザ経由フォールバック（SOQL化までの暫定）のテスト。
+"""_fetch() のブラウザ経由フォールバックのテスト。
 
-BROWSER_FETCH_REPORT_KEYS に管理番号を入れると、_fetch() がレポートAPIではなく
-comken.toolbox.salesforce.browser 経由で取得する。既存の _fetch() (API経由) の
-テストは tests/test_service.py に集約してあるため、ここではブラウザ経由の
-分岐だけを扱う。
+管理表の「2000件超」列（``ReportEntry.exceeds_row_limit``）が真だと、_fetch() が
+レポートAPIではなく comken.toolbox.salesforce.browser 経由で取得する
+（「SOQL」列が優先されるケースは tests/test_service_soql_fetch.py 側）。
+既存の _fetch() (API経由) のテストは tests/test_service.py に集約してあるため、
+ここではブラウザ経由の分岐だけを扱う。
 """
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from comken.services.salesforce_downloader.master import ReportEntry
 
-from src.salesforce_downloader import service as _service
 from src.salesforce_downloader.service import _fetch, _fetch_via_browser
 
 ENTRY = ReportEntry(
@@ -27,6 +28,7 @@ ENTRY = ReportEntry(
     allow_empty=False,
     note="",
 )
+EXCEEDS_ENTRY = replace(ENTRY, exceeds_row_limit=True)
 
 
 def _fake_browser_site(csv_bytes: bytes = "名前,金額\n山田,100\n".encode()):
@@ -47,22 +49,20 @@ def _fake_browser_site(csv_bytes: bytes = "名前,金額\n山田,100\n".encode()
 
 
 class TestFetchRoutesToBrowser:
-    """_fetch() — BROWSER_FETCH_REPORT_KEYS にある管理番号はブラウザ経由になる。"""
+    """_fetch() — 「2000件超」列が真の管理番号はブラウザ経由になる。"""
 
-    def test_uses_browser_when_key_is_listed(self, monkeypatch):
-        monkeypatch.setattr(_service, "BROWSER_FETCH_REPORT_KEYS", frozenset({ENTRY.key}))
+    def test_uses_browser_when_exceeds_row_limit(self):
         table = MagicMock()
         with patch(
             "src.salesforce_downloader.service._fetch_via_browser",
             return_value=table,
         ) as fetch_via_browser:
-            result = _fetch(ENTRY)
+            result = _fetch(EXCEEDS_ENTRY)
 
-        fetch_via_browser.assert_called_once_with(ENTRY)
+        fetch_via_browser.assert_called_once_with(EXCEEDS_ENTRY)
         assert result is table
 
-    def test_uses_api_when_key_is_not_listed(self, monkeypatch):
-        monkeypatch.setattr(_service, "BROWSER_FETCH_REPORT_KEYS", frozenset())
+    def test_uses_api_when_exceeds_row_limit_is_false(self):
         with (
             patch("src.salesforce_downloader.service.site_for") as site_for,
             patch("src.salesforce_downloader.service._fetch_via_browser") as fetch_via_browser,
@@ -72,11 +72,9 @@ class TestFetchRoutesToBrowser:
         site_for.assert_called_once_with(ENTRY.url)
         fetch_via_browser.assert_not_called()
 
-    def test_raises_when_filters_given_for_browser_report(self, monkeypatch):
-        monkeypatch.setattr(_service, "BROWSER_FETCH_REPORT_KEYS", frozenset({ENTRY.key}))
-
-        with pytest.raises(ValueError, match=ENTRY.key):
-            _fetch(ENTRY, filters=[{"column": "x", "operator": "equals", "value": "1"}])
+    def test_raises_when_filters_given_for_browser_report(self):
+        with pytest.raises(ValueError, match=EXCEEDS_ENTRY.key):
+            _fetch(EXCEEDS_ENTRY, filters=[{"column": "x", "operator": "equals", "value": "1"}])
 
 
 class TestFetchViaBrowser:
@@ -107,10 +105,9 @@ class TestFetchViaBrowser:
 
 
 class TestSeleniumStaysLazy:
-    """BROWSER_FETCH_REPORT_KEYS が空の運用では selenium を読み込まない。"""
+    """「2000件超」列が誰も○にしていない運用では selenium を読み込まない。"""
 
     def test_fetch_does_not_import_browser_module(self, monkeypatch):
-        monkeypatch.setattr(_service, "BROWSER_FETCH_REPORT_KEYS", frozenset())
         for mod_name in list(sys.modules):
             if mod_name.startswith("comken.toolbox.salesforce.browser"):
                 monkeypatch.delitem(sys.modules, mod_name, raising=False)

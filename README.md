@@ -29,13 +29,13 @@ download_scheduled("Salesforceレポートダウンローダー")  # スケジ�
 判定するため、**頻繁に呼んでも二重取得は起きない**。呼ぶ頻度を上げるほど、
 「取るべき時刻」に早く追従できる、というだけの違い。
 
-**現状は `src/run.py` が管理表の全管理番号を `browser_fetch_reports` に渡し、
-一律ブラウザ経由（画面のエクスポート機能）で取得している（暫定）。** レポートAPIには
-2000行の上限があるが、個々のレポートがそれを超えるかどうかを事前に判断するのが
-難しいため。ブラウザ経由は事前に人が一度だけ手動ログインしておく必要がある
+**API・ブラウザ経由・SOQLのどれで取るかは、管理表の列（「2000件超」「SOQL」）で決まる。**
+呼び出し側のコード（`src/run.py`）は意識しない。優先順位は「SOQL」列 →「2000件超」列 →
+通常のReport API。ブラウザ経由は事前に人が一度だけ手動ログインしておく必要がある
 （詳しくは `src/salesforce_downloader/service.py` の `_fetch_via_browser()` を参照）。
-SOQL化が進んで特定のレポートをAPI経由に戻したくなったら、`src/run.py` の
-`browser_fetch_reports` から該当の管理番号を外すだけでよい。
+SOQL経由は同じ管理番号の `SoqlReport` が
+`comken.services.salesforce_downloader.soql_reports` に登録されている必要がある
+（詳しくは `_fetch_via_soql()` を参照）。
 
 ## 使い方
 
