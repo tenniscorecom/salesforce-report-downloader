@@ -21,7 +21,8 @@ ENTRY = ReportEntry(
     key="9001",
     summary="顧客一覧",
     url="https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view",
-    folder=Path("dummy"),
+    group="営業本部",
+    assignee="山田",
     enabled=True,
     allow_empty=False,
 )
@@ -33,8 +34,6 @@ def _fake_browser_site(csv_bytes: bytes = "名前,金額\n山田,100\n".encode()
 
     def _export_reports(reports, **kwargs):
         for _url, destination in reports.items():
-            from pathlib import Path
-
             Path(destination).write_bytes(csv_bytes)
             yield "00O5g00000ABCDE", Path(destination)
 

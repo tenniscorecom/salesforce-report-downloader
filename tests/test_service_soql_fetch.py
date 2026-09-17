@@ -6,7 +6,6 @@
 """
 
 from dataclasses import replace
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,7 +22,8 @@ ENTRY = ReportEntry(
     key="9001",
     summary="顧客一覧",
     url=URL,
-    folder=Path("dummy"),
+    group="営業本部",
+    assignee="山田",
     enabled=True,
     allow_empty=False,
 )

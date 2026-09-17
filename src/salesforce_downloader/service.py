@@ -74,13 +74,11 @@ from comken.exceptions import (
 )
 from comken.services.salesforce_downloader.paths import (
     HISTORY_PATH,
-    LATEST_STATUS_PATH,
     MASTER_PATH,
 )
 from comken.services.salesforce_downloader.provider import daily_cache_path_of, file_path_of
 from comken.services.salesforce_downloader.sheets import history
 from comken.services.salesforce_downloader.sheets.history import HistoryRow
-from comken.services.salesforce_downloader.sheets.latest_status import write_latest_status
 from comken.services.salesforce_downloader.sheets.master import (
     ReportEntry,
     load_master,
@@ -210,18 +208,6 @@ def download_scheduled(
             last_exception = e
 
     logger.info("定期取得: %d 件中 %d 件を取得しました。", len(targets), len(saved))
-    # **最新ステータスは別ファイルへ上書きする。** 履歴 CSV は「全実行の記録」で
-    # 1 レポートの最新だけ見たい業務側からは探しにくいので、``download_scheduled()``
-    # のたびに管理表 × 履歴の最新行を 1 シートへまとめる。失敗しても定期取得の
-    # 成否判定には影響させない（``ScheduledDownloadFailedError`` は本体結果で決まる）
-    try:
-        write_latest_status(
-            master_path=MASTER_PATH,
-            history_path=HISTORY_PATH,
-            output_path=LATEST_STATUS_PATH,
-        )
-    except Exception as e:
-        logger.warning("最新ステータスの更新に失敗しました（定期取得は本体の結果で判定）: %s", e)
     if failed:
         # 続けたぶん、最後に必ず知らせる（終了コードで落ちたことが分かるように）。
         # 直近の失敗を ``__cause__`` に乗せて送出する（呼び出し側が
@@ -339,9 +325,16 @@ def _require_folder(entry: ReportEntry) -> None:
 
     作らずに失敗させる。無いのは書き間違いのことが多く、勝手に作ると
     誰も読まない場所へ置き続けることになる。
+
+    保存先フォルダは `file_path_of()` が内部で `report_folder()` 経由で
+    組み立てる（管理表の「グループ」「担当者」「概要」＋設定シートの
+    「ベースURL」）。`entry.group` が設定シートに無い場合はここより先に
+    `GroupNotRegisteredError` が上がる（フォルダの有無より先に、
+    そもそも出力先を決められないという、より根本的なエラーとして扱う）。
     """
-    if not entry.folder.is_dir():
-        raise ReportFolderNotFoundError(entry.key, entry.folder)
+    folder = file_path_of(entry).parent
+    if not folder.is_dir():
+        raise ReportFolderNotFoundError(entry.key, folder)
 
 
 def _fetch(entry: ReportEntry, filters: list[dict] | None = None) -> Table:

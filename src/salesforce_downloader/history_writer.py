@@ -9,7 +9,7 @@
 
 読み取り側と同じ形式・同じロックを使うことが必須。ここで `COLUMNS` の並びを
 変えたり、`HistoryFileLock` を経由せずに書いたりすると、comken 側の読み取り関数
-（`downloaded_today()` 等）や `write_latest_status()` が壊れる。
+（`downloaded_today()` 等）が壊れる。
 """
 
 import csv
@@ -17,8 +17,9 @@ import logging
 from pathlib import Path
 
 from comken.core.clock import now
-from comken.exceptions import HistoryHeaderMismatchError, HistoryWriteError
+from comken.exceptions import GroupNotRegisteredError, HistoryHeaderMismatchError, HistoryWriteError
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
+from comken.services.salesforce_downloader.provider import file_path_of
 from comken.services.salesforce_downloader.sheets.history import (
     COLUMNS,
     FAILURE,
@@ -45,7 +46,8 @@ def record(
 
     Args:
         path: 履歴 CSV のパス。
-        entry: 管理表1行。管理番号・概要・レポートID・URL・保存先はこの中身を履歴に出す。
+        entry: 管理表1行。管理番号・概要・レポートID・URLはこの中身を履歴に出す。
+            保存先は `file_path_of()` で組み立て直した値を出す（`_resolved_folder()`）。
         project: 呼び出したプロジェクト名。
         row: 履歴1行の本体（成否・各段階の結果・件数・エラー）。
     """
@@ -68,7 +70,7 @@ def record(
         SUCCESS if row.succeeded else FAILURE,
         _stage(row.fetched_from_salesforce),
         _stage(row.saved_to_file),
-        str(entry.folder),
+        _resolved_folder(entry),
         row.file_name,
         "" if row.row_count is None else row.row_count,
         f"{row.seconds:.2f}",
@@ -84,6 +86,20 @@ def record(
     except OSError as exc:
         raise HistoryWriteError(path, str(exc)) from exc
     logger.debug("履歴追記完了: path=%s", path)
+
+
+def _resolved_folder(entry: ReportEntry) -> str:
+    """保存先フォルダを文字列にする。
+
+    ``file_path_of()`` は管理表の「グループ」列が設定シートに無いと
+    ``GroupNotRegisteredError`` を送出する。**失敗の履歴記録中にこのエラーで
+    さらに失敗すると、本来の失敗原因（Salesforce側のエラー等）ごと履歴に残せず、
+    誰も追跡できなくなる**ため、ここでは握りつぶして理由を文字列として残す。
+    """
+    try:
+        return str(file_path_of(entry).parent)
+    except GroupNotRegisteredError as exc:
+        return f"(保存先を組み立てられません: {exc})"
 
 
 def _stage(value: bool | None) -> str:
