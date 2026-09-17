@@ -27,13 +27,13 @@ from comken.exceptions import (
 from comken.services.salesforce_downloader import (
     ReportEntry,
     cached_report_path,
-    history,
     load_master,
     shared_report_ids,
 )
 from comken.services.salesforce_downloader import provider as provider_module
 from comken.services.salesforce_downloader.cli import main as cli
-from comken.services.salesforce_downloader.master import EXAMPLES
+from comken.services.salesforce_downloader.sheets import history
+from comken.services.salesforce_downloader.sheets.master import EXAMPLES
 from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 
@@ -1907,7 +1907,7 @@ class TestTruncatedSkip:
         テストでは Salesforce へ実際に 2000件超のレスポンスを返させる必要がない
         （=本物の大きな CSV を作ると遅い）ので、履歴だけ直接書く。
         列の並びは ``history.COLUMNS`` と一致させる
-        （`comken.services.salesforce_downloader.history.COLUMNS`）。
+        （`comken.services.salesforce_downloader.sheets.history.COLUMNS`）。
         """
         history_path.parent.mkdir(parents=True, exist_ok=True)
         history_path.write_text(

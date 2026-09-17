@@ -2,7 +2,7 @@
 
 **2026-09 に comken から切り出した。** 履歴CSVの列定義・1行の形
 （`HistoryRow` / `COLUMNS`）・排他ロック（`HistoryFileLock`）・読み取り関数
-（`downloaded_today()` など）は comken 側（`comken.services.salesforce_downloader.history`）
+（`downloaded_today()` など）は comken 側（`comken.services.salesforce_downloader.sheets.history`）
 に残っている共有契約で、ここではそれに従って**書く側だけ**を実装する。
 書き込みを実行するのは、このプロジェクトが Salesforce へ取りに行く唯一の消費者
 だから（詳しくは comken の `salesforce_downloader/__init__.py` の履歴メモを参照）。
@@ -18,14 +18,14 @@ from pathlib import Path
 
 from comken.core.clock import now
 from comken.exceptions import HistoryHeaderMismatchError, HistoryWriteError
-from comken.services.salesforce_downloader.history import (
+from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
+from comken.services.salesforce_downloader.sheets.history import (
     COLUMNS,
     FAILURE,
     SUCCESS,
     HistoryRow,
 )
-from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
-from comken.services.salesforce_downloader.master import ReportEntry
+from comken.services.salesforce_downloader.sheets.master import ReportEntry
 
 logger = logging.getLogger(__name__)
 

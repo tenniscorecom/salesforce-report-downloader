@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from comken.exceptions import SoqlReportNotRegisteredError
-from comken.services.salesforce_downloader.master import ReportEntry
+from comken.services.salesforce_downloader.sheets.master import ReportEntry
 from comken.services.salesforce_downloader.soql_reports import _registry
 from comken.services.salesforce_downloader.soql_reports.base import SoqlReport
 
@@ -21,14 +21,11 @@ URL = "https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view
 
 ENTRY = ReportEntry(
     key="9001",
-    group_name="営業事務グループ",
-    assignee="山田",
     summary="顧客一覧",
     url=URL,
     folder=Path("dummy"),
     enabled=True,
     allow_empty=False,
-    note="",
 )
 SOQL_ENTRY = replace(ENTRY, use_soql=True)
 # 「2000件超」も同時に○の行では「SOQL」列が優先される、を確かめる用

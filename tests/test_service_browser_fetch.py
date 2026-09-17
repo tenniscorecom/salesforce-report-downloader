@@ -13,20 +13,17 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from comken.services.salesforce_downloader.master import ReportEntry
+from comken.services.salesforce_downloader.sheets.master import ReportEntry
 
 from src.salesforce_downloader.service import _fetch, _fetch_via_browser
 
 ENTRY = ReportEntry(
     key="9001",
-    group_name="営業事務グループ",
-    assignee="山田",
     summary="顧客一覧",
     url="https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view",
     folder=Path("dummy"),
     enabled=True,
     allow_empty=False,
-    note="",
 )
 EXCEEDS_ENTRY = replace(ENTRY, exceeds_row_limit=True)
 

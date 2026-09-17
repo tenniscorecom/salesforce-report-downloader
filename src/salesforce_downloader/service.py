@@ -72,21 +72,21 @@ from comken.exceptions import (
     ReportReservePathLimitError,
     ScheduledDownloadFailedError,
 )
-from comken.services.salesforce_downloader import history
-from comken.services.salesforce_downloader.history import HistoryRow
-from comken.services.salesforce_downloader.latest_status import write_latest_status
-from comken.services.salesforce_downloader.master import (
-    ReportEntry,
-    load_master,
-    shared_report_ids,
-)
 from comken.services.salesforce_downloader.paths import (
     HISTORY_PATH,
     LATEST_STATUS_PATH,
     MASTER_PATH,
 )
 from comken.services.salesforce_downloader.provider import daily_cache_path_of, file_path_of
-from comken.services.salesforce_downloader.schedule import ScheduleRule, load_schedule
+from comken.services.salesforce_downloader.sheets import history
+from comken.services.salesforce_downloader.sheets.history import HistoryRow
+from comken.services.salesforce_downloader.sheets.latest_status import write_latest_status
+from comken.services.salesforce_downloader.sheets.master import (
+    ReportEntry,
+    load_master,
+    shared_report_ids,
+)
+from comken.services.salesforce_downloader.sheets.schedule import ScheduleRule, load_schedule
 from comken.services.salesforce_downloader.soql_reports import soql_report_for
 from comken.toolbox.csv import CSV
 from comken.toolbox.salesforce.sites import site_for
