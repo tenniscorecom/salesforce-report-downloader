@@ -26,11 +26,18 @@ WinActor（社内RPA基盤）等から**高頻度（例: 1 時間おき）で繰
 
 失敗があれば例外で止まる（取得できたものは保存済み）。ログだけ出して正常終了すると、
 スケジューラから見て成功と区別が付かない。
+
+**現状は全件ブラウザ経由で取得する（暫定）。** レポートAPIには2000行の上限があるが、
+個々のレポートがそれを超えるかどうかを事前に判断するのが難しいため、SOQL化が
+追いつくまでは一律ブラウザ経由（画面のエクスポート機能）に倒している。ブラウザ経由は
+`_fetch_via_browser()`（comken側）が使う `PROFILE_ROOT` の既存ログイン状態が前提な
+ので、事前に人が一度だけ手動ログインしておく必要がある。管理番号ごとに絞りたく
+なったら `browser_fetch_reports` に渡す集合を管理表全体ではなく個別に組み立てる。
 """
 
 import logging
 
-from comken.services.salesforce_downloader import download_scheduled
+from comken.services.salesforce_downloader import download_scheduled, load_master
 
 logger = logging.getLogger(__name__)
 
@@ -44,5 +51,9 @@ def run() -> None:
     Raises:
         ScheduledDownloadFailedError: 1件でも取得できなかった場合。
     """
-    saved = download_scheduled(PROJECT_NAME)
+    # 管理表に載っている管理番号を全てブラウザ経由にする（モジュール docstring 参照）。
+    # download_scheduled() 側で「有効」かつスケジュール対象のものだけに絞られるため、
+    # ここで無効行を除く必要はない。
+    browser_fetch_reports = frozenset(load_master())
+    saved = download_scheduled(PROJECT_NAME, browser_fetch_reports=browser_fetch_reports)
     logger.info("%d 件を取得しました。", len(saved))

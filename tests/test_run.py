@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import comken.core.logger
+import comken.services.salesforce_downloader.master as _master
 import comken.services.salesforce_downloader.service as _service
 from _pytest.logging import LogCaptureFixture
 from _pytest.monkeypatch import MonkeyPatch
@@ -90,6 +91,10 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
     # 遅延 import 先（service モジュール）の関数を直接差し替える。
     monkeypatch.setattr(_service, "download_scheduled", fake_download)
 
+    # ``src.run.run()`` は ``browser_fetch_reports`` を組み立てるために ``load_master()``
+    # を呼ぶ（本物の管理表パスは開発環境に無いので差し替える）。
+    monkeypatch.setattr(_master, "load_master", MagicMock(return_value={"1001": MagicMock()}))
+
     # root logger にテスト由来の handler が残らないよう、実行後の差分を掃除する。
     root_logger = logging.getLogger()
     handlers_before = list(root_logger.handlers)
@@ -111,20 +116,28 @@ def test_main_block_calls_setup_local_logging_and_download_scheduled(
 def test_run_calls_download_scheduled_with_project_name(
     monkeypatch: MonkeyPatch, caplog: LogCaptureFixture
 ) -> None:
-    """``src.run.run()`` が ``download_scheduled(PROJECT_NAME)`` を呼び、
-    件数ログが出ること。
+    """``src.run.run()`` が ``download_scheduled(PROJECT_NAME, browser_fetch_reports=...)`` を
+    呼び、件数ログが出ること。
+
+    現状は暫定で全件ブラウザ経由にしているため（``src/run.py`` モジュール docstring
+    参照）、``browser_fetch_reports`` には管理表に載っている管理番号が全て渡ることを
+    確かめる。
     """
     _ensure_path()
     _reload("src", "src.run", "comken.services.salesforce_downloader")
 
     fake_download = MagicMock(return_value=["a.xlsx", "b.xlsx"])
     monkeypatch.setattr(_service, "download_scheduled", fake_download)
+    fake_load_master = MagicMock(return_value={"1001": MagicMock(), "1002": MagicMock()})
+    monkeypatch.setattr(_master, "load_master", fake_load_master)
 
     from src.run import PROJECT_NAME, run
 
     with caplog.at_level(logging.INFO, logger="src.run"):
         run()
 
-    fake_download.assert_called_once_with(PROJECT_NAME)
+    fake_download.assert_called_once_with(
+        PROJECT_NAME, browser_fetch_reports=frozenset({"1001", "1002"})
+    )
     assert PROJECT_NAME == "Salesforceレポートダウンローダー"
     assert any("2 件を取得しました" in record.getMessage() for record in caplog.records)
