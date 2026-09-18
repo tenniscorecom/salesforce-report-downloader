@@ -2,16 +2,19 @@
 
 雛形と読み込みで列がズレないこと、`choices` 列にドロップダウンが付くこと、
 フォントが Noto Sans JP に揃うこと、記入例に背景色が付き「Sheet」が残らないこと、
-``create_combined_workbook`` で3シート＋記入方法シートが1ブックにまとまること
-を確認する。
+``create_combined_workbook`` で3シート＋記入方法シートが1ブックにまとまること、
+``create_template`` / ``create_combined_workbook`` が既存シートを新列構成に
+マイグレーションできることを確認する。
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import comken.services.salesforce_downloader.paths as _paths_module
 import pytest
 from comken.core.table import Table
 from comken.exceptions import SheetNotFoundError
+from comken.services.salesforce_downloader.report_master import MasterRow, column
 from comken.services.salesforce_downloader.sheets.group_settings import GroupSetting
 from comken.services.salesforce_downloader.sheets.master import EXAMPLES, ReportEntry, load_master
 from comken.services.salesforce_downloader.sheets.schedule import (
@@ -369,3 +372,350 @@ class TestCreateCombinedWorkbook:
             fg = cell.fill.fgColor.value or cell.fill.fgColor.rgb
             assert fg is not None
             assert fg.endswith("D9D9D9") or fg == "00D9D9D9" or fg == "FFD9D9D9"
+
+
+# ── 既存シートの自動マイグレーション ────────────────────────────────────────
+
+
+def _is_example_fill(cell) -> bool:
+    """薄い背景色（記入例マーク）が付いているか。"""
+    fg = cell.fill.fgColor.value or cell.fill.fgColor.rgb
+    return bool(fg and (fg.endswith("D9D9D9") or fg == "00D9D9D9" or fg == "FFD9D9D9"))
+
+
+@dataclass(frozen=True, kw_only=True)
+class _LegacyReportEntry(MasterRow):
+    """列が6つしかない旧 ReportEntry。マイグレーションを誘発するテスト用。
+
+    ``SHEET_NAME = "管理表"`` で `ReportEntry` と同じシート名を共有させ、
+    先にこのクラスで書いたブックを `ReportEntry` の `create_template()` に
+    渡すことで「列が追加された」シナリオを再現する。
+    """
+
+    SHEET_NAME = "管理表"
+
+    key: str = column("ID", unique=True, help="ID")
+    group: str = column("グループ", help="group")
+    assignee: str = column("担当者", help="assignee")
+    summary: str = column("概要", help="summary")
+    url: str = column("Salesforce URL", help="url")
+    enabled: bool = column("有効", choices=("○", "×"), help="enabled")
+
+
+class TestMigrateTemplate:
+    """`create_template()` が既存シートを新列構成にマイグレーションできることを確認する。"""
+
+    def test_creates_from_examples_when_no_existing_file(self, tmp_path):
+        """ファイル・シートが存在しない場合は従来通り記入例で新規作成される。"""
+        path = tmp_path / "管理表.xlsx"
+        create_template(path, ReportEntry, EXAMPLES)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        assert sheet.cell(row=2, column=1).value == "1001"
+        # 記入例には背景色が付く（回帰確認）
+        assert _is_example_fill(sheet.cell(row=2, column=1))
+
+    def test_migrates_existing_data_without_examples(self, tmp_path):
+        """既存シートにデータがある状態で create_template() を呼ぶと、
+        SheetAlreadyExistsError にならず、データが保持された新列構成のシートになる。"""
+        path = tmp_path / "管理表.xlsx"
+        # 旧バージョン（6列）で先にブックを作る
+        create_template(
+            path,
+            _LegacyReportEntry,
+            [
+                {
+                    "key": "1001",
+                    "group": "営業本部",
+                    "assignee": "山田",
+                    "summary": "顧客一覧",
+                    "url": "https://example/1001",
+                    "enabled": True,
+                },
+                {
+                    "key": "1002",
+                    "group": "営業本部",
+                    "assignee": "佐藤",
+                    "summary": "売上実績",
+                    "url": "https://example/1002",
+                    "enabled": True,
+                },
+            ],
+        )
+        # 新バージョン（9列）で同じパスに雛形生成。マイグレーションが走る
+        create_template(path, ReportEntry)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        # ヘッダーは新しい宣言順
+        headers = [cell.value for cell in sheet[1]]
+        assert headers == ReportEntry.headers()
+        # 既存データの実体は保持されている
+        assert sheet.cell(row=2, column=1).value == "1001"
+        assert sheet.cell(row=3, column=1).value == "1002"
+        assert sheet.cell(row=2, column=2).value == "営業本部"
+        assert sheet.cell(row=2, column=3).value == "山田"
+
+    def test_added_columns_are_blank(self, tmp_path):
+        """新列は空欄で追加される。"""
+        path = tmp_path / "管理表.xlsx"
+        create_template(
+            path,
+            _LegacyReportEntry,
+            [
+                {
+                    "key": "1001",
+                    "group": "営業本部",
+                    "assignee": "山田",
+                    "summary": "顧客一覧",
+                    "url": "https://example/1001",
+                    "enabled": True,
+                },
+            ],
+        )
+        create_template(path, ReportEntry)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        # 新列 (allow_empty, exceeds_row_limit, use_soql) はヘッダーはあるが行は空欄
+        headers = ReportEntry.headers()
+        for header in ("0件あり", "2000件超", "SOQL"):
+            assert header in headers
+        for header in ("0件あり", "2000件超", "SOQL"):
+            col_idx = headers.index(header) + 1
+            assert sheet.cell(row=2, column=col_idx).value in (None, ""), (
+                f"新列 {header} が空欄になっていない: {sheet.cell(row=2, column=col_idx).value!r}"
+            )
+
+    def test_removed_columns_are_dropped(self, tmp_path):
+        """旧シートに余分な列がある場合は捨てられて、新シートには現れない。"""
+        path = tmp_path / "管理表.xlsx"
+        create_template(path, ReportEntry, EXAMPLES)
+        # 余分な列を追加して保存（手で列を足した想定）
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        # 10列目・11列目にヘッダーと値を入れる
+        sheet.cell(row=1, column=10, value="旧カラムA")
+        sheet.cell(row=2, column=10, value="捨てられる値")
+        sheet.cell(row=1, column=11, value="旧カラムB")
+        sheet.cell(row=2, column=11, value="これも捨てる")
+        wb.save(path)
+        wb.close()
+
+        create_template(path, ReportEntry)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        headers = [cell.value for cell in sheet[1]]
+        # 余分な列は消えている
+        assert "旧カラムA" not in headers
+        assert "旧カラムB" not in headers
+        assert len(headers) == len(ReportEntry.headers())
+        # 既存行のキー列はそのまま
+        assert sheet.cell(row=2, column=1).value == "1001"
+        # 捨てられた列のセル位置は空欄
+        assert sheet.cell(row=2, column=10).value in (None, "")
+        assert sheet.cell(row=2, column=11).value in (None, "")
+
+    def test_migrated_rows_have_no_example_fill(self, tmp_path):
+        """マイグレーションされた既存データの行には、記入例特有の薄い背景色が**付かない**。"""
+        path = tmp_path / "管理表.xlsx"
+        create_template(
+            path,
+            _LegacyReportEntry,
+            [
+                {
+                    "key": "1001",
+                    "group": "営業本部",
+                    "assignee": "山田",
+                    "summary": "顧客一覧",
+                    "url": "https://example/1001",
+                    "enabled": True,
+                },
+            ],
+        )
+        create_template(path, ReportEntry)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        # マイグレーションされた行は白背景のまま
+        for row_number in (2,):
+            for col in range(1, len(ReportEntry.headers()) + 1):
+                assert not _is_example_fill(sheet.cell(row=row_number, column=col)), (
+                    f"マイグレーション行 {row_number} 列 {col} に背景色が残っている"
+                )
+
+    def test_columns_in_declaration_order_after_migration(self, tmp_path):
+        """マイグレーション後の列順は新しい宣言順になる（既存ファイルでの列順は問わない）。"""
+        path = tmp_path / "管理表.xlsx"
+        # わざと逆順で列を書いた古いシートを作る
+        legacy_headers = ["有効", "Salesforce URL", "概要", "担当者", "グループ", "ID"]
+        with Excel(path) as book:
+            book.create_data_sheet("管理表").create_table(
+                "管理表",
+                Table(
+                    legacy_headers,
+                    [
+                        dict(
+                            zip(
+                                legacy_headers,
+                                ["○", "https://example/1001", "顧客", "山田", "営業", "1001"],
+                                strict=True,
+                            )
+                        ),
+                    ],
+                ),
+            )
+        create_template(path, ReportEntry)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        headers = [cell.value for cell in sheet[1]]
+        assert headers == ReportEntry.headers()
+        # 値が列名と対応付け直されている（最初の列=ID に "1001"）
+        assert sheet.cell(row=2, column=1).value == "1001"
+        assert sheet.cell(row=2, column=2).value == "営業"
+        assert sheet.cell(row=2, column=6).value == "○"
+
+    def test_dropdowns_and_guide_sheet_applied_after_migration(self, tmp_path):
+        """マイグレーション後もドロップダウン・「記入方法」シートが正しく適用される。"""
+        path = tmp_path / "管理表.xlsx"
+        create_template(
+            path,
+            _LegacyReportEntry,
+            [
+                {
+                    "key": "1001",
+                    "group": "営業本部",
+                    "assignee": "山田",
+                    "summary": "顧客一覧",
+                    "url": "https://example/1001",
+                    "enabled": True,
+                },
+                {
+                    "key": "1002",
+                    "group": "営業本部",
+                    "assignee": "佐藤",
+                    "summary": "売上",
+                    "url": "https://example/1002",
+                    "enabled": True,
+                },
+            ],
+        )
+        create_template(path, ReportEntry)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        ranges = sorted(str(v.sqref) for v in sheet.data_validations.dataValidation)
+        # 新しい宣言順（F列=有効, G列=0件あり, H列=2000件超, I列=SOQL）にドロップダウン
+        # マイグレーション行=2 なので最終行は 2 + 2 - 1 + 1000 = 1003
+        assert "F2:F1003" in ranges
+        assert "G2:G1003" in ranges
+        assert "H2:H1003" in ranges
+        assert "I2:I1003" in ranges
+        # 「記入方法」シートは新列構成で作り直されている
+        assert "記入方法" in wb.sheetnames
+        guide_text = "\n".join(
+            str(c.value) for row in wb["記入方法"].iter_rows() for c in row
+        )
+        # 新列（allow_empty, exceeds_row_limit, use_soql の見出し）も記入方法シートに載る
+        assert "0件あり" in guide_text
+        assert "2000件超" in guide_text
+        assert "SOQL" in guide_text
+
+    def test_idempotent_when_columns_unchanged(self, tmp_path):
+        """列構成が変わらない再呼び出しでは、データは保持されて背景色も付かない。"""
+        path = tmp_path / "管理表.xlsx"
+        create_template(path, _LegacyReportEntry, EXAMPLES)
+        # 同じクラスで 2 回目の create_template()。examples に上書きされないこと
+        create_template(path, _LegacyReportEntry, [{"key": "9999"}])
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        # examples ではなく既存の "1001" が残っている
+        assert sheet.cell(row=2, column=1).value == "1001"
+        # マイグレーション扱いで背景色は付かない
+        assert not _is_example_fill(sheet.cell(row=2, column=1))
+
+
+class TestMigrateCombinedWorkbook:
+    """`create_combined_workbook()` でも 3シート単位でマイグレーションが効くことを確認する。"""
+
+    def test_migrates_only_existing_sheets(self, tmp_path):
+        """3シートのうち一部だけ既存データがあるケースでも、混在して扱える。"""
+        path = tmp_path / "レポート管理表.xlsx"
+        # 管理表シートだけ先に作っておく（実データ入り）
+        create_template(path, ReportEntry, EXAMPLES)
+        # 結合ブックを実行 → スケジュールと設定は記入例から新規作成、管理表はマイグレーション
+        create_combined_workbook(path)
+        wb = load_workbook(path)
+        assert f"PY_{ReportEntry.SHEET_NAME}" in wb.sheetnames
+        assert f"PY_{ScheduleRule.SHEET_NAME}" in wb.sheetnames
+        assert f"PY_{GroupSetting.SHEET_NAME}" in wb.sheetnames
+        # 管理表の実データは保持
+        report_sheet = wb[f"PY_{ReportEntry.SHEET_NAME}"]
+        assert report_sheet.cell(row=2, column=1).value == "1001"
+        # スケジュール・設定は記入例から作られた
+        schedule_sheet = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
+        assert schedule_sheet.cell(row=2, column=1).value == "S001"
+        settings_sheet = wb[f"PY_{GroupSetting.SHEET_NAME}"]
+        assert settings_sheet.cell(row=2, column=1).value == "営業本部"
+        # 管理表（マイグレーション）は白背景、スケジュール・設定（記入例）は背景色あり
+        assert not _is_example_fill(report_sheet.cell(row=2, column=1))
+        assert _is_example_fill(schedule_sheet.cell(row=2, column=1))
+        assert _is_example_fill(settings_sheet.cell(row=2, column=1))
+
+    def test_migrates_all_three_sheets_when_present(self, tmp_path):
+        """3シート全てが既存の場合、すべてマイグレーションされる（背景色は付かない）。"""
+        path = tmp_path / "レポート管理表.xlsx"
+        # 3シート分の既存ブックを作る
+        report_headers = ReportEntry.headers()
+        schedule_headers = ScheduleRule.headers()
+        settings_headers = GroupSetting.headers()
+        with Excel(path) as book:
+            book.create_data_sheet(ReportEntry.SHEET_NAME).create_table(
+                ReportEntry.SHEET_NAME,
+                Table(
+                    report_headers,
+                    [dict.fromkeys(report_headers, "") | {"ID": "1001"}],
+                ),
+            )
+            book.create_data_sheet(ScheduleRule.SHEET_NAME).create_table(
+                ScheduleRule.SHEET_NAME,
+                Table(
+                    schedule_headers,
+                    [dict.fromkeys(schedule_headers, "") | {"スケジュールキー": "S001"}],
+                ),
+            )
+            book.create_data_sheet(GroupSetting.SHEET_NAME).create_table(
+                GroupSetting.SHEET_NAME,
+                Table(
+                    settings_headers,
+                    [dict.fromkeys(settings_headers, "") | {"グループ": "営業本部"}],
+                ),
+            )
+        create_combined_workbook(path)
+        wb = load_workbook(path)
+        # 3シートとも実データが残る
+        assert wb[f"PY_{ReportEntry.SHEET_NAME}"].cell(row=2, column=1).value == "1001"
+        assert wb[f"PY_{ScheduleRule.SHEET_NAME}"].cell(row=2, column=1).value == "S001"
+        assert wb[f"PY_{GroupSetting.SHEET_NAME}"].cell(row=2, column=1).value == "営業本部"
+        # 全てマイグレーション扱いで背景色は付かない
+        for sheet_name in (
+            f"PY_{ReportEntry.SHEET_NAME}",
+            f"PY_{ScheduleRule.SHEET_NAME}",
+            f"PY_{GroupSetting.SHEET_NAME}",
+        ):
+            assert not _is_example_fill(wb[sheet_name].cell(row=2, column=1)), (
+                f"{sheet_name} のデータ行に背景色が残っている"
+            )
+        # 3クラス分の「記入方法」シートは1つにまとめ直されている
+        assert wb["記入方法"]["A1"].value == REPORT_ENTRY_GUIDE_INTRO
+
+    def test_creates_combined_when_no_existing_file(self, tmp_path):
+        """既存ファイル無しの場合は従来通り3シートとも記入例で新規作成される（回帰確認）。"""
+        path = tmp_path / "レポート管理表.xlsx"
+        create_combined_workbook(path)
+        wb = load_workbook(path)
+        # 全データシートの記入例に背景色が付く
+        for sheet_name in (
+            f"PY_{ReportEntry.SHEET_NAME}",
+            f"PY_{ScheduleRule.SHEET_NAME}",
+            f"PY_{GroupSetting.SHEET_NAME}",
+        ):
+            assert _is_example_fill(wb[sheet_name].cell(row=2, column=1)), (
+                f"{sheet_name} の記入例に背景色が付いていない"
+            )

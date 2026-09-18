@@ -24,7 +24,11 @@ from typing import Any
 from comken.constants import Color
 from comken.core.table.model import Table as CoreTable
 from comken.exceptions import ExcelFileNotFoundError, SheetNotFoundError
-from comken.services.salesforce_downloader.report_master import ColumnSpec, MasterRow
+from comken.services.salesforce_downloader.report_master import (
+    ColumnSpec,
+    MasterRow,
+    read_raw_rows,
+)
 from comken.services.salesforce_downloader.sheets.group_settings import GroupSetting
 from comken.services.salesforce_downloader.sheets.master import EXAMPLES as REPORT_ENTRY_EXAMPLES
 from comken.services.salesforce_downloader.sheets.master import ReportEntry
@@ -106,30 +110,50 @@ def create_template(
     **雛形全体のフォントは Noto Sans JP。** 既存のフォント属性（太字など）は、
     フォント名だけ書き換える方式で残す。
 
+    **既存ファイルに対象シートがある場合は自動マイグレーションする。**
+    ``column()`` 宣言に列を追加・削除した直後でも、運用中の管理表に対してそのまま
+    実行して良い。古いシートに書かれた実データは新しい列構成に揃え直して保持し、
+    増えた列は空欄、減った列は捨てられる（既定値が無い必須列はユーザーが後で埋める）。
+    マイグレーションされた行は記入例と区別するため、薄い背景色は付けない。
+
     Args:
         path: 作成先（.xlsx）。
         row_cls: 雛形のもとになる `MasterRow` のサブクラス。
         examples: 記入例。{Python の名前: 値} の形で渡す。
+            既存ファイルに対象シートがある場合は無視される（マイグレーション優先）。
     """
     path = Path(path)
     specs = row_cls.column_specs()
-    examples = examples or []
     headers = [spec.header for _, spec, _, _ in specs]
-    rows = [
-        {
-            spec.header: _to_cell(example.get(name, ""), spec, value_type)
-            for name, spec, value_type, _ in specs
-        }
-        for example in examples
-    ]
+
+    existing_rows = _existing_rows_or_none(path, row_cls, specs)
+    if existing_rows is not None:
+        # 既存データを新しい列構成に揃え直す（増減は吸収、並び順は宣言順）
+        rows = existing_rows
+        mark_as_example = False
+    else:
+        examples = examples or []
+        rows = [
+            {
+                spec.header: _to_cell(example.get(name, ""), spec, value_type)
+                for name, spec, value_type, _ in specs
+            }
+            for example in examples
+        ]
+        mark_as_example = True
     logger.debug(
-        "雛形生成開始: class=%s, path=%s, sheet=%s, 記入例=%d 行, 列=%d",
+        "雛形生成開始: class=%s, path=%s, sheet=%s, マイグレーション=%s, データ行=%d, 列=%d",
         row_cls.__name__,
         path,
         row_cls.SHEET_NAME,
+        existing_rows is not None,
         len(rows),
         len(headers),
     )
+
+    # 同名シートが残っていると ``create_data_sheet()`` が ``SheetAlreadyExistsError``
+    # を投げるため、書き込み前に既存シートを削除する。ファイルが無ければ何もしない
+    _delete_existing_template_sheets(path, [row_cls.SHEET_NAME])
 
     # 空の雛形でも Excel テーブルを成立させるため、API が要求する見出しだけを
     # 持つ Table を作る。実データが無い場合の仮行は create_table が保持しない。
@@ -156,13 +180,13 @@ def create_template(
     _auto_width(sheet)
     sheet.freeze_panes = "A2"
 
-    # 記入例の行に薄い背景色を付ける。**本物のデータと見分けが付く**ように
-    # するための目印で、エラー行に見える色は避ける（強すぎる色は業務側が
-    # 「何か起きたのか」と不安になるため）
-    for offset in range(len(rows)):
-        row_number = _FIRST_DATA_ROW + offset
-        for col in range(1, len(headers) + 1):
-            sheet.cell(row=row_number, column=col).fill = _EXAMPLE_FILL
+    # 記入例にのみ薄い背景色を付ける。マイグレーションされた既存データは
+    # 本物のデータなので、白背景のままにする（例として見間違えないように）。
+    if mark_as_example:
+        for offset in range(len(rows)):
+            row_number = _FIRST_DATA_ROW + offset
+            for col in range(1, len(headers) + 1):
+                sheet.cell(row=row_number, column=col).fill = _EXAMPLE_FILL
 
     _write_class_guide(book, row_cls, specs)
 
@@ -190,6 +214,10 @@ def create_combined_workbook(path: str | Path) -> Path:
     「管理表」シートの冒頭案内（`REPORT_ENTRY_GUIDE_INTRO`）は、3シートまとめた
     「記入方法」シートの先頭に置く（旧 `ReportEntry.GUIDE_INTRO` を移設したもの）。
 
+    **既存ファイルに対象シートがある場合はクラス単位で自動マイグレーションする。**
+    3クラスは互いに独立に判定するため、「管理表だけ既存データがある」「設定シートは
+    まだ無いので記入例から作る」のような混在もありえる。
+
     Args:
         path: 作成先（.xlsx）。
 
@@ -206,21 +234,71 @@ def create_combined_workbook(path: str | Path) -> Path:
     specs_schedule = ScheduleRule.column_specs()
     specs_settings = GroupSetting.column_specs()
 
-    logger.debug("3シート雛形生成開始: path=%s", path)
+    # 各クラスの既存データを独立に確認する（混在を許容する）
+    existing_report = _existing_rows_or_none(path, ReportEntry, specs_report)
+    existing_schedule = _existing_rows_or_none(path, ScheduleRule, specs_schedule)
+    existing_settings = _existing_rows_or_none(path, GroupSetting, specs_settings)
+
+    logger.debug(
+        "3シート雛形生成開始: path=%s, マイグレーション: report=%s, schedule=%s, settings=%s",
+        path,
+        existing_report is not None,
+        existing_schedule is not None,
+        existing_settings is not None,
+    )
+
+    # 既存シートをまとめて1回で削除（同名シートがあると ``SheetAlreadyExistsError``
+    # になるため。3回やると2回目以降が「対象シート無し」となり安全に無視される）
+    _delete_existing_template_sheets(
+        path,
+        [ReportEntry.SHEET_NAME, ScheduleRule.SHEET_NAME, GroupSetting.SHEET_NAME],
+    )
 
     with Excel(path) as excel:
-        _write_data_sheet(excel, ReportEntry, REPORT_ENTRY_EXAMPLES, specs_report)
-        _write_data_sheet(excel, ScheduleRule, SCHEDULE_EXAMPLES, specs_schedule)
-        _write_data_sheet(excel, GroupSetting, GROUP_SETTING_EXAMPLES, specs_settings)
+        _write_data_sheet(
+            excel,
+            ReportEntry,
+            REPORT_ENTRY_EXAMPLES,
+            specs_report,
+            existing_rows=existing_report,
+        )
+        _write_data_sheet(
+            excel,
+            ScheduleRule,
+            SCHEDULE_EXAMPLES,
+            specs_schedule,
+            existing_rows=existing_schedule,
+        )
+        _write_data_sheet(
+            excel,
+            GroupSetting,
+            GROUP_SETTING_EXAMPLES,
+            specs_settings,
+            existing_rows=existing_settings,
+        )
     logger.debug("3シート雛形: データシート作成: path=%s", path)
 
     book = load_workbook(path)
-    _finalize_sheet(book, f"PY_{ReportEntry.SHEET_NAME}", specs_report, REPORT_ENTRY_EXAMPLES)
     _finalize_sheet(
-        book, f"PY_{ScheduleRule.SHEET_NAME}", specs_schedule, SCHEDULE_EXAMPLES
+        book,
+        f"PY_{ReportEntry.SHEET_NAME}",
+        specs_report,
+        REPORT_ENTRY_EXAMPLES,
+        mark_as_example=existing_report is None,
     )
     _finalize_sheet(
-        book, f"PY_{GroupSetting.SHEET_NAME}", specs_settings, GROUP_SETTING_EXAMPLES
+        book,
+        f"PY_{ScheduleRule.SHEET_NAME}",
+        specs_schedule,
+        SCHEDULE_EXAMPLES,
+        mark_as_example=existing_schedule is None,
+    )
+    _finalize_sheet(
+        book,
+        f"PY_{GroupSetting.SHEET_NAME}",
+        specs_settings,
+        GROUP_SETTING_EXAMPLES,
+        mark_as_example=existing_settings is None,
     )
 
     _write_combined_guide(
@@ -323,21 +401,134 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
 # ── 内部ヘルパー ──────────────────────────────────────────────────────────
 
 
+def _existing_rows_or_none(
+    path: Path,
+    row_cls: type[MasterRow],
+    specs: list[tuple[str, ColumnSpec, Any, Any]],
+) -> list[dict] | None:
+    """既存ファイルに対象シートがあれば、新しい列構成に合わせた行データを返す。
+
+    無ければ ``None``（呼び出し側は記入例で新規作成する）。
+
+    - 既存シートの生データ（``read_raw_rows()``）を、新しい列の見出し順に
+      再構成する。既存データに無い列は空文字、新しい列定義に無い既存列は捨てる
+    - ファイルが存在しない、または対象シートが存在しない場合は ``None``
+
+    Args:
+        path: 読み取り対象のファイル。
+        row_cls: 雛形のもとになる `MasterRow` のサブクラス。``SHEET_NAME`` で
+            対象シートを指定する（``PY_`` プレフィックスの解決は ``read_raw_rows``
+            内部で行われる）。
+        specs: ``row_cls.column_specs()`` の結果（新しい列構成）。
+
+    Note:
+        ``ExcelApplicationNotAvailableError`` など、ファイルは存在するが別の理由で
+        読めないケースでは例外をそのまま伝播させる。``SheetNotFoundError`` と
+        ``ExcelFileNotFoundError`` だけが「既存データ無し」として ``None`` に
+        フォールバックする。
+    """
+    if not path.exists():
+        logger.debug(
+            "既存データなし（ファイル未存在）: path=%s, sheet=%s", path, row_cls.SHEET_NAME
+        )
+        return None
+    try:
+        raw_rows = read_raw_rows(path, row_cls.SHEET_NAME)
+    except (SheetNotFoundError, ExcelFileNotFoundError):
+        logger.debug(
+            "既存データなし（シート未存在）: path=%s, sheet=%s", path, row_cls.SHEET_NAME
+        )
+        return None
+    headers = [spec.header for _, spec, _, _ in specs]
+    result: list[dict] = []
+    for raw in raw_rows:
+        # 空行は読み飛ばす（``read_raw_rows()`` 側で既に除外されるはずだが、
+        # ブックの手編集で作られた空行に備えて念のため）
+        if all(value in (None, "") for value in raw.values()):
+            continue
+        # 新しい列構成に合わせて再構築。増えた列は空文字、減った列は捨てる
+        result.append({header: raw.get(header, "") for header in headers})
+    logger.debug(
+        "既存データを取得: path=%s, sheet=%s, 行数=%d, 列数=%d",
+        path,
+        row_cls.SHEET_NAME,
+        len(result),
+        len(headers),
+    )
+    return result
+
+
+def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) -> None:
+    """既存ファイルから対象のデータシートと「記入方法」シートを削除する。
+
+    ``create_template()`` / ``create_combined_workbook()`` が、同じ名前のシートが
+    既に存在する場合に ``SheetAlreadyExistsError`` で止まるのを避けるための準備。
+    書き込み直前に呼び出して、シートを消した状態で ``Excel.create_data_sheet()``
+    に進む。
+
+    Args:
+        path: 対象ファイル。存在しなければ何もしない。
+        data_sheet_names: 削除対象の ``row_cls.SHEET_NAME``（プレフィックス無し）の
+            リスト。存在しないシート名は無視される（何回呼んでも安全）。
+
+    Note:
+        openpyxl はシート 0 枚のブックを保存できない。指定シートと「記入方法」を
+        すべて消して残り 0 枚になるときは、ファイルごと消して次の ``Excel(path)``
+        で新規ブックを作る方針にする（雛形生成の用途では他のシートを温存する
+        シナリオが無いため）。
+    """
+    if not path.exists():
+        return
+    book = load_workbook(path)
+    deleted = False
+    for name in data_sheet_names:
+        full_name = f"PY_{name}"
+        if full_name in book.sheetnames:
+            del book[full_name]
+            deleted = True
+            logger.debug("既存データシートを削除: path=%s, sheet=%s", path, full_name)
+    if "記入方法" in book.sheetnames:
+        del book["記入方法"]
+        deleted = True
+        logger.debug("既存「記入方法」シートを削除: path=%s", path)
+    if deleted and not book.sheetnames:
+        # 0 枚のブックは openpyxl が保存できない。雛形生成の直後なので、ファイルごと
+        # 消して次の ``Excel(path)`` で新規ブックとして作る。
+        book.close()
+        path.unlink()
+        logger.debug(
+            "全シートを削除したためファイルごと作り直し: path=%s", path
+        )
+        return
+    if deleted:
+        book.save(path)
+    book.close()
+
+
 def _write_data_sheet(
     excel: Excel,
     row_cls: type[MasterRow],
     examples: list[dict],
     specs: list[tuple[str, ColumnSpec, Any, Any]],
+    *,
+    existing_rows: list[dict] | None = None,
 ) -> None:
-    """`excel` インスタンスへ1シート分のデータシートを書き出す。"""
+    """`excel` インスタンスへ1シート分のデータシートを書き出す。
+
+    ``existing_rows`` が ``None`` でなければ記入例の代わりにマイグレーション結果を
+    使う（増減した列を吸収済み・宣言順に並んだ行）。
+    """
     headers = [spec.header for _, spec, _, _ in specs]
-    rows = [
-        {
-            spec.header: _to_cell(example.get(name, ""), spec, value_type)
-            for name, spec, value_type, _ in specs
-        }
-        for example in examples
-    ]
+    if existing_rows is not None:
+        rows = existing_rows
+    else:
+        rows = [
+            {
+                spec.header: _to_cell(example.get(name, ""), spec, value_type)
+                for name, spec, value_type, _ in specs
+            }
+            for example in examples
+        ]
     template_table = CoreTable(headers, rows)
     excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
 
@@ -347,18 +538,26 @@ def _finalize_sheet(
     full_sheet_name: str,
     specs: list[tuple[str, ColumnSpec, Any, Any]],
     examples: list[dict],
+    *,
+    mark_as_example: bool = True,
 ) -> None:
-    """`create_data_sheet` で書き出したシートに雛形用の装飾を後付けする。"""
+    """`create_data_sheet` で書き出したシートに雛形用の装飾を後付けする。
+
+    ``mark_as_example=False`` のときは記入例用の薄い背景色を付けない
+    （マイグレーションされた実データは白背景のままにする）。
+    """
     sheet = book[full_sheet_name]
     headers = [spec.header for _, spec, _, _ in specs]
-    _apply_template_font(sheet, len(examples) + _DATA_VALIDATION_ROWS)
-    _apply_choice_validations(sheet, specs, len(examples))
+    example_count = len(examples)
+    _apply_template_font(sheet, example_count + _DATA_VALIDATION_ROWS)
+    _apply_choice_validations(sheet, specs, example_count)
     _auto_width(sheet)
     sheet.freeze_panes = "A2"
-    for offset in range(len(examples)):
-        row_number = _FIRST_DATA_ROW + offset
-        for col in range(1, len(headers) + 1):
-            sheet.cell(row=row_number, column=col).fill = _EXAMPLE_FILL
+    if mark_as_example:
+        for offset in range(example_count):
+            row_number = _FIRST_DATA_ROW + offset
+            for col in range(1, len(headers) + 1):
+                sheet.cell(row=row_number, column=col).fill = _EXAMPLE_FILL
 
 
 def _write_class_guide(
