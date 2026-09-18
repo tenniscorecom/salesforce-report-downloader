@@ -217,7 +217,7 @@ class TestApplyScheduleDropdowns:
         ranges = {str(v.sqref): v.formula1 for v in ws.data_validations.dataValidation}
         # choices は `ScheduleRule.column_specs()` の宣言順
         # （取得頻度 / 曜日 / 祝日対応 / 有効）
-        assert ranges["C2:C1001"] == '"毎日,毎週,毎月"'
+        assert ranges["C2:C1001"] == '"毎日,毎週,毎月,毎営業日"'
         assert ranges["F2:F1001"] == '"月,火,水,木,金,土,日"'
         assert ranges["H2:H1001"] == '"取得しない,取得する,1営業日前,1営業日後"'
         assert ranges["I2:I1001"] == '"○,×"'
