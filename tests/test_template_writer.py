@@ -172,20 +172,20 @@ class TestCreateTemplateScheduleRule:
         assert rules[0].enabled is True
 
     def test_choice_columns_get_dropdown(self, tmp_path):
-        """`choices` 列（「取得頻度」「祝日対応」「有効」）だけにドロップダウンが付く。"""
+        """`choices` 列（「取得頻度」「曜日」「祝日対応」「有効」）だけにドロップダウンが付く。"""
         path = create_template(
             tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES
         )
         ws = load_workbook(path)[f"PY_{SCHEDULE_SHEET_NAME}"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
-        # 取得頻度=C列, 祝日対応=H列, 有効=I列
+        # 取得頻度=C列, 曜日=F列, 祝日対応=H列, 有効=I列
         assert "C2:C1002" in ranges
+        assert "F2:F1002" in ranges  # 曜日（choices 宣言で自動付与）
         assert "H2:H1002" in ranges
         assert "I2:I1002" in ranges
-        # 「取得開始時刻」「取得時刻」「曜日」「日付」は自由記述のため対象外
+        # 「取得開始時刻」「取得時刻」「日付」は自由記述のため対象外
         assert "D2:D1002" not in ranges
         assert "E2:E1002" not in ranges
-        assert "F2:F1002" not in ranges
         assert "G2:G1002" not in ranges
 
 
@@ -216,9 +216,10 @@ class TestApplyScheduleDropdowns:
         ws = load_workbook(path)[self._PY_SCHEDULE]
         ranges = {str(v.sqref): v.formula1 for v in ws.data_validations.dataValidation}
         # choices は `ScheduleRule.column_specs()` の宣言順
-        # （取得頻度 / 祝日対応 / 有効）
-        assert ranges["C2:C1001"] == '"1時間ごと,毎日,毎週,毎月"'
-        assert ranges["H2:H1001"] == '"取得しない,取得する"'
+        # （取得頻度 / 曜日 / 祝日対応 / 有効）
+        assert ranges["C2:C1001"] == '"毎日,毎週,毎月"'
+        assert ranges["F2:F1001"] == '"月,火,水,木,金,土,日"'
+        assert ranges["H2:H1001"] == '"取得しない,取得する,1営業日前,1営業日後"'
         assert ranges["I2:I1001"] == '"○,×"'
 
     def test_does_not_overwrite_other_data(self, tmp_path):
@@ -325,8 +326,9 @@ class TestCreateCombinedWorkbook:
         schedule_ranges = sorted(str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
         # スケジュール: 列宣言順は スケジュールキー/レポートキー/取得頻度/取得開始時刻/
         # 取得時刻/曜日/日付/祝日対応/有効。`choices` 列は 取得頻度(C) /
-        # 祝日対応(H) / 有効(I) の 3 つ
+        # 曜日(F) / 祝日対応(H) / 有効(I) の 4 つ
         assert "C2:C1002" in schedule_ranges  # 取得頻度
+        assert "F2:F1002" in schedule_ranges  # 曜日
         assert "H2:H1002" in schedule_ranges  # 祝日対応
         assert "I2:I1002" in schedule_ranges  # 有効
         # GroupSetting には choices 列が無い

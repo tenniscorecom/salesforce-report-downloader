@@ -189,7 +189,7 @@ def download_scheduled(
                     HISTORY_PATH,
                     schedule_key,
                     schedule_run_time=(
-                        schedule_rule.start_time if schedule_rule is not None else None
+                        schedule_rule.desired_time if schedule_rule is not None else None
                     ),
                     filters=filters_by_report.get(entry.key),
                 )
