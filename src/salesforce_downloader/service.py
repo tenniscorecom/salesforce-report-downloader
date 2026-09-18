@@ -76,7 +76,11 @@ from comken.services.salesforce_downloader.paths import (
     HISTORY_PATH,
     MASTER_PATH,
 )
-from comken.services.salesforce_downloader.provider import daily_cache_path_of, file_path_of
+from comken.services.salesforce_downloader.provider import (
+    daily_cache_path_of,
+    file_path_of,
+    rpa_output_path,
+)
 from comken.services.salesforce_downloader.sheets import history
 from comken.services.salesforce_downloader.sheets.history import HistoryRow
 from comken.services.salesforce_downloader.sheets.master import (
@@ -181,7 +185,7 @@ def download_scheduled(
     # 直近の捕捉した例外を覚えておく（同じ失敗が複数件あっても、最後の1件だけを
     # 連鎖させる）。``None`` のままだと「原因例外が無い」ことを示す
     last_exception: BaseException | None = None
-    for entry, schedule_key in targets:
+    for entry, schedule_key, schedule_rule in targets:
         try:
             saved.append(
                 _download(
@@ -189,6 +193,9 @@ def download_scheduled(
                     project,
                     HISTORY_PATH,
                     schedule_key,
+                    schedule_run_time=(
+                        schedule_rule.run_time if schedule_rule is not None else None
+                    ),
                     filters=filters_by_report.get(entry.key),
                 )
             )
@@ -292,14 +299,21 @@ def _download(
     history_path: Path,
     schedule_key: str = "",
     *,
+    schedule_run_time: dt.time | None = None,
     filters: list[dict] | None = None,
 ) -> Path:
-    """1件を取得して保存し、成否を履歴に残す。"""
+    """1件を取得して保存し、成否を履歴に残す。
+
+    ``schedule_run_time`` は 9291 向けの固定名/準固定名の出力ファイル名（``新規``
+    モード時）にスケジュール時刻を埋め込むために ``_save()`` まで運ぶ。
+    スケジュール行が無いレポート（後方互換、``schedule_key == ""``）は ``None``
+    のままでよく、``_save()`` 側で現在時刻にフォールバックする。
+    """
     attempt = _Attempt(entry, project, history_path, schedule_key)
     try:
         _require_folder(entry)
         table = _fetch(entry, filters)
-        path = _save(entry, table)
+        path = _save(entry, table, schedule_run_time=schedule_run_time)
         _update_daily_cache(entry, path)
     except Exception as exc:
         try:
@@ -425,34 +439,65 @@ def _validate_filters_by_report(
             raise ReportNotRegisteredError(report_key, list(entries), MASTER_PATH)
 
 
-def _save(entry: ReportEntry, table: Table) -> Path:
+def _save(
+    entry: ReportEntry,
+    table: Table,
+    *,
+    schedule_run_time: dt.time | None = None,
+) -> Path:
     """行数と `allow_empty` に応じて保存先へ書き込み、書き終わったパスを返す。
 
     0 行・`allow_empty` × → `EmptyReportError`（=失敗）／○ → 空 CSV を置く。
     ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
+
+    既存の社内RPA（9291）向けの固定名/準固定名出力は、この関数の末尾で
+    ``rpa_output_path()`` から組み立てたパスへ同じテーブルを書き出す。**既存の
+    履歴ファイル・当日キャッシュの保存フローは変えず、追加の出力として並べる**。
+    「上書き」モードは意図的に同じパスへ毎回書く（9291互換）、「新規」モードは
+    ``_reserve_unique_path()`` で衝突回避して連番を付ける。
+
+    **失敗時の後始末について:** 9291 向け出力の書き込みが例外の原因になった
+    場合は、既存の履歴ファイルと同じくこの ``_save()`` から例外が伝搬し、
+    ``_download()`` の ``except Exception`` 経路で ``_Attempt.record_failure()``
+    を経由して ``ScheduledDownloadFailedError`` に変換される。9291 向けの予約
+    パスも ``unlink(missing_ok=True)`` で後始末する。**「9291 出力だけ失敗して
+    も定期取得全体は止めない」という分岐は作らない**（派生出力の失敗を本体の
+    成功扱いすると、9291 側が「今日は古いファイルを読む」事故が見えなくなる
+    ため、既存の履歴ファイル失敗と同じ責務で扱う）。
     """
     path = _reserve_path(entry)
+    # 9291 向け出力（追加）。``report_name`` / ``save_mode`` は ReportEntry の
+    # 必須列（既定値なし）なので、読み込めた entry では常に非空の値が入っている
+    rpa_path = rpa_output_path(entry, schedule_run_time)
     try:
         # 問い合わせは成功したが明細が無い。**0件あり × なら失敗扱い、○ なら正常終了**
         if not table and not entry.allow_empty:
             raise EmptyReportError(entry.key, entry.summary, entry.url)
         _write_csv(path, table)
+        if rpa_path != path:
+            if entry.save_mode == "新規":
+                rpa_path = _reserve_unique_path(rpa_path, entry.key)
+            _write_csv(rpa_path, table)
     except Exception:
         path.unlink(missing_ok=True)
+        if rpa_path != path:
+            rpa_path.unlink(missing_ok=True)
         raise
     return path
 
 
-def _reserve_path(entry: ReportEntry) -> Path:
-    """排他的な新規作成で保存名を予約し、既存ファイルを上書きしない。
+def _reserve_unique_path(base_path: Path, report_key: str) -> Path:
+    """排他的な新規作成でパスを予約し、既存ファイルを上書きしない。
 
     同じフォルダに既存ファイルがあると連番（ ``_1`` / ``_2`` …）を足して別の
     ファイル名を探す。 ``RESERVE_PATH_LIMIT`` を超えると ``ReportReservePathLimitError``
     を送出する（権限・同期の異常で ``FileExistsError`` が返り続ける無限ループを
     避けるため）。 ``BUSINESS_DAY_SEARCH_LIMIT`` と同じ考え方で上限を切っている。
+
+    ``report_key`` はエラーメッセージに含めるためだけで、ファイル名の組み立てに
+    は使わない（呼び出し側が ``base_path`` を組み立てる時点で決定済みのため）。
     """
-    base_path = file_path_of(entry)
     candidate = base_path
     sequence = 0
     for _ in range(RESERVE_PATH_LIMIT):
@@ -462,7 +507,16 @@ def _reserve_path(entry: ReportEntry) -> Path:
         except FileExistsError:
             sequence += 1
             candidate = base_path.with_stem(f"{base_path.stem}_{sequence}")
-    raise ReportReservePathLimitError(entry.key, base_path, RESERVE_PATH_LIMIT)
+    raise ReportReservePathLimitError(report_key, base_path, RESERVE_PATH_LIMIT)
+
+
+def _reserve_path(entry: ReportEntry) -> Path:
+    """``_reserve_unique_path`` を ``file_path_of(entry)`` ベースで呼ぶ薄いラッパー。
+
+    既存の呼び出し側との互換のために残している。新規コード（9291 向け出力など
+    ベースパスが違うもの）は ``_reserve_unique_path`` を直接呼んでもよい。
+    """
+    return _reserve_unique_path(file_path_of(entry), entry.key)
 
 
 def _update_daily_cache(entry: ReportEntry, saved_path: Path) -> None:
@@ -547,7 +601,7 @@ def _select_targets(
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,
     holidays: set[dt.date],
-) -> tuple[list[tuple[ReportEntry, str]], list[str]]:
+) -> tuple[list[tuple[ReportEntry, str, ScheduleRule | None]], list[str]]:
     """定期取得の対象を「有効」かつ「取得すべき」かつ「当日未失敗」のレポートに絞る。
 
     ``download_scheduled()`` から対象選定ロジックだけを抜き出したヘルパー。
@@ -565,12 +619,19 @@ def _select_targets(
     「今回も未取得だった」という事実を終了コードへ反映させる（そうしないと
     2回目以降の定期実行が常に成功扱いになり、RPA基盤が失敗に気づけない）。
 
+    戻り値の ``targets`` は ``(ReportEntry, schedule_key, ScheduleRule | None)``
+    の3要素タプル。``ScheduleRule`` を一緒に運ぶのは、9291 向け出力のファイル名
+    （「新規」モード時のスケジュール時刻埋め込み）に ``run_time`` が必要だから。
+    ``ScheduleRule`` が ``None`` のときはスケジュール行が無いレポート（後方互換）
+    で、その場合は ``rpa_output_path()`` 側で現在時刻にフォールバックする。
+
     Returns:
         ``(targets, already_failed)``。``targets`` は実際に取得を試みる
-        ``(ReportEntry, schedule_key)`` のリスト。``already_failed`` は
-        本日すでに2000件超で失敗済みのためスキップした管理番号のリスト。
+        ``(ReportEntry, schedule_key, ScheduleRule | None)`` のリスト。
+        ``already_failed`` は本日すでに2000件超で失敗済みのためスキップした
+        管理番号のリスト。
     """
-    targets: list[tuple[ReportEntry, str]] = []
+    targets: list[tuple[ReportEntry, str, ScheduleRule | None]] = []
     already_failed: list[str] = []
     for entry in entries.values():
         if not entry.enabled:
@@ -587,8 +648,15 @@ def _select_targets(
             already_failed.append(entry.key)
             continue
         # ``schedule_key`` は取得後に履歴へ記録し、``schedule_succeeded_today()``
-        # が再判定に使う。スケジュール行が無いレポート（後方互換）は空文字
-        targets.append((entry, schedule_key))
+        # が再判定に使う。スケジュール行が無いレポート（後方互換）は空文字 +
+        # ``ScheduleRule = None``
+        matched_rule: ScheduleRule | None = None
+        if schedule_key:
+            for rule in rules_by_report.get(entry.key, ()):
+                if rule.schedule_key == schedule_key:
+                    matched_rule = rule
+                    break
+        targets.append((entry, schedule_key, matched_rule))
     return targets, already_failed
 
 
