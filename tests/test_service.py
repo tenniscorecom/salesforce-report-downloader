@@ -25,7 +25,6 @@ from comken.exceptions import (
     ScheduledDownloadFailedError,
 )
 from comken.services.salesforce_downloader import (
-    ReportEntry,
     cached_report_path,
     load_master,
     shared_report_ids,
@@ -33,7 +32,6 @@ from comken.services.salesforce_downloader import (
 from comken.services.salesforce_downloader import provider as provider_module
 from comken.services.salesforce_downloader.cli import main as cli
 from comken.services.salesforce_downloader.sheets import history
-from comken.services.salesforce_downloader.sheets.master import EXAMPLES
 from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 
@@ -2117,28 +2115,6 @@ class TestTruncatedSkip:
             rows = csv_file.read()
         assert len(rows) == 1
         assert rows[0]["エラーコード"] == "SalesforceReportTruncatedError"
-
-
-class TestTemplate:
-    """管理表の雛形は、そのまま読み込める状態で作られる。"""
-
-    def test_generated_template_can_be_loaded(self, tmp_path):
-        """雛形の記入例が、そのまま load_master() を通る（列名の食い違いが起きない）。"""
-        path = ReportEntry.create_template(tmp_path / "レポート管理表.xlsx", EXAMPLES)
-        entries = load_master(path)
-        assert list(entries) == ["1001", "1002"]
-
-    def test_examples_point_at_different_reports(self, tmp_path):
-        """記入例が同じレポートを指していると、check が重複として報告してしまう。"""
-        entries = load_master(ReportEntry.create_template(tmp_path / "管理表.xlsx", EXAMPLES))
-        assert shared_report_ids(entries) == {}
-
-    def test_guide_sheet_is_included(self, tmp_path):
-        """非エンジニアが1枚で分かるよう、記入方法のシートを付ける。"""
-        from openpyxl import load_workbook
-
-        path = ReportEntry.create_template(tmp_path / "レポート管理表.xlsx", EXAMPLES)
-        assert "記入方法" in load_workbook(path).sheetnames
 
 
 class TestCommandLine:

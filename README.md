@@ -74,10 +74,11 @@ SOQL経由は同じ管理番号の `SoqlReport` が
 comken 側（`provider.report_folder()`）が Python で組み立てる（詳しくは comken 側の
 [`docs/salesforce-downloader.md`](https://github.com/tenniscorecom/comken/blob/master/docs/salesforce-downloader.md) 参照）。
 
-**管理表（Excel）は非エンジニアが手動で用意・編集するものであり、コード側で
-雛形を自動生成する機能は持たない。** 雛形が必要な場合は、
-`ReportEntry.create_template()` を Python から直接呼ぶ
-（comken 側の [`docs/master-table.md`](https://github.com/tenniscorecom/comken/blob/master/docs/master-table.md) 参照）。
+**管理表（Excel）は非エンジニアが手動で用意・編集する。** 雛形の生成は
+`src/salesforce_downloader/template_writer.py` の関数
+（`create_combined_workbook()` / `create_template()`）で行う。**「管理表」
+「スケジュール」「設定」の3シートを1つのブックにまとめて生成**したい場合は
+`create_combined_workbook(path)` を呼ぶ（詳しくは同モジュールの docstring を参照）。
 
 **編集した直後に `check` で読み込みを確かめる:**
 
