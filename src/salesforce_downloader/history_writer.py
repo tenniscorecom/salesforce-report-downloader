@@ -13,9 +13,11 @@
 """
 
 import csv
+import io
 import logging
 from pathlib import Path
 
+from comken.constants import Encoding
 from comken.core.clock import now
 from comken.exceptions import GroupNotRegisteredError, HistoryHeaderMismatchError, HistoryWriteError
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
@@ -27,6 +29,7 @@ from comken.services.salesforce_downloader.sheets.history import (
     HistoryRow,
 )
 from comken.services.salesforce_downloader.sheets.master import ReportEntry
+from comken.toolbox.csv import read_text
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +136,12 @@ def _validate_existing_header(path: Path) -> None:
     パッケージ内部専用（アンダースコア付き）のため、ここでは同じ判定をこの
     ファイル内で直接行う（`COLUMNS` は comken 側の共有契約からそのまま import
     しているので、判定基準そのものが2箇所で食い違うことはない）。
+
+    文字コードの判定も同じヘルパー（`comken.toolbox.csv.read_text()`）を
+    経由する。プログラムが書く分は UTF-8 BOM 付きだが、人が Excel で開いて
+    保存し直すと CP932 へ化けるため、読み込み側で吸収する。
     """
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        actual = tuple(next(csv.reader(f), None) or ())
+    text = read_text(path, encoding=Encoding.AUTO)
+    actual = tuple(next(csv.reader(io.StringIO(text)), None) or ())
     if actual != COLUMNS:
         raise HistoryHeaderMismatchError(path, actual, COLUMNS)
