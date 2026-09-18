@@ -35,6 +35,7 @@ SCHEDULE_HEADERS = [
     "スケジュールキー",
     "レポートキー",
     "取得頻度",
+    "取得開始時刻",
     "取得時刻",
     "曜日",
     "日付",
@@ -59,15 +60,15 @@ class TestCreateTemplateReportEntry:
         path = create_template(tmp_path / "管理表.xlsx", ReportEntry)
         sheet = load_workbook(path)["PY_管理表"]
         headers = [cell.value for cell in sheet[1]]
-        # ReportEntry の宣言順。2026-09 に「出力ファイル名」「保存方式」列は
-        # 廃止され、フォルダ階層の組み立てにも「担当者」「概要」を使わなくなった
-        # （記録用として管理表には残っている）ので、9列の宣言順そのままになる
+        # ReportEntry の宣言順。「グループ」「担当者」は ID の直後に置く
+        # （参照時にすぐ辿れるよう）。「担当者」「概要」は記録用で出力パスに
+        # 使わないので宣言順はこのまま
         assert headers == [
             "ID",
-            "概要",
-            "Salesforce URL",
             "グループ",
             "担当者",
+            "概要",
+            "Salesforce URL",
             "有効",
             "0件あり",
             "2000件超",
@@ -171,18 +172,20 @@ class TestCreateTemplateScheduleRule:
         assert rules[0].enabled is True
 
     def test_choice_columns_get_dropdown(self, tmp_path):
-        """`choices` 列（「取得頻度」「有効」）だけにドロップダウンが付く。"""
+        """`choices` 列（「取得頻度」「祝日対応」「有効」）だけにドロップダウンが付く。"""
         path = create_template(
             tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES
         )
         ws = load_workbook(path)[f"PY_{SCHEDULE_SHEET_NAME}"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
-        # 取得頻度=C列, 有効=H列
+        # 取得頻度=C列, 祝日対応=H列, 有効=I列
         assert "C2:C1002" in ranges
         assert "H2:H1002" in ranges
-        # 「曜日」「日付」「祝日対応」は自由記述のため対象外
+        assert "I2:I1002" in ranges
+        # 「取得開始時刻」「取得時刻」「曜日」「日付」は自由記述のため対象外
         assert "D2:D1002" not in ranges
         assert "E2:E1002" not in ranges
+        assert "F2:F1002" not in ranges
         assert "G2:G1002" not in ranges
 
 
@@ -207,22 +210,24 @@ class TestApplyScheduleDropdowns:
     def test_adds_dropdown_to_choice_columns(self, tmp_path):
         path = _make_schedule_book(
             tmp_path / "スケジュール.xlsx",
-            [["S001", "1001", "毎日", "10:00", "", "", "取得しない", "○"]],
+            [["S001", "1001", "毎日", "10:00", "", "", "", "取得しない", "○"]],
         )
         apply_schedule_dropdowns(path)
         ws = load_workbook(path)[self._PY_SCHEDULE]
         ranges = {str(v.sqref): v.formula1 for v in ws.data_validations.dataValidation}
-        # choices は `ScheduleRule.column_specs()` の宣言順（=FREQUENCY_* の順）
+        # choices は `ScheduleRule.column_specs()` の宣言順
+        # （取得頻度 / 祝日対応 / 有効）
         assert ranges["C2:C1001"] == '"1時間ごと,毎日,毎週,毎月"'
-        assert ranges["H2:H1001"] == '"○,×"'
+        assert ranges["H2:H1001"] == '"取得しない,取得する"'
+        assert ranges["I2:I1001"] == '"○,×"'
 
     def test_does_not_overwrite_other_data(self, tmp_path):
         """ドロップダウンだけ後付けで、見出し・既存行はそのまま。"""
         path = _make_schedule_book(
             tmp_path / "スケジュール.xlsx",
             [
-                ["S001", "1001", "毎日", "10:00", "", "", "取得しない", "○"],
-                ["S002", "1002", "毎週", "09:00", "月", "", "取得しない", "○"],
+                ["S001", "1001", "毎日", "10:00", "", "", "", "取得しない", "○"],
+                ["S002", "1002", "毎週", "09:00", "", "月", "", "取得しない", "○"],
             ],
         )
         apply_schedule_dropdowns(path)
@@ -310,15 +315,20 @@ class TestCreateCombinedWorkbook:
         report_ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         report_ranges = sorted(str(v.sqref) for v in report_ws.data_validations.dataValidation)
         # `choices` 列は「有効」「0件あり」「2000件超」「SOQL」の 4 つ。
-        # 列宣言順は ID/概要/Salesforce URL/グループ/担当者/有効/0件あり/2000件超/SOQL なので
-        # ドロップダウンは F〜I 列に付く（9291 向け列の廃止で ``+2`` ずれは無くなった）
+        # 列宣言順は ID/グループ/担当者/概要/Salesforce URL/有効/0件あり/2000件超/SOQL なので
+        # ドロップダウンは F〜I 列に付く
         assert "F2:F1003" in report_ranges  # 有効
         assert "G2:G1003" in report_ranges  # 0件あり
         assert "H2:H1003" in report_ranges  # 2000件超
         assert "I2:I1003" in report_ranges  # SOQL
         schedule_ws = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
         schedule_ranges = sorted(str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
-        assert "C2:C1002" in schedule_ranges
+        # スケジュール: 列宣言順は スケジュールキー/レポートキー/取得頻度/取得開始時刻/
+        # 取得時刻/曜日/日付/祝日対応/有効。`choices` 列は 取得頻度(C) /
+        # 祝日対応(H) / 有効(I) の 3 つ
+        assert "C2:C1002" in schedule_ranges  # 取得頻度
+        assert "H2:H1002" in schedule_ranges  # 祝日対応
+        assert "I2:I1002" in schedule_ranges  # 有効
         # GroupSetting には choices 列が無い
         settings_ws = wb[f"PY_{GroupSetting.SHEET_NAME}"]
         assert list(settings_ws.data_validations.dataValidation) == []

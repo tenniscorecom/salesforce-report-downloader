@@ -44,6 +44,26 @@ ROWS = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "2
 
 HEADERS = [
     "ID",
+    "グループ",
+    "担当者",
+    "概要",
+    "Salesforce URL",
+    "有効",
+    "0件あり",
+    "2000件超",
+    "SOQL",
+]
+# 設定シートの見出し。`make_master()` の `settings_rows` 引数で使う
+GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
+
+# `master_rows` の各行は「歴史的な都合」で旧順序（ID/概要/Salesforce URL/
+# グループ/担当者/有効/0件あり/2000件超/SOQL）で書かれている。`ReportEntry`
+# の宣言順が新スキーマ（ID/グループ/担当者/概要/Salesforce URL/有効/0件あり/
+# 2000件超/SOQL）になったので、`make_master` 側で機械的に新順序へ並び替える。
+# テスト本体（値の並び）は旧順序のまま書けるので、検証意図が読みやすい状態を
+# 保てる
+_OLD_MASTER_HEADER_ORDER = [
+    "ID",
     "概要",
     "Salesforce URL",
     "グループ",
@@ -53,8 +73,7 @@ HEADERS = [
     "2000件超",
     "SOQL",
 ]
-# 設定シートの見出し。`make_master()` の `settings_rows` 引数で使う
-GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
+_OLD_TO_NEW_INDEX = tuple(_OLD_MASTER_HEADER_ORDER.index(h) for h in HEADERS)
 
 
 def _row(*values) -> list:
@@ -76,6 +95,11 @@ def _row(*values) -> list:
     return [*values, *[""] * (len(HEADERS) - len(values))]
 
 
+def _reorder_master_row_to_new_order(filled: list) -> list:
+    """``_row()`` の戻り値（旧順序で長さを揃えたリスト）を新順序 ``HEADERS`` に並び替える。"""
+    return [filled[i] for i in _OLD_TO_NEW_INDEX]
+
+
 def make_master(
     path: Path,
     rows: list[list],
@@ -87,7 +111,10 @@ def make_master(
     ``0件あり`` / ``2000件超`` / ``SOQL`` は空文字で埋めても読み込み側で
     ``False`` 既定として扱われる）。
     """
-    table_rows = [dict(zip(HEADERS, _row(*row), strict=True)) for row in rows]
+    table_rows = [
+        dict(zip(HEADERS, _reorder_master_row_to_new_order(_row(*row)), strict=True))
+        for row in rows
+    ]
     with Excel(path) as book:
         book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
         if settings_rows is not None:
@@ -1171,7 +1198,7 @@ class TestDownloadScheduled:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "月", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "月", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1188,7 +1215,7 @@ class TestDownloadScheduled:
         """スケジュール行が「今は要る (True)」を返したレポートは対象に入る。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        # 水曜 12:00 固定 → 「毎週・水曜・09:00」は `now.time() >= run_time` で True
+        # 水曜 12:00 固定 → 「毎週・水曜・09:00」は `now.time() >= start_time` で True
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
             tmp_path / "管理表.xlsx",
@@ -1204,7 +1231,7 @@ class TestDownloadScheduled:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "水", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1235,8 +1262,8 @@ class TestDownloadScheduled:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "月", "取得しない", "○"],
-                ["S002", "1001", "毎週", "09:00", "水", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "月", "", "取得しない", "○"],
+                ["S002", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1274,8 +1301,8 @@ class TestDownloadScheduled:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "水", "取得しない", "○"],
-                ["S002", "1001", "毎週", "13:00", "水", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
+                ["S002", "1001", "毎週", "13:00", "", "水", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1325,7 +1352,7 @@ class TestScheduleDedup:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "水", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1369,7 +1396,7 @@ class TestScheduleDedup:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "水", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1428,7 +1455,7 @@ class TestScheduleDedup:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "水", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1479,8 +1506,8 @@ class TestScheduleDedup:
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
                 # 月曜 09:00 と水曜 09:00 の 2 行で `1001` を取得する設定
-                ["S_MON", "1001", "毎週", "09:00", "月", "取得しない", "○"],
-                ["S_WED", "1001", "毎週", "09:00", "水", "取得しない", "○"],
+                ["S_MON", "1001", "毎週", "09:00", "", "月", "", "取得しない", "○"],
+                ["S_WED", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1544,10 +1571,10 @@ def make_master_with_schedule(
     """
     master_headers = [
         "ID",
-        "概要",
-        "Salesforce URL",
         "グループ",
         "担当者",
+        "概要",
+        "Salesforce URL",
         "有効",
         "0件あり",
         "2000件超",
@@ -1557,13 +1584,16 @@ def make_master_with_schedule(
         "スケジュールキー",
         "レポートキー",
         "取得頻度",
+        "取得開始時刻",
         "取得時刻",
         "曜日",
+        "日付",
         "祝日対応",
         "有効",
     ]
     master_table_rows = [
-        dict(zip(master_headers, _row(*row), strict=True)) for row in master_rows
+        dict(zip(master_headers, _reorder_master_row_to_new_order(_row(*row)), strict=True))
+        for row in master_rows
     ]
     schedule_table_rows = [dict(zip(schedule_headers, row, strict=True)) for row in schedule_rows]
     with Excel(path) as book:
@@ -2009,7 +2039,7 @@ class TestTruncatedSkip:
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
             schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "水", "取得しない", "○"],
+                ["S001", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
             ],
         )
         history_path = tmp_path / "履歴.csv"

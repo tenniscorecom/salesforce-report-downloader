@@ -71,7 +71,8 @@ SCHEDULE_EXAMPLES: list[dict[str, Any]] = [
         "schedule_key": "S001",
         "report_key": "1001",
         "frequency": "毎日",
-        "run_time": None,
+        "start_time": None,
+        "desired_time": None,
         "raw_weekday": "",
         "raw_day_of_month": "",
         "holiday_policy": "取得しない",
@@ -248,8 +249,9 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
     （1行目）を読んで列位置を探すので、列の並び順は問わない。
 
     ドロップダウンを付ける対象は `ScheduleRule.column_specs()` から動的に拾う
-    （``choices`` が宣言された列）。`祝日対応` は自由記述のため対象外
-    （意図的。「取得しない」以外は「祝日でも取得する」という自由な表現を許す）。
+    （``choices`` が宣言された列）。`祝日対応` は「取得しない」「取得する」の
+    2値プルダウン（`HOLIDAY_SKIP` / `HOLIDAY_FETCH`）。「曜日」「日付」「取得時刻」
+    （記録用）は自由記述のため対象外。
 
     Args:
         path: 「スケジュール」シートを持つ Excel ファイル（既存）。
