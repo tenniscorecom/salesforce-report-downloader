@@ -19,7 +19,7 @@ from pathlib import Path
 from comken.core.clock import now
 from comken.exceptions import GroupNotRegisteredError, HistoryHeaderMismatchError, HistoryWriteError
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
-from comken.services.salesforce_downloader.provider import file_path_of
+from comken.services.salesforce_downloader.provider import output_path
 from comken.services.salesforce_downloader.sheets.history import (
     COLUMNS,
     FAILURE,
@@ -47,7 +47,7 @@ def record(
     Args:
         path: 履歴 CSV のパス。
         entry: 管理表1行。管理番号・概要・レポートID・URLはこの中身を履歴に出す。
-            保存先は `file_path_of()` で組み立て直した値を出す（`_resolved_folder()`）。
+            保存先は `output_path()` で組み立て直した値を出す（`_resolved_folder()`）。
         project: 呼び出したプロジェクト名。
         row: 履歴1行の本体（成否・各段階の結果・件数・エラー）。
     """
@@ -91,13 +91,13 @@ def record(
 def _resolved_folder(entry: ReportEntry) -> str:
     """保存先フォルダを文字列にする。
 
-    ``file_path_of()`` は管理表の「グループ」列が設定シートに無いと
+    ``output_path()`` は管理表の「グループ」列が設定シートに無いと
     ``GroupNotRegisteredError`` を送出する。**失敗の履歴記録中にこのエラーで
     さらに失敗すると、本来の失敗原因（Salesforce側のエラー等）ごと履歴に残せず、
     誰も追跡できなくなる**ため、ここでは握りつぶして理由を文字列として残す。
     """
     try:
-        return str(file_path_of(entry).parent)
+        return str(output_path(entry).parent)
     except GroupNotRegisteredError as exc:
         return f"(保存先を組み立てられません: {exc})"
 

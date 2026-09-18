@@ -44,14 +44,13 @@ r"""src/salesforce_downloader/service.py — 取得の本体。
 - 履歴にどんな列があるか・読み取り方 → comken の history.py
 - 履歴への書き込み方 → history_writer.py
 - Salesforce の認証・API の叩き方 → comken/toolbox/salesforce/
-- 取得済みファイルの取り出し（`cached_report` / `file_path_of`）→ comken の provider.py
+- 取得済みファイルの取り出し（`cached_report` / `output_path`）→ comken の provider.py
 - 管理表・履歴の置き場所（`MASTER_PATH` / `HISTORY_PATH`）→ comken の paths.py
 - 管理表から1行を引く `_find()` → comken の provider.py（`requests` を経由しない側に置く）
 """
 
 import datetime as dt
 import logging
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -76,11 +75,7 @@ from comken.services.salesforce_downloader.paths import (
     HISTORY_PATH,
     MASTER_PATH,
 )
-from comken.services.salesforce_downloader.provider import (
-    daily_cache_path_of,
-    file_path_of,
-    rpa_output_path,
-)
+from comken.services.salesforce_downloader.provider import output_path
 from comken.services.salesforce_downloader.sheets import history
 from comken.services.salesforce_downloader.sheets.history import HistoryRow
 from comken.services.salesforce_downloader.sheets.master import (
@@ -304,8 +299,9 @@ def _download(
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
-    ``schedule_run_time`` は 9291 向けの固定名/準固定名の出力ファイル名（``新規``
-    モード時）にスケジュール時刻を埋め込むために ``_save()`` まで運ぶ。
+    ``schedule_run_time`` は唯一の出力ファイル名にスケジュール時刻を埋め込むために
+    ``_save()`` まで運ぶ（``output_path(entry, schedule_run_time)`` で
+    ``%Y%m%d_%H%M`` のタイムスタンプ値として使われる）。
     スケジュール行が無いレポート（後方互換、``schedule_key == ""``）は ``None``
     のままでよく、``_save()`` 側で現在時刻にフォールバックする。
     """
@@ -314,7 +310,6 @@ def _download(
         _require_folder(entry)
         table = _fetch(entry, filters)
         path = _save(entry, table, schedule_run_time=schedule_run_time)
-        _update_daily_cache(entry, path)
     except Exception as exc:
         try:
             attempt.record_failure(exc)
@@ -340,13 +335,13 @@ def _require_folder(entry: ReportEntry) -> None:
     作らずに失敗させる。無いのは書き間違いのことが多く、勝手に作ると
     誰も読まない場所へ置き続けることになる。
 
-    保存先フォルダは `file_path_of()` が内部で `report_folder()` 経由で
-    組み立てる（管理表の「グループ」「担当者」「概要」＋設定シートの
-    「ベースURL」）。`entry.group` が設定シートに無い場合はここより先に
+    保存先フォルダは `output_path()` が内部で `report_folder()` 経由で
+    組み立てる（管理表の「グループ」＋設定シートの「ベースURL」）。
+    `entry.group` が設定シートに無い場合はここより先に
     `GroupNotRegisteredError` が上がる（フォルダの有無より先に、
     そもそも出力先を決められないという、より根本的なエラーとして扱う）。
     """
-    folder = file_path_of(entry).parent
+    folder = output_path(entry, schedule_run_time=None).parent
     if not folder.is_dir():
         raise ReportFolderNotFoundError(entry.key, folder)
 
@@ -451,38 +446,24 @@ def _save(
     ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
 
-    既存の社内RPA（9291）向けの固定名/準固定名出力は、この関数の末尾で
-    ``rpa_output_path()`` から組み立てたパスへ同じテーブルを書き出す。**既存の
-    履歴ファイル・当日キャッシュの保存フローは変えず、追加の出力として並べる**。
-    「上書き」モードは意図的に同じパスへ毎回書く（9291互換）、「新規」モードは
-    ``_reserve_unique_path()`` で衝突回避して連番を付ける。
+    保存先は ``output_path()`` が返す単一のパス（``{管理番号}_{スケジュール時刻}.csv``）。
+    衝突回避は ``_reserve_unique_path()`` で常に（連番 ``_1`` / ``_2`` … を付けて）。
+    同じパスへの上書きは想定しない — ``cached_report()`` 側はフォルダ内検索で
+    当日分の最新ファイルを返すので、何度実行しても履歴と当日の最新状態は崩れない。
 
-    **失敗時の後始末について:** 9291 向け出力の書き込みが例外の原因になった
-    場合は、既存の履歴ファイルと同じくこの ``_save()`` から例外が伝搬し、
+    **失敗時の後始末について:** 書き込みが例外の原因になった場合は、既存の
     ``_download()`` の ``except Exception`` 経路で ``_Attempt.record_failure()``
-    を経由して ``ScheduledDownloadFailedError`` に変換される。9291 向けの予約
-    パスも ``unlink(missing_ok=True)`` で後始末する。**「9291 出力だけ失敗して
-    も定期取得全体は止めない」という分岐は作らない**（派生出力の失敗を本体の
-    成功扱いすると、9291 側が「今日は古いファイルを読む」事故が見えなくなる
-    ため、既存の履歴ファイル失敗と同じ責務で扱う）。
+    を経由して ``ScheduledDownloadFailedError`` に変換される。書きかけのファイルも
+    ``unlink(missing_ok=True)`` で後始末する。
     """
-    path = _reserve_path(entry)
-    # 9291 向け出力（追加）。``report_name`` / ``save_mode`` は ReportEntry の
-    # 必須列（既定値なし）なので、読み込めた entry では常に非空の値が入っている
-    rpa_path = rpa_output_path(entry, schedule_run_time)
+    path = _reserve_unique_path(output_path(entry, schedule_run_time), entry.key)
     try:
         # 問い合わせは成功したが明細が無い。**0件あり × なら失敗扱い、○ なら正常終了**
         if not table and not entry.allow_empty:
             raise EmptyReportError(entry.key, entry.summary, entry.url)
         _write_csv(path, table)
-        if rpa_path != path:
-            if entry.save_mode == "新規":
-                rpa_path = _reserve_unique_path(rpa_path, entry.key)
-            _write_csv(rpa_path, table)
     except Exception:
         path.unlink(missing_ok=True)
-        if rpa_path != path:
-            rpa_path.unlink(missing_ok=True)
         raise
     return path
 
@@ -508,24 +489,6 @@ def _reserve_unique_path(base_path: Path, report_key: str) -> Path:
             sequence += 1
             candidate = base_path.with_stem(f"{base_path.stem}_{sequence}")
     raise ReportReservePathLimitError(report_key, base_path, RESERVE_PATH_LIMIT)
-
-
-def _reserve_path(entry: ReportEntry) -> Path:
-    """``_reserve_unique_path`` を ``file_path_of(entry)`` ベースで呼ぶ薄いラッパー。
-
-    既存の呼び出し側との互換のために残している。新規コード（9291 向け出力など
-    ベースパスが違うもの）は ``_reserve_unique_path`` を直接呼んでもよい。
-    """
-    return _reserve_unique_path(file_path_of(entry), entry.key)
-
-
-def _update_daily_cache(entry: ReportEntry, saved_path: Path) -> None:
-    """時刻付き保管ファイルを残したまま、当日最新キャッシュを原子的に更新する。"""
-    cache_path = daily_cache_path_of(entry)
-    with atomic_write(cache_path) as temporary_path:
-        # レポート全体をメモリへ読み込むと、大きなCSVでメモリ不足になりうる。
-        # ファイル同士をストリームコピーし、書き終わったあとでatomicに入れ替える。
-        shutil.copyfile(saved_path, temporary_path)
 
 
 def _write_csv(path: Path, table: Table) -> None:
@@ -620,10 +583,10 @@ def _select_targets(
     2回目以降の定期実行が常に成功扱いになり、RPA基盤が失敗に気づけない）。
 
     戻り値の ``targets`` は ``(ReportEntry, schedule_key, ScheduleRule | None)``
-    の3要素タプル。``ScheduleRule`` を一緒に運ぶのは、9291 向け出力のファイル名
-    （「新規」モード時のスケジュール時刻埋め込み）に ``run_time`` が必要だから。
-    ``ScheduleRule`` が ``None`` のときはスケジュール行が無いレポート（後方互換）
-    で、その場合は ``rpa_output_path()`` 側で現在時刻にフォールバックする。
+    の3要素タプル。``ScheduleRule`` を一緒に運ぶのは、唯一の出力ファイル名に
+    スケジュール時刻を埋め込むために ``run_time`` が必要だから。``ScheduleRule`` が
+    ``None`` のときはスケジュール行が無いレポート（後方互換）で、その場合は
+    ``output_path()`` 側で現在時刻にフォールバックする。
 
     Returns:
         ``(targets, already_failed)``。``targets`` は実際に取得を試みる

@@ -26,8 +26,6 @@ ENTRY = ReportEntry(
     assignee="山田",
     enabled=True,
     allow_empty=False,
-    report_name="顧客一覧.csv",
-    save_mode="上書き",
 )
 SOQL_ENTRY = replace(ENTRY, use_soql=True)
 # 「2000件超」も同時に○の行では「SOQL」列が優先される、を確かめる用

@@ -59,16 +59,19 @@ class TestCreateTemplateReportEntry:
         path = create_template(tmp_path / "管理表.xlsx", ReportEntry)
         sheet = load_workbook(path)["PY_管理表"]
         headers = [cell.value for cell in sheet[1]]
-        # ReportEntry の宣言順（9291 向け「出力ファイル名」「保存方式」を含む）
-        assert headers[:8] == [
+        # ReportEntry の宣言順。2026-09 に「出力ファイル名」「保存方式」列は
+        # 廃止され、フォルダ階層の組み立てにも「担当者」「概要」を使わなくなった
+        # （記録用として管理表には残っている）ので、9列の宣言順そのままになる
+        assert headers == [
             "ID",
             "概要",
             "Salesforce URL",
             "グループ",
             "担当者",
-            "出力ファイル名",
-            "保存方式",
             "有効",
+            "0件あり",
+            "2000件超",
+            "SOQL",
         ]
 
     def test_examples_point_at_different_reports(self, tmp_path):
@@ -92,14 +95,14 @@ class TestCreateTemplateReportEntry:
         path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
         ws = load_workbook(path)["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
-        # ReportEntry の `choices` 列は「保存方式」「有効」「0件あり」「2000件超」「SOQL」
-        # の 5 つ。新2列追加で列位置が ``+2`` ずれている（保存方式=7 列目、有効=8 列目）
+        # ReportEntry の `choices` 列は「有効」「0件あり」「2000件超」「SOQL」の 4 つ。
+        # 宣言順は ID/概要/Salesforce URL/グループ/担当者/有効/0件あり/2000件超/SOQL の
+        # 9 列で、`choices` 付きは 6 列目以降なのでドロップダウンは F〜I 列に付く。
         # 最下行は _FIRST_DATA_ROW(2) + 例(2) - 1 + _DATA_VALIDATION_ROWS(1000) = 1003
-        assert "G2:G1003" in ranges  # 保存方式
-        assert "H2:H1003" in ranges  # 有効
-        assert "I2:I1003" in ranges  # 0件あり
-        assert "J2:J1003" in ranges  # 2000件超
-        assert "K2:K1003" in ranges  # SOQL
+        assert "F2:F1003" in ranges  # 有効
+        assert "G2:G1003" in ranges  # 0件あり
+        assert "H2:H1003" in ranges  # 2000件超
+        assert "I2:I1003" in ranges  # SOQL
 
     def test_template_font_is_noto_sans_jp(self, tmp_path):
         """雛形（表シート・記入方法シートとも）のフォントが Noto Sans JP。"""
@@ -306,10 +309,13 @@ class TestCreateCombinedWorkbook:
         wb = load_workbook(path)
         report_ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         report_ranges = sorted(str(v.sqref) for v in report_ws.data_validations.dataValidation)
-        # 9291 向けの「保存方式」列と「有効」列のドロップダウンがある
-        # （新2列追加で列位置が ``+2`` ずれている）
-        assert "G2:G1003" in report_ranges  # 保存方式
-        assert "H2:H1003" in report_ranges  # 有効
+        # `choices` 列は「有効」「0件あり」「2000件超」「SOQL」の 4 つ。
+        # 列宣言順は ID/概要/Salesforce URL/グループ/担当者/有効/0件あり/2000件超/SOQL なので
+        # ドロップダウンは F〜I 列に付く（9291 向け列の廃止で ``+2`` ずれは無くなった）
+        assert "F2:F1003" in report_ranges  # 有効
+        assert "G2:G1003" in report_ranges  # 0件あり
+        assert "H2:H1003" in report_ranges  # 2000件超
+        assert "I2:I1003" in report_ranges  # SOQL
         schedule_ws = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
         schedule_ranges = sorted(str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
         assert "C2:C1002" in schedule_ranges

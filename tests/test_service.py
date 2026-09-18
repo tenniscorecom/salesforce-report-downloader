@@ -44,71 +44,36 @@ ROWS = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "2
 
 HEADERS = [
     "ID",
-    "グループ",
-    "担当者",
     "概要",
     "Salesforce URL",
-    "有効",
-    "出力ファイル名",
-    "保存方式",
-    "備考",
-]
-# `0件あり` 列を足した見出し。列が無い管理表でも既定 `×` で読めることを確かめる
-# ため、`paths` fixture は ``HEADERS`` の 9 列のままで固定する
-HEADERS_WITH_ALLOW_EMPTY = [
-    "ID",
     "グループ",
     "担当者",
-    "概要",
-    "Salesforce URL",
     "有効",
     "0件あり",
-    "出力ファイル名",
-    "保存方式",
-    "備考",
+    "2000件超",
+    "SOQL",
 ]
-# 設定シートの見出し。`make_master()` / `make_master_with_allow_empty()` の
-# `settings_rows` 引数で使う
+# 設定シートの見出し。`make_master()` の `settings_rows` 引数で使う
 GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
 
-# 9291 向け列のテスト用既定値。**必須列だが、既存の rows を書き換えずに済むよう**
-# ヘルパー側で補完する（テストヘルパーの都合。本番の管理表には影響しない）。
-_DEFAULT_REPORT_NAME = "顧客一覧.csv"
-_DEFAULT_SAVE_MODE = "上書き"
 
+def _row(*values) -> list:
+    """``values`` を ``HEADERS`` の長さまで空文字で埋めたリストを返す。
 
-def _row_with_defaults(headers: list[str], row: list) -> list:
-    """``headers`` の長さまで補完した行を返す。
+    テストでは必須項目だけ書きたい場面が多く、毎回 9 列フルで値を並べるのは
+    読みにくい。短い引数列を ``HEADERS`` に合わせて右側を ``""`` で埋めるだけ
+    の薄いヘルパーに留めて、各テストが「**何を検証したいか**」を読み取りやすい
+    形を保つ。
 
-    既存の rows パラメータは新2列を含まない 7/8 列の形式で、末尾は「備考」列の
-    値になっている。ヘルパー側では新2列を「備考」列の**直前**に挿入する
-    （``HEADERS`` / ``HEADERS_WITH_ALLOW_EMPTY`` で「出力ファイル名」「保存方式」が
-    「備考」の前に来る配置のため）。
-
-    行数が ``headers`` を超える場合は ``ValueError`` で、書き間違いに気づける
-    ようにする。新2列以外の不足（例: 古い列定義への対応）はこのヘルパーの対象外。
-
-    元の ``row`` が全要素 ``None`` / 空文字のときは空行扱い (``_is_blank``) を
-    維持するため、補完した列も ``None`` のままにする。``[None] * 7`` のような
-    「表の下に残った空行」を再現するテストで重要。
+    列数が ``HEADERS`` を超える場合は ``ValueError`` で、列構成の変更に気づける
+    ようにする。``[None] * N`` のような「表の下に残った空行」を再現するテストは
+    このヘルパーではなく、直接 ``dict(zip(...))`` で組む。
     """
-    if len(row) > len(headers):
+    if len(values) > len(HEADERS):
         raise ValueError(
-            f"行データ {row} は見出し {headers} より長い（{len(row)} > {len(headers)}）"
+            f"行データ {values} は見出し {HEADERS} より長い（{len(values)} > {len(HEADERS)}）"
         )
-    if len(row) == len(headers):
-        return row
-    short_count = len(headers) - len(row)
-    if short_count != 2:
-        # 想定しているのは「出力ファイル名」「保存方式」の2列不足のみ
-        raise ValueError(
-            f"行データ {row} は見出し {headers} より {short_count} 列短い（想定は2列不足）"
-        )
-    if all(value in (None, "") for value in row):
-        # 空行は補完後も空のまま（読み込み側で ``_is_blank`` が拾う）
-        return list(row) + [None] * short_count
-    # 末尾の「備考」値を残し、その直前に新2列の既定値を入れる
-    return [*row[:-1], _DEFAULT_REPORT_NAME, _DEFAULT_SAVE_MODE, row[-1]]
+    return [*values, *[""] * (len(HEADERS) - len(values))]
 
 
 def make_master(
@@ -118,48 +83,13 @@ def make_master(
 ) -> Path:
     """管理表（Excel）を作る。設定シートも一緒に作るかは ``settings_rows`` で切り替える。
 
-    各 ``row`` が ``HEADERS`` より短い場合は、末尾の新2列（``出力ファイル名`` /
-    ``保存方式``）を ``_DEFAULT_*`` で補完する。
+    各 ``row`` は ``_row(*row)`` で ``HEADERS`` の 9 列に揃える（既定値を持つ
+    ``0件あり`` / ``2000件超`` / ``SOQL`` は空文字で埋めても読み込み側で
+    ``False`` 既定として扱われる）。
     """
-    table_rows = [
-        dict(zip(HEADERS, _row_with_defaults(HEADERS, row), strict=True)) for row in rows
-    ]
+    table_rows = [dict(zip(HEADERS, _row(*row), strict=True)) for row in rows]
     with Excel(path) as book:
         book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
-        if settings_rows is not None:
-            settings_table_rows = [
-                dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
-            ]
-            book.create_data_sheet("設定").create_table(
-                "設定", Table(GROUP_SETTINGS_HEADERS, settings_table_rows)
-            )
-    return path
-
-
-def make_master_with_allow_empty(
-    path: Path,
-    rows: list[list],
-    settings_rows: list[list] | None = None,
-) -> Path:
-    """`0件あり` 列を含む管理表（Excel）を作る。
-
-    テスト1, 2, 3, 5, 6 で使う。テスト4（列が無くても読める）はあえて `make_master` の
-    6 列版を使うので、ここでは7列版を別途用意する。
-    """
-    table_rows = [
-        dict(
-            zip(
-                HEADERS_WITH_ALLOW_EMPTY,
-                _row_with_defaults(HEADERS_WITH_ALLOW_EMPTY, row),
-                strict=True,
-            )
-        )
-        for row in rows
-    ]
-    with Excel(path) as book:
-        book.create_data_sheet("管理表").create_table(
-            "管理表", Table(HEADERS_WITH_ALLOW_EMPTY, table_rows)
-        )
         if settings_rows is not None:
             settings_table_rows = [
                 dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
@@ -183,44 +113,39 @@ def paths(tmp_path, monkeypatch):
     `1002`（=有効）は Excel 出力テストが直接管理表を作る側で検証するため、
     ここでは**無効**にして対象外にしている。`1003` も無効。
 
-    出力先フォルダは Excel には書かず、設定シート（`グループ` → ベースパス）と
-    管理表の `担当者` / `概要` で組み立てる。`report_folder()` の組み立て結果と
-    一致するよう、`ベース` 配下に `担当者` / `概要` のフォルダを pre-create する。
+    出力先フォルダは設定シート（`グループ` → ベースパス）のみで組み立てる。
+    2026-09 に「担当者 / 概要」のフォルダ階層は廃止されたので、`ベース` 配下に
+    pre-create するのは `ベース` 自体だけ（`担当者` / `概要` のサブフォルダは
+    作らない）。
     """
     base_path = tmp_path / "ベース"
     base_path.mkdir()
-    for assignee in ("山田", "佐藤"):
-        for summary in ("顧客一覧", "売上実績", "停止中"):
-            (base_path / assignee / summary).mkdir(parents=True, exist_ok=True)
     master = make_master(
         tmp_path / "レポート管理表.xlsx",
         [
             [
                 "1001",
-                "営業事務グループ",
-                "山田",
                 "顧客一覧",
                 URL_A,
+                "営業事務グループ",
+                "山田",
                 "○",
-                "",
             ],
             [
                 "1002",
-                "経理グループ",
-                "佐藤",
                 "売上実績",
                 URL_B,
+                "経理グループ",
+                "佐藤",
                 "×",
-                "",
             ],
             [
                 "1003",
-                "営業事務グループ",
-                "山田",
                 "停止中",
                 URL_B,
+                "営業事務グループ",
+                "山田",
                 "×",
-                "",
             ],
         ],
         settings_rows=[
@@ -248,7 +173,7 @@ def paths(tmp_path, monkeypatch):
 def _reset_provider_cache():
     """``provider._load_group_settings_cached()`` のプロセス内キャッシュをテストごとに破棄する。
 
-    ``file_path_of`` / ``report_folder`` が内部で ``MASTER_PATH`` をキーに
+    ``output_path`` / ``report_folder`` が内部で ``MASTER_PATH`` をキーに
     設定シートを読むため、前のテストで作ったキャッシュが次のテストの設定シート
     読込に混入しないようにする。``test_provider.py`` と同じ ``autouse=True`` で
     全テストに作用させる。
@@ -320,14 +245,11 @@ class TestLoadMaster:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "顧客一覧.csv",
-                    "上書き",
-                    "",
                 ],
                 [None] * 9,
             ],
@@ -340,21 +262,19 @@ class TestLoadMaster:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ],
                 [
                     "1001",
-                    "別の部署",
-                    "別の担当",
                     "別の名前",
                     URL_B,
+                    "別の部署",
+                    "別の担当",
                     "○",
-                    "",
                 ],
             ],
         )
@@ -367,12 +287,11 @@ class TestLoadMaster:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     "https://example.com/",
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
         )
@@ -387,12 +306,11 @@ class TestLoadMaster:
             [
                 [
                     "A001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
         )
@@ -414,12 +332,11 @@ class TestSharedReportIds:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
         )
@@ -505,27 +422,36 @@ class TestDownloadScheduledRecord:
         スケジュール行が無いレポートは ``downloaded_today()`` ベースで
         1 日 1 回までに制限される（後方互換）。よって 2 回目はスキップされ、
         Salesforce へ問い合わせない。
+
+        出力は ``{ベースパス}/{管理番号}_{日付}_{時刻}.csv`` の単一ファイルに
+        1本化されたので、ファイル数は 1 件だけ存在する。
         """
         site = fake_salesforce()
         with patch("src.salesforce_downloader.service.site_for", return_value=site):
             download_scheduled()
             download_scheduled()
-        # 1 回目だけ取得される。「時刻付き保管ファイル」1 件 + 「日次キャッシュ」
-        # 1 件で合計 2 件（`1001` = 山田 / 顧客一覧）
-        saved = list((paths["base_path"] / "山田" / "顧客一覧").glob("1001_*.csv"))
-        assert len(saved) == 2
+        # 1 回目だけ取得される。出力は単一ファイル（時刻付き）の 1 件だけ
+        saved = list(paths["base_path"].glob("1001_*.csv"))
+        assert len(saved) == 1
         # `report.get()` は 1 回しか呼ばれない（2 回目はスキップ）
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
 
     def test_existing_collision_is_not_overwritten(self, paths, monkeypatch):
-        collision = paths["base_path"] / "山田" / "顧客一覧" / "1001_顧客一覧_fixed.csv"
+        """`output_path()` が指す先に既にファイルがあっても上書きせず `_1` 付きで
+        別ファイルが作られる（``_reserve_unique_path`` の連番動作）。"""
+        # 出力先パスを固定するため `clock_now` を差し止める（`service` と `provider` の
+        # 両方が `clock_now` をローカル束縛にしているので両方差し替える必要がある）
+        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(provider_module, "clock_now", lambda: fixed_now)
+        collision = paths["base_path"] / "1001_20260918_0930.csv"
         collision.write_text("既存", encoding="utf-8")
-        monkeypatch.setattr(service_module, "file_path_of", lambda unused: collision)
         with patch("src.salesforce_downloader.service.site_for", return_value=fake_salesforce()):
             download_scheduled()
+        # 既存ファイルは上書きされない
         assert collision.read_text(encoding="utf-8") == "既存"
         # もう1つ作られたファイル = 衝突回避で _1 が付いたファイル
-        archive = paths["base_path"] / "山田" / "顧客一覧" / "1001_顧客一覧_fixed_1.csv"
+        archive = paths["base_path"] / "1001_20260918_0930_1.csv"
         assert archive.exists()
 
     def test_reserve_path_raises_when_all_sequential_names_are_taken(self, paths, monkeypatch):
@@ -538,18 +464,21 @@ class TestDownloadScheduledRecord:
         """
         # テスト時間短縮のため、上限を小さい値に下げる
         monkeypatch.setattr(service_module, "RESERVE_PATH_LIMIT", 5)
-        # ファイル名に日付・時刻が入るので、 file_path_of をモックして固定名にする
-        # （`1001` = 山田 / 顧客一覧）
-        report_dir = paths["base_path"] / "山田" / "顧客一覧"
-        base = report_dir / "1001_顧客一覧.csv"
-        monkeypatch.setattr(service_module, "file_path_of", lambda unused: base)
+        # 出力先パスを固定するため `clock_now` を差し止める（`service` と `provider` の
+        # 両方が `clock_now` をローカル束縛にしているので両方差し替える必要がある）
+        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(provider_module, "clock_now", lambda: fixed_now)
+        base = paths["base_path"] / "1001_20260918_0930.csv"
 
         # ベース名と ``_1`` 〜 ``_4`` までの連番を全部作っておく（計5ファイル）。
-        # ``_reserve_path`` は base と ``_1`` 〜 ``_4`` を試して全部 FileExistsError
+        # ``_reserve_unique_path`` は base と ``_1`` 〜 ``_4`` を試して全部 FileExistsError
         # になると、上限に達して例外を上げる
         for sequence in range(5):
-            candidate = base if sequence == 0 else report_dir / f"1001_顧客一覧_{sequence}.csv"
-
+            if sequence == 0:
+                candidate = base
+            else:
+                candidate = paths["base_path"] / f"1001_20260918_0930_{sequence}.csv"
             candidate.write_text("埋まり", encoding="utf-8")
 
         with (
@@ -590,29 +519,28 @@ class TestDownloadScheduledRecord:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        # `1001` = 山田 / 顧客一覧 の配下に CSV は作られない
-        assert list((paths["base_path"] / "山田" / "顧客一覧").glob("*.csv")) == []
+        # `1001` の CSV は作られない
+        assert list(paths["base_path"].glob("1001_*.csv")) == []
 
     def test_missing_folder_raises_and_is_not_created(self, tmp_path, monkeypatch):
-        """設定シートにグループは登録されているが、組み立て先のフォルダが実在しない場合に
+        """設定シートにグループは登録されているが、組み立て先のベースパスが実在しない場合に
         ``ScheduledDownloadFailedError`` で抜け、そのフォルダが**作られない**ことを確認する。
 
-        「グループ未登録」ではなく「フォルダ未作成」のケースを再現するため、
-        ``base_path`` 自体は作るが ``base_path / 山田 / 顧客一覧`` は作らない。
+        2026-09 にフォルダ階層は「ベースパスのみ」に1本化されたので、「フォルダが
+        無い」ケースは「ベースパス自体が無い」ケースになる。設定シートには
+        正しいグループ／ベースパスを書くが、``base_path`` ディレクトリは作らない。
         """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
+        base_path = tmp_path / "ベース"  # 存在しないフォルダを指す（``mkdir`` しない）
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -626,12 +554,14 @@ class TestDownloadScheduledRecord:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        assert not (base_path / "山田" / "顧客一覧").exists()
+        # ベースパスは自動作成されない
+        assert not base_path.exists()
 
     def test_no_temporary_file_is_left_behind(self, paths):
         with patch("src.salesforce_downloader.service.site_for", return_value=fake_salesforce()):
             download_scheduled()
-        assert list((paths["base_path"] / "山田" / "顧客一覧").glob("~*")) == []
+        # `atomic_write()` 由来の一時ファイル（``~`` プレフィックス）は残らない
+        assert list(paths["base_path"].glob("~*")) == []
 
 
 class TestHistory:
@@ -681,22 +611,21 @@ class TestHistory:
         """組み立てた保存先フォルダが無い → 成否=失敗 / Salesforce取得結果=空 /
         保存結果=空 / エラーコード=ReportFolderNotFoundError。
 
-        設定シートには正しくグループを登録しておくが、``担当者`` / ``概要`` の
-        フォルダ自体を作らないことで「フォルダ未作成」のケースを再現する。
+        2026-09 にフォルダ階層は「ベースパスのみ」に1本化されたので、「フォルダが
+        無い」ケースは「ベースパス自体が無い」ケースになる。設定シートには正しい
+        グループ／ベースパスを書くが、``base_path`` ディレクトリは作らない。
         """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
+        base_path = tmp_path / "ベース"  # 存在しないフォルダを指す（``mkdir`` しない）
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -731,18 +660,16 @@ class TestHistory:
 
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -796,18 +723,16 @@ class TestHistory:
         Salesforce取得結果=成功 / 保存結果=失敗 / エラーコード=送出された例外クラス名。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -853,22 +778,21 @@ class TestHistory:
     def test_cause_is_config_when_folder_is_missing(self, tmp_path, monkeypatch):
         """組み立てた保存先フォルダが無い → 「設定」（取得段階に入る前に落ちる）。
 
-        設定シートにグループは登録するが、``担当者`` / ``概要`` のフォルダは
-        作らない（「フォルダ未作成」のケースを再現する）。
+        2026-09 にフォルダ階層は「ベースパスのみ」に1本化されたので、「フォルダが
+        無い」ケースは「ベースパス自体が無い」ケースになる。設定シートには
+        正しいベースパスを書くが、``base_path`` ディレクトリは作らない。
         """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
+        base_path = tmp_path / "ベース"  # 存在しないフォルダを指す（``mkdir`` しない）
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -893,18 +817,16 @@ class TestHistory:
 
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -953,18 +875,16 @@ class TestHistory:
         """CSV 書き込みが OSError で失敗 → 「ファイル」（共有サーバー・権限）。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -993,18 +913,16 @@ class TestHistory:
         """_fetch() が TypeError を投げる（comken 側のバグ想定）→ 「プログラム」。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1043,40 +961,36 @@ class TestDownloadScheduled:
     def test_one_failure_does_not_stop_the_rest(self, tmp_path, monkeypatch):
         """1 件でフォルダ未作成エラーが出ても、別件は保存される。
 
-        ``1001`` は ``ベース / 営業事務グループ`` だけ作って ``山田 / 落ちる方``
-        を作らない＝フォルダ未作成エラーを起こす。``1002`` は
-        ``ベース / 経理グループ / 佐藤 / 通る方`` まで全部作って成功させる。
+        2026-09 にフォルダ階層が「ベースパスのみ」に1本化されたので、
+        ``1001`` のグループ設定だけ存在しないベースパスを指すようにして
+        「フォルダ未作成エラー」を起こし、``1002`` は既存パスに繋ぐ。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        # "1001" 用: 山田 / 落ちる方 のフォルダは作らない（=フォルダ未作成エラー）
-        # "1002" 用: 佐藤 / 通る方 まで作る
-        (base_path / "佐藤" / "通る方").mkdir(parents=True)
+        missing_path = tmp_path / "存在しない"
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "落ちる方",
                     URL_A,
+                    "落ちる方のグループ",
+                    "山田",
                     "○",
-                    "",
                 ],
                 [
                     "1002",
-                    "経理グループ",
-                    "佐藤",
                     "通る方",
                     URL_B,
+                    "通る方のグループ",
+                    "佐藤",
                     "○",
-                    "",
                 ],
             ],
             settings_rows=[
-                ["営業事務グループ", str(base_path)],
-                ["経理グループ", str(base_path)],
+                ["落ちる方のグループ", str(missing_path)],
+                ["通る方のグループ", str(base_path)],
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
@@ -1089,39 +1003,34 @@ class TestDownloadScheduled:
         ):
             download_scheduled()
         # "1001" で失敗しても "1002" は保存されている（続けたうえで最後に知らせる）。
-        # `*.csv` には時刻付き保管ファイル（1件）と日次キャッシュ（1件）、9291 向けの
-        # 固定名出力（1件）が入る。9291 出力の固定名は管理表の ``report_name`` 列
-        # （テストヘルパーの補完値で `顧客一覧.csv`）になる
-        saved_dir = base_path / "佐藤" / "通る方"
-        keys = sorted(path.name.split("_")[0] for path in saved_dir.glob("*.csv"))
-        assert keys == ["1002", "1002", "顧客一覧.csv"]
+        # 出力は単一ファイル化されているので、`*.csv` は ``1002`` のもの 1 件だけ
+        keys = sorted(path.name.split("_")[0] for path in base_path.glob("1002_*.csv"))
+        assert keys == ["1002"]
+        # ``1001`` のフォルダ（存在しない）には当然ファイルは無い
+        assert not missing_path.exists()
 
     def test_os_error_does_not_stop_the_rest(self, tmp_path, monkeypatch):
+        """1 件で保存時 OSError が出ても、別件は保存される。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        for assignee in ("山田", "佐藤"):
-            for summary in ("書込失敗", "取得成功"):
-                (base_path / assignee / summary).mkdir(parents=True, exist_ok=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "書込失敗",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ],
                 [
                     "1002",
-                    "経理グループ",
-                    "佐藤",
                     "取得成功",
                     URL_B,
+                    "経理グループ",
+                    "佐藤",
                     "○",
-                    "",
                 ],
             ],
             settings_rows=[
@@ -1132,10 +1041,10 @@ class TestDownloadScheduled:
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         original_write_csv = service_module._write_csv
 
-        def fail_first_write(path, rows):
+        def fail_first_write(path, table):
             if path.name.startswith("1001_"):
                 raise OSError("共有サーバーへ書き込めません")
-            original_write_csv(path, rows)
+            original_write_csv(path, table)
 
         with (
             patch(
@@ -1147,61 +1056,33 @@ class TestDownloadScheduled:
         ):
             download_scheduled()
 
-        # 成功した "1002" のフォルダだけを見る。9291 向けの固定名出力（補完値で
-        # `顧客一覧.csv`）も作られている
-        saved_dir = base_path / "佐藤" / "取得成功"
-        keys = sorted(path.name.split("_")[0] for path in saved_dir.glob("*.csv"))
-        assert keys == ["1002", "1002", "顧客一覧.csv"]
-
-    def test_cache_update_failure_keeps_archive_and_marks_failure(self, paths):
-        with (
-            patch(
-                "src.salesforce_downloader.service.site_for",
-                return_value=fake_salesforce(),
-            ),
-            patch.object(
-                service_module,
-                "_update_daily_cache",
-                side_effect=OSError("キャッシュ更新失敗"),
-            ),
-            pytest.raises(ScheduledDownloadFailedError),
-        ):
-            download_scheduled()
-
-        # `1001` = 山田 / 顧客一覧 のフォルダだけ見る
-        assert len(list((paths["base_path"] / "山田" / "顧客一覧").glob("1001_*.csv"))) == 1
-        row = _history_rows(paths)[-1]
-        assert row["成否"] == "失敗"
-        assert row["保存結果"] == "失敗"
+        # 成功した "1002" のファイルだけが残る（出力は単一ファイル化）
+        keys = sorted(path.name.split("_")[0] for path in base_path.glob("1002_*.csv"))
+        assert keys == ["1002"]
 
     def test_unexpected_error_stops_the_run_immediately(self, tmp_path, monkeypatch):
         """想定外（`TypeError` など）はその場で抜ける。`ScheduledDownloadFailedError` には
         変換しない（非エンジニアが「もう一度実行してみる」を繰り返すだけになるため）。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        for assignee in ("山田", "佐藤"):
-            for summary in ("想定外", "通る方"):
-                (base_path / assignee / summary).mkdir(parents=True, exist_ok=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "想定外",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ],
                 [
                     "1002",
-                    "経理グループ",
-                    "佐藤",
                     "通る方",
                     URL_B,
+                    "経理グループ",
+                    "佐藤",
                     "○",
-                    "",
                 ],
             ],
             settings_rows=[
@@ -1230,7 +1111,7 @@ class TestDownloadScheduled:
             download_scheduled()
         # 想定外で止めたので、2件目は保存されない
         # （続けた結果の ScheduledDownloadFailedError ではないことを確認）
-        assert list((base_path / "佐藤" / "通る方").glob("*.csv")) == []
+        assert list(base_path.glob("1002_*.csv")) == []
 
     def test_records_the_trigger_as_scheduled(self, paths):
         """`download_scheduled()` で取った記録は履歴に `プロジェクト` 名で残る。"""
@@ -1246,18 +1127,16 @@ class TestDownloadScheduled:
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1275,22 +1154,19 @@ class TestDownloadScheduled:
         """スケジュール行が「今は要らない (False)」を返したレポートは対象から外れる。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "曜日外し").mkdir(parents=True)
         # 水曜 12:00 固定 → 「毎週・月曜・09:00」は曜日不一致で False
-        fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        # 「スケジュール」シートを足した管理表を作る（既存の make_master を使うため、
-        # 直接 Excel を組み立てる）
+        fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        # 「スケジュール」シートを足した管理表を作る
         master = make_master_with_schedule(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "曜日外し",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1306,13 +1182,12 @@ class TestDownloadScheduled:
             saved = download_scheduled()
         # スケジュールの判定で外れるので、保存されない
         assert saved == []
-        assert list((base_path / "山田" / "曜日外し").glob("*.csv")) == []
+        assert list(base_path.glob("1001_*.csv")) == []
 
     def test_schedule_rule_due_includes_report(self, tmp_path, monkeypatch):
         """スケジュール行が「今は要る (True)」を返したレポートは対象に入る。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "曜日一致").mkdir(parents=True)
         # 水曜 12:00 固定 → 「毎週・水曜・09:00」は `now.time() >= run_time` で True
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
@@ -1320,12 +1195,11 @@ class TestDownloadScheduled:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "曜日一致",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1345,7 +1219,6 @@ class TestDownloadScheduled:
         """同じレポートに複数行があり、どれか1つでも is_due() なら対象に入る（OR 条件）。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "OR判定").mkdir(parents=True)
         # 水曜 12:00 固定 → 1行目（月曜）は曜日外れ、2行目（水曜）は一致
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
@@ -1353,12 +1226,11 @@ class TestDownloadScheduled:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "OR判定",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1386,7 +1258,6 @@ class TestDownloadScheduled:
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "遅い時刻優先").mkdir(parents=True)
         # 水曜 13:00 固定 → どちらの行も is_due=True だが、遅い時刻の S002 を採用
         fixed_now = dt.datetime(2026, 1, 7, 13, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
@@ -1394,12 +1265,11 @@ class TestDownloadScheduled:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "遅い時刻優先",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1434,22 +1304,23 @@ class TestScheduleDedup:
 
     def test_second_call_for_same_schedule_key_is_skipped(self, tmp_path, monkeypatch):
         """同じスケジュール行（=同じ schedule_key）に紐付くレポートは、当日中に
-        成功履歴があれば 2 回目の `download_scheduled()` で再取得されない。"""
+        成功履歴があれば 2 回目の `download_scheduled()` で再取得されない。
+
+        出力は単一ファイル化（時刻付き 1 件）なので、ファイル数の期待値も 1 件。
+        """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "曜日一致").mkdir(parents=True)
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "曜日一致",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1467,10 +1338,9 @@ class TestScheduleDedup:
             download_scheduled()
         # 1 回目だけ Salesforce へ問い合わせる（2 回目は履歴を見てスキップ）
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
-        # 1 回目だけ取得されるので、保存ファイルは「時刻付き保管」+「日次キャッシュ」
-        # の 2 件だけ
-        saved = list((base_path / "山田" / "曜日一致").glob("1001_*.csv"))
-        assert len(saved) == 2
+        # 1 回目だけ取得されるので、保存ファイルは時刻付きの 1 件だけ
+        saved = list(base_path.glob("1001_*.csv"))
+        assert len(saved) == 1
         # 履歴の「スケジュールキー」列に、根拠のキーが記録されている
         with CSV(tmp_path / "履歴.csv") as csv_file:
             rows = csv_file.read()
@@ -1484,19 +1354,17 @@ class TestScheduleDedup:
         2 回目は再取得される（失敗を繰り返さない運用にするため）。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "曜日一致").mkdir(parents=True)
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "曜日一致",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1545,19 +1413,17 @@ class TestScheduleDedup:
         追えなくなるため）。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "曜日一致").mkdir(parents=True)
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "曜日一致",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1597,19 +1463,17 @@ class TestScheduleDedup:
         is_due=True になれば重複として防がれる。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "複数スケジュール").mkdir(parents=True)
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "複数スケジュール",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1680,14 +1544,14 @@ def make_master_with_schedule(
     """
     master_headers = [
         "ID",
-        "グループ",
-        "担当者",
         "概要",
         "Salesforce URL",
+        "グループ",
+        "担当者",
         "有効",
-        "出力ファイル名",
-        "保存方式",
-        "備考",
+        "0件あり",
+        "2000件超",
+        "SOQL",
     ]
     schedule_headers = [
         "スケジュールキー",
@@ -1699,8 +1563,7 @@ def make_master_with_schedule(
         "有効",
     ]
     master_table_rows = [
-        dict(zip(master_headers, _row_with_defaults(master_headers, row), strict=True))
-        for row in master_rows
+        dict(zip(master_headers, _row(*row), strict=True)) for row in master_rows
     ]
     schedule_table_rows = [dict(zip(schedule_headers, row, strict=True)) for row in schedule_rows]
     with Excel(path) as book:
@@ -1771,19 +1634,17 @@ class TestAllowEmpty:
         履歴の `原因区分` が `データなし`。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
-        master = make_master_with_allow_empty(
+        master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "×",
-                    "",
+                    "×",  # 0件あり = ×
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1801,7 +1662,7 @@ class TestAllowEmpty:
             download_scheduled()
 
         # ファイルは作られない
-        assert list((base_path / "山田" / "顧客一覧").glob("*.csv")) == []
+        assert list(base_path.glob("1001_*.csv")) == []
         # 履歴には `データなし` が残る（取得成功・保存未到達の組合せのみ取り得る）
         with CSV(history_path) as csv_file:
             row = csv_file.read()[-1]
@@ -1815,22 +1676,23 @@ class TestAllowEmpty:
         self, tmp_path, monkeypatch
     ):
         """2. `0件あり` が `○` で 0 行 → 例外にならない、空のファイルができる、
-        履歴が `成否=成功` / `取得件数=0` / `原因区分` が空。"""
+        履歴が `成否=成功` / `取得件数=0` / `原因区分` が空。
+
+        出力は単一ファイル化（時刻付き 1 件）なので、ファイル数の期待値も 1 件。
+        """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
-        master = make_master_with_allow_empty(
+        master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "○",
-                    "",
+                    "○",  # 0件あり = ○
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1844,10 +1706,9 @@ class TestAllowEmpty:
         ):
             download_scheduled()  # 例外にならない
 
-        # 0 行でも Salesforce の列情報を持つ CSV が作られる。`*.csv` には
-        # 時刻付き保管ファイルと日次キャッシュの 2 件が `1001` で作られる
-        saved = list((base_path / "山田" / "顧客一覧").glob("1001_*.csv"))
-        assert len(saved) == 2
+        # 0 行でも Salesforce の列情報を持つ CSV が作られる（単一ファイルの 1 件）
+        saved = list(base_path.glob("1001_*.csv"))
+        assert len(saved) == 1
         with CSV(saved[0], read_only=True) as csv_file:
             assert csv_file.read().columns == ["名前", "金額"]
 
@@ -1865,19 +1726,17 @@ class TestAllowEmpty:
         """0件で成功した定期取得は、本日取得済みとして空のまま受け取れる。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
-        master = make_master_with_allow_empty(
+        master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "○",
-                    "",
+                    "○",  # 0件あり = ○
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1904,19 +1763,19 @@ class TestAllowEmpty:
         """4. `0件あり` の列が無い管理表でも読める（既定 `×` として扱われる）。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True)
-        # 7 列のまま = `0件あり` 列が無い管理表
+        # `0件あり` 列が無い管理表 = ``_row`` の 6 要素で打ち切る版（``_row`` が
+        # ``HEADERS`` の長さまで ``""`` で埋める都合、空文字のセルが `×` 既定として
+        # 読まれる）
         master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -1937,22 +1796,21 @@ class TestAllowEmpty:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        assert list((base_path / "山田" / "顧客一覧").glob("*.csv")) == []
+        assert list(base_path.glob("1001_*.csv")) == []
 
     def test_invalid_allow_empty_value_raises(self, tmp_path):
         """5. `0件あり` に `○` `×` 以外を書くとエラーになる（choices で弾く）。"""
-        master = make_master_with_allow_empty(
+        master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "△",
-                    "",
+                    "△",  # 0件あり = 無効値
                 ]
             ],
         )
@@ -1968,30 +1826,26 @@ class TestAllowEmpty:
         `ScheduledDownloadFailedError` にならない。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        for assignee, summary in (("山田", "空でもOK"), ("佐藤", "普通のレポート")):
-            (base_path / assignee / summary).mkdir(parents=True, exist_ok=True)
-        master = make_master_with_allow_empty(
+        master = make_master(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "空でもOK",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "○",
-                    "",
+                    "○",  # 0件あり = ○
                 ],
                 [
                     "1002",
-                    "経理グループ",
-                    "佐藤",
                     "普通のレポート",
                     URL_B,
+                    "経理グループ",
+                    "佐藤",
                     "○",
-                    "×",
-                    "",
+                    "×",  # 0件あり = ×
                 ],
             ],
             settings_rows=[
@@ -2136,23 +1990,21 @@ class TestTruncatedSkip:
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
 
     def test_truncated_skip_works_with_schedule_key(self, tmp_path, monkeypatch):
-        """スケジュール行に紐付くレポートでも、当日 truncated 済みなら
+        """日程行に紐付くレポートでも、当日 truncated 済みなら
         2回目の ``download_scheduled()`` で再取得されない。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        (base_path / "山田" / "2000件超の履歴").mkdir(parents=True)
         fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         master = make_master_with_schedule(
             tmp_path / "管理表.xlsx",
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "2000件超の履歴",
                     URL_A,
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
             settings_rows=[["営業事務グループ", str(base_path)]],
@@ -2199,234 +2051,13 @@ class TestCommandLine:
             [
                 [
                     "1001",
-                    "営業事務グループ",
-                    "山田",
                     "顧客一覧",
                     "https://example.com/",
+                    "営業事務グループ",
+                    "山田",
                     "○",
-                    "",
                 ]
             ],
         )
         assert cli(["check", str(master)]) == 1
         assert "エラー:" in capsys.readouterr().err
-
-
-class TestRpaOutput:
-    """既存の社内RPA（9291）向けの固定名/準固定名出力の振る舞い。
-
-    既存の ``file_path_of()`` / ``daily_cache_path_of()`` の出力と
-    **並列に** 動くこと、「上書き」と「新規」のモードでパス組み立てが
-    切り替わること、衝突時に連番が付くこと、を確かめる。
-    """
-
-    @staticmethod
-    def _make_scheduled_master(
-        tmp_path: Path,
-        base_path: Path,
-        *,
-        save_mode: str,
-        report_name: str = "月次受注.csv",
-    ) -> tuple[Path, Path]:
-        """「スケジュール」シート付きの 9291 向け管理表を作ってパスを返す。
-
-        ``monkeypatch`` 経由のパス差し替えは呼び出し側で行う（fixture の
-        ``monkeypatch`` とヘルパーを切り離すため）。
-        """
-        (base_path / "山田" / "顧客一覧").mkdir(parents=True, exist_ok=True)
-        master = make_master_with_schedule(
-            tmp_path / "管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "営業本部",
-                    "山田",
-                    "顧客一覧",
-                    URL_A,
-                    "○",
-                    report_name,
-                    save_mode,
-                    "",
-                ]
-            ],
-            settings_rows=[["営業本部", str(base_path)]],
-            schedule_rows=[
-                ["S001", "1001", "毎日", "09:00", "", "取得しない", "○"],
-            ],
-        )
-        history_path = tmp_path / "履歴.csv"
-        return master, history_path
-
-    def test_overwrite_mode_writes_to_fixed_name_each_run(self, tmp_path, monkeypatch):
-        """「上書き」モードでは、何度 ``download_scheduled()`` を呼んでも
-        ``report_name`` の固定パスが**毎回上書き**される。
-        既存の ``file_path_of()`` / ``daily_cache_path_of()`` のパスは
-        時刻付き保管ファイルと当日キャッシュの2件がそのまま残る。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master, history_path = self._make_scheduled_master(
-            tmp_path, base_path, save_mode="上書き", report_name="月次受注.csv"
-        )
-        # monkeypatch で ``None`` を渡したので入れ直す
-        _patch_master_path(monkeypatch, master, history_path)
-        # 「今」を 2026-09-18 09:30 に固定 (スケジュール 09:00 を過ぎている)
-        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
-
-        site = fake_salesforce()
-        with patch("src.salesforce_downloader.service.site_for", return_value=site):
-            download_scheduled()
-
-        # 9291 向けの固定名ファイルが置かれている
-        rpa_path = base_path / "山田" / "顧客一覧" / "月次受注.csv"
-        assert rpa_path.is_file()
-        with CSV(rpa_path, read_only=True) as csv_file:
-            assert csv_file.read().to_rows() == ROWS
-
-        # 既存の保管ファイル + 当日キャッシュも置かれている（変わらない）。
-        # 時刻付き保管ファイルは ``1001_顧客一覧_YYYYMMDD_HHMMSS_ffffff.csv`` の形で、
-        # 当日キャッシュ (``1001_顧客一覧_YYYYMMDD.csv``) とは ``_`` で分けた要素数で
-        # 区別できる
-        report_dir = base_path / "山田" / "顧客一覧"
-        archive_files = [
-            path
-            for path in report_dir.glob("1001_顧客一覧_*.csv")
-            if len(path.stem.split("_")) >= 5
-        ]
-        assert len(archive_files) == 1  # 時刻付き保管ファイル1件
-        daily_cache = report_dir / "1001_顧客一覧_20260918.csv"
-        assert daily_cache.is_file()
-
-        # もう一度実行: 9291 固定名ファイルは同じパスを**上書き**する
-        second_site = fake_salesforce(rows=[{"名前": "上書き後", "金額": "999"}])
-        # 履歴に既に成功記録があるため、再実行しても dedup でスキップされる。
-        # dedup を迂回するため、履歴を消す
-        history_path.unlink()
-        with patch("src.salesforce_downloader.service.site_for", return_value=second_site):
-            download_scheduled()
-
-        assert rpa_path.is_file()
-        with CSV(rpa_path, read_only=True) as csv_file:
-            assert csv_file.read().to_rows() == [{"名前": "上書き後", "金額": "999"}]
-        # 保管ファイルはもう一度作られる（時刻付き）。合計2件
-        archive_files = [
-            path
-            for path in report_dir.glob("1001_顧客一覧_*.csv")
-            if len(path.stem.split("_")) >= 5
-        ]
-        assert len(archive_files) == 2
-
-    def test_new_mode_creates_separate_file_per_run(self, tmp_path, monkeypatch):
-        """「新規」モードでは、実行ごとに別名（スケジュール時刻 ``%Y%m%d_%H%M`` 付き）
-        でファイルが残る。既存パス（保管ファイル・当日キャッシュ）への影響は無い。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master, history_path = self._make_scheduled_master(
-            tmp_path, base_path, save_mode="新規", report_name="月次受注.csv"
-        )
-        _patch_master_path(monkeypatch, master, history_path)
-        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
-
-        site = fake_salesforce()
-        with patch("src.salesforce_downloader.service.site_for", return_value=site):
-            download_scheduled()
-
-        # 9291 向けの準固定名ファイル（スケジュール時刻ベース）が作られる
-        rpa_path = base_path / "山田" / "顧客一覧" / "月次受注_20260918_0900.csv"
-        assert rpa_path.is_file()
-
-        # 既存の保管ファイル・当日キャッシュもそのまま
-        report_dir = base_path / "山田" / "顧客一覧"
-        archive_files = [
-            path
-            for path in report_dir.glob("1001_顧客一覧_*.csv")
-            if len(path.stem.split("_")) >= 5
-        ]
-        assert len(archive_files) == 1
-        daily_cache = report_dir / "1001_顧客一覧_20260918.csv"
-        assert daily_cache.is_file()
-
-    def test_new_mode_adds_sequence_number_on_collision(
-        self, tmp_path, monkeypatch
-    ):
-        """「新規」モードでスケジュール時刻が同じ別レポートの 9291 出力と衝突した場合、
-        ``_1`` / ``_2`` の連番が付く（既存の ``_reserve_unique_path`` と同じ動作）。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        # 衝突を再現するため、ベースパスの先に同名のファイルを置いておく
-        report_dir = base_path / "山田" / "顧客一覧"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        existing = report_dir / "月次受注_20260918_0900.csv"
-        existing.write_text("既存ファイル", encoding="utf-8")
-
-        master, history_path = self._make_scheduled_master(
-            tmp_path, base_path, save_mode="新規", report_name="月次受注.csv"
-        )
-        _patch_master_path(monkeypatch, master, history_path)
-        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
-
-        site = fake_salesforce()
-        with patch("src.salesforce_downloader.service.site_for", return_value=site):
-            download_scheduled()
-
-        # 元のファイルはそのまま残り、新しいファイルは ``_1`` 付きで書かれる
-        assert existing.read_text(encoding="utf-8") == "既存ファイル"
-        rpa_with_seq = report_dir / "月次受注_20260918_0900_1.csv"
-        assert rpa_with_seq.is_file()
-        with CSV(rpa_with_seq, read_only=True) as csv_file:
-            assert csv_file.read().to_rows() == ROWS
-
-    def test_master_without_rpa_columns_raises(self, tmp_path, monkeypatch):
-        """``report_name`` / ``save_mode`` 列が無い管理表（旧版）は ``load_master()``
-        で ``MasterColumnNotFoundError`` が出て ``download_scheduled()`` 全体が
-        起動しない（必須列のため、空欄も列自体が無いのも同じ扱い）。
-        """
-        # 新2列を含まない 7 列の管理表を作って ``download_scheduled()`` を呼ぶ
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        # 行データを「新規」の補完が効かないように、明示的に9列で渡して ``report_name``
-        # 列だけヘッダから抜く形にできない（``make_master`` 経由だと ``HEADERS`` が
-        # 9列固定のため）。代わりに ``make_master_with_schedule`` の ``master_headers``
-        # に新2列を含めず8列にして ``load_master`` で ``MasterColumnNotFoundError``
-        # を期待する
-        master = tmp_path / "管理表.xlsx"
-        legacy_headers = [
-            "ID",
-            "グループ",
-            "担当者",
-            "概要",
-            "Salesforce URL",
-            "有効",
-            "備考",
-        ]
-        legacy_rows = [
-            {
-                "ID": "1001",
-                "グループ": "営業本部",
-                "担当者": "山田",
-                "概要": "顧客一覧",
-                "Salesforce URL": URL_A,
-                "有効": "○",
-                "備考": "",
-            }
-        ]
-        with Excel(master) as book:
-            book.create_data_sheet("管理表").create_table(
-                "管理表", Table(legacy_headers, legacy_rows)
-            )
-        _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-
-        from comken.exceptions import MasterColumnNotFoundError
-
-        with pytest.raises(MasterColumnNotFoundError) as caught:
-            download_scheduled()
-        # 「出力ファイル名」列が無いことが報告される（必須列のため）
-        assert "出力ファイル名" in str(caught.value)

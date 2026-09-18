@@ -25,8 +25,6 @@ ENTRY = ReportEntry(
     assignee="山田",
     enabled=True,
     allow_empty=False,
-    report_name="顧客一覧.csv",
-    save_mode="上書き",
 )
 EXCEEDS_ENTRY = replace(ENTRY, exceeds_row_limit=True)
 
