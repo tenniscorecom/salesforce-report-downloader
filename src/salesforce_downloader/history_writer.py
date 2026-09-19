@@ -19,7 +19,8 @@ from pathlib import Path
 
 from comken.constants import Encoding
 from comken.core.clock import now
-from comken.exceptions import GroupNotRegisteredError, HistoryHeaderMismatchError, HistoryWriteError
+from comken.core.files import atomic_write
+from comken.exceptions import GroupNotRegisteredError, HistoryWriteError
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
 from comken.services.salesforce_downloader.provider import output_path
 from comken.services.salesforce_downloader.sheets.history import (
@@ -27,6 +28,7 @@ from comken.services.salesforce_downloader.sheets.history import (
     FAILURE,
     SUCCESS,
     HistoryRow,
+    migrate_row,
 )
 from comken.services.salesforce_downloader.sheets.master import ReportEntry
 from comken.toolbox.csv import read_text
@@ -121,7 +123,7 @@ def _append(path: Path, values: list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     is_new = not path.exists() or path.stat().st_size == 0
     if not is_new:
-        _validate_existing_header(path)
+        _migrate_if_needed(path)
     with path.open("a", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
         if is_new:
@@ -129,19 +131,51 @@ def _append(path: Path, values: list) -> None:
         writer.writerow(values)
 
 
-def _validate_existing_header(path: Path) -> None:
-    """追記前に見出しを確認し、違う列へ値をずらして書く事故を防ぐ。
+def _migrate_if_needed(path: Path) -> None:
+    """既存見出しが古い構成なら、ファイル全体を新しい ``COLUMNS`` に書き換える。
 
-    comken 側の `history._require_expected_header()` と同じ判定だが、あちらは
-    パッケージ内部専用（アンダースコア付き）のため、ここでは同じ判定をこの
-    ファイル内で直接行う（`COLUMNS` は comken 側の共有契約からそのまま import
-    しているので、判定基準そのものが2箇所で食い違うことはない）。
+    既に ``COLUMNS`` と一致しているときは何もしない（毎回ファイル全体を
+    書き換えるのは無駄なので、変更が必要なときだけ動かす）。``COLUMNS`` の
+    増減・並び替えがあっても、運用中の履歴は ``migrate_row()`` で吸収して
+    新しい ``COLUMNS`` の見出しに揃え直す。
 
-    文字コードの判定も同じヘルパー（`comken.toolbox.csv.read_text()`）を
-    経由する。プログラムが書く分は UTF-8 BOM 付きだが、人が Excel で開いて
-    保存し直すと CP932 へ化けるため、読み込み側で吸収する。
+    文字コードは ``read_text()`` の自動判定（UTF-8 BOM / CP932）で吸収する。
+    人が Excel で開いて保存し直すと CP932 へ化けるため、プログラムが書く
+    UTF-8 BOM 以外のエンコーディングでも読み込める必要がある。書き換え後は
+    次の ``_append()`` と同じく UTF-8 BOM 付きへ正規化する（同じ ``_append()``
+    ループからの追記と整合させるため）。
+
+    この書き換えは ``HistoryFileLock`` の中で呼び出される前提になっている
+    （``_append()`` の呼び出し経路が ``with HistoryFileLock(path):`` 内）。
     """
     text = read_text(path, encoding=Encoding.AUTO)
     actual = tuple(next(csv.reader(io.StringIO(text)), None) or ())
-    if actual != COLUMNS:
-        raise HistoryHeaderMismatchError(path, actual, COLUMNS)
+    if actual == COLUMNS:
+        return  # 既に最新構成
+    if not actual:
+        # 見出しすら無い壊れたファイルは触らない。``_append()`` がそのまま
+        # 追記を進めて、二重見出しなどの更なる事故を防ぐ
+        logger.debug(
+            "履歴マイグレーションをスキップ（見出しなし）: path=%s", path
+        )
+        return
+    # 古い見出し → 全行を新しい COLUMNS に揃え直してアトミックに書き換え
+    reader = csv.DictReader(io.StringIO(text), fieldnames=actual)
+    next(reader, None)  # ヘッダー行を捨てる
+    migrated_rows = [migrate_row(row) for row in reader]
+    logger.debug(
+        "履歴マイグレーション開始: path=%s, 古い列=%s → 新しい列=%s, 行数=%d",
+        path,
+        actual,
+        COLUMNS,
+        len(migrated_rows),
+    )
+    with (
+        atomic_write(path) as temporary_path,
+        temporary_path.open("w", encoding="utf-8-sig", newline="") as f,
+    ):
+        writer = csv.writer(f)
+        writer.writerow(COLUMNS)
+        for row in migrated_rows:
+            writer.writerow([row.get(column, "") for column in COLUMNS])
+    logger.debug("履歴マイグレーション完了: path=%s", path)

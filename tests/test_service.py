@@ -7,6 +7,7 @@ MASTER_PATH / HISTORY_PATH は `monkeypatch.setattr` で一時ディレクトリ
 差し替える。利用側の API には管理表や履歴のパスを渡せない（設計判断）。
 """
 
+import csv
 import datetime as dt
 from dataclasses import replace
 from pathlib import Path
@@ -744,6 +745,361 @@ class TestHistory:
         assert row["Salesforce取得結果"] == "成功"
         assert row["保存結果"] == ""
         assert row["エラーコード"] == "EmptyReportError"
+
+    # ── 履歴CSVの列構成マイグレーション（COLUMNS 追加・削除・並び替え） ──
+    def _seed_legacy_history(
+        self,
+        history_path: Path,
+        *,
+        header: list[str],
+        row: list[str],
+    ) -> None:
+        """テスト用: 任意の見出し・値の履歴CSVを ``history_path`` に書く。
+
+        ``COLUMNS`` と違う列構成を試したいテストで使う。``_append()`` の
+        「新規ファイル＝見出しを書く」分岐を経由せず、``_migrate_if_needed()``
+        の経路を直接テストするため、書き込みは Python 標準の ``csv.writer`` で
+        直接行う。出力は ``_append()`` と同じく UTF-8 BOM 付きにする。
+        """
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        with history_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerow(row)
+
+    def _record_for(
+        self,
+        history_path: Path,
+        *,
+        key: str,
+        summary: str,
+        url: str,
+        group: str,
+        assignee: str,
+        file_name: str,
+    ) -> None:
+        """テスト用: ``record()`` を ``paths`` fixture の差し替え経由で呼ぶ。
+
+        ``_resolved_folder()`` が ``provider.output_path()`` を経由するため、
+        管理表が ``MASTER_PATH`` に実在しないと ``ExcelFileNotFoundError``
+        に近い失敗をする。fixture 経由で ``MASTER_PATH`` / ``HISTORY_PATH`` を
+        差し替えてから呼ぶ。
+        """
+        from comken.services.salesforce_downloader.sheets.master import ReportEntry
+
+        from src.salesforce_downloader.history_writer import record
+
+        entry = ReportEntry(
+            key=key,
+            summary=summary,
+            url=url,
+            group=group,
+            assignee=assignee,
+            enabled=True,
+            allow_empty=False,
+        )
+        record(
+            history_path,
+            entry=entry,
+            project="定期実行",
+            row=history.HistoryRow(
+                succeeded=True,
+                fetched_from_salesforce=True,
+                saved_to_file=True,
+                file_name=file_name,
+                row_count=2,
+                seconds=0.20,
+            ),
+        )
+
+    def test_record_migrates_legacy_header_with_extra_column(self, tmp_path, monkeypatch):
+        """古い列構成（COLUMNS に無い列が末尾にある）履歴CSVに対して
+        ``record()`` を呼ぶと、ファイル全体を新 ``COLUMNS`` に揃え直してから
+        新しい1行を追記する。既存行の値は保持される。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        # 末尾に「旧バージョン列」を足した18列の見出しと 18 列の行
+        legacy_header = [*history.COLUMNS, "旧バージョン列"]
+        legacy_row = [
+            "2024-01-01 09:00:00",
+            "1001",
+            "",
+            "顧客一覧",
+            "00O5g00000ABCDE",
+            URL_A,
+            "定期実行",
+            "成功",
+            "成功",
+            "成功",
+            "顧客一覧",
+            "a.csv",
+            "1",
+            "0.10",
+            "",
+            "",
+            "",
+            "旧バージョン列の値",
+        ]
+        self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)
+        self._record_for(
+            history_path,
+            key="1001",
+            summary="顧客一覧",
+            url=URL_A,
+            group="営業事務グループ",
+            assignee="山田",
+            file_name="b.csv",
+        )
+
+        # 書き換え後の見出しは最新の ``COLUMNS`` と一致している
+        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+            actual_header = next(csv.reader(f))
+        assert actual_header == list(history.COLUMNS)
+
+        # 既存行は保持される（「旧バージョン列」の値は無視されて ``COLUMNS`` 順で並ぶ）
+        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        # マイグレーションされた既存行
+        assert rows[0]["管理番号"] == "1001"
+        assert rows[0]["ファイル名"] == "a.csv"
+        # 新しく追記された行
+        assert rows[1]["管理番号"] == "1001"
+        assert rows[1]["ファイル名"] == "b.csv"
+        assert rows[1]["プロジェクト"] == "定期実行"
+
+    def test_record_migrates_legacy_header_with_missing_last_column(self, tmp_path, monkeypatch):
+        """古い列構成（COLUMNS の末尾列が無い）履歴CSVに対して ``record()`` を
+        呼ぶと、新 ``COLUMNS`` に揃え直してから追記する。欠けた列は空文字で埋まる。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        # 「エラー内容」を抜いた16列の見出し
+        legacy_header = list(history.COLUMNS[:-1])
+        legacy_row = [
+            "2024-01-01 09:00:00",
+            "1001",
+            "",
+            "顧客一覧",
+            "00O5g00000ABCDE",
+            URL_A,
+            "定期実行",
+            "成功",
+            "成功",
+            "成功",
+            "顧客一覧",
+            "a.csv",
+            "1",
+            "0.10",
+            "",
+            "",
+        ]
+        self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)
+        self._record_for(
+            history_path,
+            key="1001",
+            summary="顧客一覧",
+            url=URL_A,
+            group="営業事務グループ",
+            assignee="山田",
+            file_name="b.csv",
+        )
+
+        # 見出しは新 ``COLUMNS`` になっている
+        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+            actual_header = next(csv.reader(f))
+        assert actual_header == list(history.COLUMNS)
+
+        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        # 既存行：抜けた列（エラー内容）が空文字で埋められる
+        assert rows[0]["エラー内容"] == ""
+        assert rows[0]["管理番号"] == "1001"
+        # 追記行
+        assert rows[1]["管理番号"] == "1001"
+        assert rows[1]["ファイル名"] == "b.csv"
+
+    def test_record_migrates_legacy_header_with_reordered_columns(self, tmp_path, monkeypatch):
+        """古い列構成（COLUMNS の順序入れ替え）履歴CSVに対して ``record()`` を
+        呼ぶと、新 ``COLUMNS`` 順に揃え直してから追記する。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        # 「管理番号」「実行日時」「成否」を先頭に並べ替えた古い構成
+        reordered_header = [
+            "管理番号",
+            "実行日時",
+            "成否",
+            *[
+                column
+                for column in history.COLUMNS
+                if column not in {"管理番号", "実行日時", "成否"}
+            ],
+        ]
+        reordered_row = [
+            "1001",
+            "2024-01-01 09:00:00",
+            "成功",
+            "",  # スケジュールキー
+            "顧客一覧",  # 概要
+            "00O5g00000ABCDE",  # レポートID
+            URL_A,  # URL
+            "定期実行",  # プロジェクト
+            "成功",  # Salesforce取得結果
+            "成功",  # 保存結果
+            "顧客一覧",  # 保存先
+            "a.csv",  # ファイル名
+            "1",  # 取得件数
+            "0.10",  # 処理秒数
+            "",  # 原因区分
+            "",  # エラーコード
+            "",  # エラー内容
+        ]
+        self._seed_legacy_history(history_path, header=reordered_header, row=reordered_row)
+        self._record_for(
+            history_path,
+            key="1001",
+            summary="顧客一覧",
+            url=URL_A,
+            group="営業事務グループ",
+            assignee="山田",
+            file_name="b.csv",
+        )
+
+        # 見出しは新 ``COLUMNS`` になっている
+        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+            actual_header = next(csv.reader(f))
+        assert actual_header == list(history.COLUMNS)
+
+        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        # 既存行：``migrate_row`` で新 ``COLUMNS`` 順に並ぶため、列名で値を取れる
+        assert rows[0]["管理番号"] == "1001"
+        assert rows[0]["成否"] == "成功"
+        assert rows[0]["ファイル名"] == "a.csv"
+        # 追記行
+        assert rows[1]["管理番号"] == "1001"
+        assert rows[1]["ファイル名"] == "b.csv"
+
+    def test_record_does_not_rewrite_when_header_is_already_current(self, tmp_path, monkeypatch):
+        """既に新 ``COLUMNS`` になっている履歴CSVに対しては、``record()`` 呼び出しで
+        ファイル全体を書き直さない（既存実装のロック区間内動作と同じ）。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        # ``COLUMNS`` と同じ見出しで書き出しておく
+        with history_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(list(history.COLUMNS))
+            writer.writerow(
+                [
+                    "2024-01-01 09:00:00",
+                    "1001",
+                    "",
+                    "顧客一覧",
+                    "00O5g00000ABCDE",
+                    URL_A,
+                    "定期実行",
+                    "成功",
+                    "成功",
+                    "成功",
+                    "顧客一覧",
+                    "a.csv",
+                    "1",
+                    "0.10",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+
+        self._record_for(
+            history_path,
+            key="1001",
+            summary="顧客一覧",
+            url=URL_A,
+            group="営業事務グループ",
+            assignee="山田",
+            file_name="b.csv",
+        )
+
+        # 既存行は保持されたまま追記されている
+        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        assert rows[0]["ファイル名"] == "a.csv"
+        assert rows[1]["ファイル名"] == "b.csv"
 
     def test_history_when_csv_write_fails(self, tmp_path, monkeypatch):
         """Salesforce 取得は成功したが CSV 書き込みが失敗 → 成否=失敗 /
