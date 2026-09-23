@@ -1,4 +1,4 @@
-"""src/salesforce_downloader/template_writer.py — 雛形生成（管理表・スケジュール・設定）。
+"""src/template_writer.py — 雛形生成（管理表・スケジュール・設定）。
 
 **2026-09 に comken から切り出した。** comken の `report_master.py` には雛形生成の
 API が無い（読み込み・検証に集中する）。雛形生成は利用側プロジェクトの運用ニーズに

@@ -12,7 +12,7 @@ WinActor（社内RPA基盤）等から**高頻度（例: 1 時間おき）で繰
 
     レポート管理表.xlsx（非エンジニアが編集）
             ↓
-    src.salesforce_downloader.download_scheduled()
+    src.download_scheduled()
             ↓
     Salesforce ──→ 管理表に書かれた保存先
 
@@ -31,7 +31,7 @@ WinActor（社内RPA基盤）等から**高頻度（例: 1 時間おき）で繰
 
 import logging
 
-from src.salesforce_downloader import download_scheduled
+from src.service import download_scheduled
 
 logger = logging.getLogger(__name__)
 

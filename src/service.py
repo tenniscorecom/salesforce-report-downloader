@@ -1,4 +1,4 @@
-r"""src/salesforce_downloader/service.py — 取得の本体。
+r"""src/service.py — 取得の本体。
 
 **2026-09 に comken から切り出した。** 管理表・履歴の形式（列定義・読み取り関数）は
 引き続き comken 側（`comken.services.salesforce_downloader`）の共有契約で、ここでは
@@ -6,7 +6,7 @@ r"""src/salesforce_downloader/service.py — 取得の本体。
 経緯は comken の `salesforce_downloader/__init__.py` の履歴メモを参照。
 
     from comken.services.salesforce_downloader import cached_report
-    from src.salesforce_downloader import download_scheduled
+    from src.service import download_scheduled
 
     CUSTOMER_LIST = "1001"        # 各プロジェクトで、意味の分かる名前を付ける
 
@@ -88,7 +88,7 @@ from comken.services.salesforce_downloader.soql_reports import soql_report_for
 from comken.toolbox.csv import CSV
 from comken.toolbox.salesforce.sites import site_for
 
-from src.salesforce_downloader.history_writer import record
+from src.history_writer import record
 
 logger = logging.getLogger(__name__)
 

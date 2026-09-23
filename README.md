@@ -5,22 +5,22 @@
 管理表・履歴の**形式**（列定義・読み取り関数）は comken
 （[`comken.services.salesforce_downloader`](https://github.com/tenniscorecom/comken)）
 側の共有契約のままですが、**実際に Salesforce へ取りに行き、保存し、履歴へ書く実行部分は
-2026-09 にこのリポジトリへ戻しました**（`src/salesforce_downloader/`）。理由は下の
+2026-09 にこのリポジトリへ戻しました**（`src/`）。理由は下の
 「comken との分担の経緯」を参照。
 
 ```
 src/
-  run.py                         ← バッチの入口（download_scheduled を呼ぶだけ）
-  salesforce_downloader/
-    service.py                   ← 取得・保存・スケジュール判定の本体
-    history_writer.py            ← 履歴CSVへの書き込み
+  run.py                ← バッチの入口（download_scheduled を呼ぶだけ）
+  service.py            ← 取得・保存・スケジュール判定の本体
+  history_writer.py     ← 履歴CSVへの書き込み
+  template_writer.py    ← 管理表・スケジュール・設定シートの雛形生成
 main.py                          ← バッチの実行ファイル
 ```
 
 何を落とすか・どこへ置くかは、comken が持つ **管理表（Excel）** に書いてあります。
 
 ```python
-from src.salesforce_downloader import download_scheduled
+from src.service import download_scheduled
 
 download_scheduled("Salesforceレポートダウンローダー")  # スケジュールに従い、今取るべきものを全部
 ```
@@ -32,7 +32,7 @@ download_scheduled("Salesforceレポートダウンローダー")  # スケジ�
 **API・ブラウザ経由・SOQLのどれで取るかは、管理表の列（「2000件超」「SOQL」）で決まる。**
 呼び出し側のコード（`src/run.py`）は意識しない。優先順位は「SOQL」列 →「2000件超」列 →
 通常のReport API。ブラウザ経由は事前に人が一度だけ手動ログインしておく必要がある
-（詳しくは `src/salesforce_downloader/service.py` の `_fetch_via_browser()` を参照）。
+（詳しくは `src/service.py` の `_fetch_via_browser()` を参照）。
 SOQL経由は同じ管理番号の `SoqlReport` が
 `comken.services.salesforce_downloader.soql_reports` に登録されている必要がある
 （詳しくは `_fetch_via_soql()` を参照）。
@@ -77,7 +77,7 @@ SOQL経由は同じ管理番号の `SoqlReport` が
 [`docs/salesforce-downloader.md`](https://github.com/tenniscorecom/comken/blob/master/docs/salesforce-downloader.md) 参照）。
 
 **管理表（Excel）は非エンジニアが手動で用意・編集する。** 雛形の生成は
-`src/salesforce_downloader/template_writer.py` の関数
+`src/template_writer.py` の関数
 （`create_combined_workbook()` / `create_template()`）で行う。**「管理表」
 「スケジュール」「設定」の3シートを1つのブックにまとめて生成**したい場合は
 `create_combined_workbook(path)` を呼ぶ（詳しくは同モジュールの docstring を参照）。

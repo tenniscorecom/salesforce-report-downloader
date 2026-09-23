@@ -14,7 +14,7 @@ from comken.services.salesforce_downloader.sheets.master import ReportEntry
 from comken.services.salesforce_downloader.soql_reports import _registry
 from comken.services.salesforce_downloader.soql_reports.base import SoqlReport
 
-from src.salesforce_downloader.service import _fetch, _fetch_via_soql
+from src.service import _fetch, _fetch_via_soql
 
 URL = "https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 
@@ -61,7 +61,7 @@ class TestFetchRoutesToSoql:
     def test_uses_soql_when_use_soql_is_true(self):
         table = MagicMock()
         with patch(
-            "src.salesforce_downloader.service._fetch_via_soql",
+            "src.service._fetch_via_soql",
             return_value=table,
         ) as fetch_via_soql:
             result = _fetch(SOQL_ENTRY)
@@ -71,8 +71,8 @@ class TestFetchRoutesToSoql:
 
     def test_soql_takes_priority_over_exceeds_row_limit(self):
         with (
-            patch("src.salesforce_downloader.service._fetch_via_soql") as fetch_via_soql,
-            patch("src.salesforce_downloader.service._fetch_via_browser") as fetch_via_browser,
+            patch("src.service._fetch_via_soql") as fetch_via_soql,
+            patch("src.service._fetch_via_browser") as fetch_via_browser,
         ):
             _fetch(SOQL_AND_EXCEEDS_ENTRY)
 
@@ -81,8 +81,8 @@ class TestFetchRoutesToSoql:
 
     def test_uses_api_when_use_soql_is_false(self):
         with (
-            patch("src.salesforce_downloader.service.site_for") as site_for,
-            patch("src.salesforce_downloader.service._fetch_via_soql") as fetch_via_soql,
+            patch("src.service.site_for") as site_for,
+            patch("src.service._fetch_via_soql") as fetch_via_soql,
         ):
             _fetch(ENTRY)
 
@@ -102,7 +102,7 @@ class TestFetchViaSoql:
         client = MagicMock()
         client.__enter__.return_value.query.return_value = table
         site = MagicMock(return_value=client)
-        with patch("src.salesforce_downloader.service.site_for", return_value=site) as site_for:
+        with patch("src.service.site_for", return_value=site) as site_for:
             result = _fetch_via_soql(SOQL_ENTRY)
 
         site_for.assert_called_once_with(SOQL_ENTRY.url)

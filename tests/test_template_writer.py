@@ -1,4 +1,4 @@
-"""``src/salesforce_downloader.template_writer`` の雛形生成を検証する。
+"""``src/template_writer`` の雛形生成を検証する。
 
 雛形と読み込みで列がズレないこと、`choices` 列にドロップダウンが付くこと、
 フォントが Noto Sans JP に揃うこと、記入例に背景色が付き「Sheet」が残らないこと、
@@ -25,7 +25,7 @@ from comken.services.salesforce_downloader.sheets.schedule import (
 from comken.toolbox.excel import Excel
 from openpyxl import load_workbook
 
-from src.salesforce_downloader.template_writer import (
+from src.template_writer import (
     GROUP_SETTING_EXAMPLES,
     REPORT_ENTRY_GUIDE_INTRO,
     SCHEDULE_EXAMPLES,

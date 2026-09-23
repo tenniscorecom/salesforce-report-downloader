@@ -1,4 +1,4 @@
-"""src/salesforce_downloader/history_writer.py — ダウンロード履歴への書き込み。
+"""src/history_writer.py — ダウンロード履歴への書き込み。
 
 **2026-09 に comken から切り出した。** 履歴CSVの列定義・1行の形
 （`HistoryRow` / `COLUMNS`）・排他ロック（`HistoryFileLock`）・読み取り関数

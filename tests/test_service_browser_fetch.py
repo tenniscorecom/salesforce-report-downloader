@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from comken.services.salesforce_downloader.sheets.master import ReportEntry
 
-from src.salesforce_downloader.service import _fetch, _fetch_via_browser
+from src.service import _fetch, _fetch_via_browser
 
 ENTRY = ReportEntry(
     key="9001",
@@ -50,7 +50,7 @@ class TestFetchRoutesToBrowser:
     def test_uses_browser_when_exceeds_row_limit(self):
         table = MagicMock()
         with patch(
-            "src.salesforce_downloader.service._fetch_via_browser",
+            "src.service._fetch_via_browser",
             return_value=table,
         ) as fetch_via_browser:
             result = _fetch(EXCEEDS_ENTRY)
@@ -60,8 +60,8 @@ class TestFetchRoutesToBrowser:
 
     def test_uses_api_when_exceeds_row_limit_is_false(self):
         with (
-            patch("src.salesforce_downloader.service.site_for") as site_for,
-            patch("src.salesforce_downloader.service._fetch_via_browser") as fetch_via_browser,
+            patch("src.service.site_for") as site_for,
+            patch("src.service._fetch_via_browser") as fetch_via_browser,
         ):
             _fetch(ENTRY)
 
@@ -108,7 +108,7 @@ class TestSeleniumStaysLazy:
             if mod_name.startswith("comken.toolbox.salesforce.browser"):
                 monkeypatch.delitem(sys.modules, mod_name, raising=False)
 
-        with patch("src.salesforce_downloader.service.site_for") as site_for:
+        with patch("src.service.site_for") as site_for:
             site_for.return_value.__enter__.return_value.report.get.return_value = MagicMock()
             _fetch(ENTRY)
 
