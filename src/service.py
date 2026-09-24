@@ -494,7 +494,7 @@ def _fetch_via_browser(entry: ReportEntry) -> Table:
     ここで初めて import する（管理表で誰も「2000件超」を「○」にしていない
     運用では `service.py` を import しても `selenium` は要らない）。
     """
-    from comken.toolbox.salesforce.browser.sites import site_for as browser_site_for
+    from comken.toolbox.browser.sites.salesforce import site_for as browser_site_for
 
     site_class = browser_site_for(entry.url)
     with site_class() as sf:

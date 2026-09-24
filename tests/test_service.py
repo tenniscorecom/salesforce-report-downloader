@@ -419,7 +419,7 @@ class TestDownloadScheduledRecord:
         with (
             patch("src.service.load_master", return_value={"1001": entry}),
             patch("src.service.site_for") as api_site_for,
-            patch("comken.toolbox.salesforce.browser.sites.site_for", return_value=browser_site),
+            patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=browser_site),
         ):
             download_scheduled()
 

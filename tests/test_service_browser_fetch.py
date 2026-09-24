@@ -1,7 +1,7 @@
 """_fetch() のブラウザ経由フォールバックのテスト。
 
 管理表の「2000件超」列（``ReportEntry.exceeds_row_limit``）が真だと、_fetch() が
-レポートAPIではなく comken.toolbox.salesforce.browser 経由で取得する
+レポートAPIではなく comken.toolbox.browser.sites.salesforce 経由で取得する
 （「SOQL」列が優先されるケースは tests/test_service_soql_fetch.py 側）。
 既存の _fetch() (API経由) のテストは tests/test_service.py に集約してあるため、
 ここではブラウザ経由の分岐だけを扱う。
@@ -78,7 +78,7 @@ class TestFetchViaBrowser:
 
     def test_returns_table_parsed_from_exported_csv(self):
         site_class, _site_instance = _fake_browser_site()
-        with patch("comken.toolbox.salesforce.browser.sites.site_for", return_value=site_class):
+        with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
             table = _fetch_via_browser(ENTRY)
 
         assert table.columns == ["名前", "金額"]
@@ -86,7 +86,7 @@ class TestFetchViaBrowser:
 
     def test_calls_go_login_before_export(self):
         site_class, site_instance = _fake_browser_site()
-        with patch("comken.toolbox.salesforce.browser.sites.site_for", return_value=site_class):
+        with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
             _fetch_via_browser(ENTRY)
 
         site_instance.go_login.assert_called_once()
@@ -94,7 +94,7 @@ class TestFetchViaBrowser:
     def test_does_not_call_wait_for_manual_login(self):
         """定期実行(無人)から呼ばれる前提のため、人の入力を待つ呼び出しをしない。"""
         site_class, site_instance = _fake_browser_site()
-        with patch("comken.toolbox.salesforce.browser.sites.site_for", return_value=site_class):
+        with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
             _fetch_via_browser(ENTRY)
 
         site_instance.wait_for_manual_login.assert_not_called()
@@ -105,13 +105,11 @@ class TestSeleniumStaysLazy:
 
     def test_fetch_does_not_import_browser_module(self, monkeypatch):
         for mod_name in list(sys.modules):
-            if mod_name.startswith("comken.toolbox.salesforce.browser"):
+            if mod_name.startswith("comken.toolbox.browser"):
                 monkeypatch.delitem(sys.modules, mod_name, raising=False)
 
         with patch("src.service.site_for") as site_for:
             site_for.return_value.__enter__.return_value.report.get.return_value = MagicMock()
             _fetch(ENTRY)
 
-        assert not any(
-            mod_name.startswith("comken.toolbox.salesforce.browser") for mod_name in sys.modules
-        )
+        assert not any(mod_name.startswith("comken.toolbox.browser") for mod_name in sys.modules)
