@@ -18,7 +18,7 @@ from pathlib import Path
 
 from comken.core.clock import now
 from comken.core.table import Table
-from comken.exceptions import GroupNotRegisteredError, HistoryWriteError
+from comken.exceptions import GroupNotRegisteredError, HistoryWriteError, InvalidTableInputError
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
 from comken.services.salesforce_downloader.provider import output_path
 from comken.services.salesforce_downloader.sheets.history import (
@@ -93,7 +93,10 @@ def record(
             _append(path, values)
     except HistoryWriteError:
         raise
-    except OSError as exc:
+    except (OSError, InvalidTableInputError) as exc:
+        # ``InvalidTableInputError`` は、既存の履歴が CP932 のとき、その文字コードで表せない文字
+        # （絵文字など）を書こうとした場合。履歴は必須データなので、記録失敗として扱う
+        # （文字コードは変えない。元のファイルは無傷で残る）
         raise HistoryWriteError(path, str(exc)) from exc
     logger.debug("履歴追記完了: path=%s", path)
 

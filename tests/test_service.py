@@ -1476,6 +1476,81 @@ class TestHistory:
             row = csv_file.read()[-1]
             assert row["原因区分"] == "プログラム"
 
+    # ── 履歴CSVの文字コードは変えない ────────────────────────────────
+
+    def _cp932_history(self, tmp_path, monkeypatch, *, header: list[str]) -> Path:
+        """CP932 で保存された履歴CSV（人が Excel で上書き保存した状態）を作り、パスを返す。"""
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [["1001", "顧客一覧", URL_A, "営業事務グループ", "山田", "○"]],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        old_row = ["古い行" if column != "管理番号" else "0001" for column in header]
+        text = ",".join(header) + "\r\n" + ",".join(old_row) + "\r\n"
+        history_path.write_bytes(text.encode("cp932"))
+        return history_path
+
+    def test_record_keeps_cp932_when_migrating_legacy_header(self, tmp_path, monkeypatch):
+        """CP932 で保存された**旧列構成**の履歴CSVをマイグレーション（全書き直し）しても、
+        文字コードは CP932 のまま（UTF-8 BOM に変わらない）。旧データも新しい行も読める。
+        """
+        history_path = self._cp932_history(tmp_path, monkeypatch, header=[*history.COLUMNS[:-1]])
+
+        self._record_for(
+            history_path,
+            key="1001",
+            summary="顧客一覧",
+            url=URL_A,
+            group="営業事務グループ",
+            assignee="山田",
+            file_name="b.csv",
+        )
+
+        raw = history_path.read_bytes()
+        assert not raw.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM ではない
+        lines = raw.decode("cp932").splitlines()  # CP932 として全体を読める
+        assert lines[0].split(",") == list(history.COLUMNS)  # 新しい見出しに揃った
+        assert any("古い行" in line for line in lines)  # 旧データは残っている
+        assert any("b.csv" in line for line in lines)  # 追記した行も入っている
+
+    def test_record_raises_history_write_error_when_char_not_in_cp932(self, tmp_path, monkeypatch):
+        """CP932 の履歴CSVに、CP932 で表せない文字（絵文字）を含む行を記録しようとすると、
+        ``?`` に置換せず ``HistoryWriteError`` になり、履歴ファイルは不変。
+        """
+        from comken.exceptions import HistoryWriteError
+        from comken.services.salesforce_downloader.sheets.master import ReportEntry
+
+        history_path = self._cp932_history(tmp_path, monkeypatch, header=list(history.COLUMNS))
+        before = history_path.read_bytes()
+
+        entry = ReportEntry(
+            key="1001",
+            summary="顧客一覧",
+            url=URL_A,
+            group="営業事務グループ",
+            assignee="山田",
+            enabled=True,
+            allow_empty=False,
+        )
+        with pytest.raises(HistoryWriteError):
+            history_writer.record(
+                history_path,
+                entry=entry,
+                project="定期実行",
+                row=history.HistoryRow(
+                    succeeded=False,
+                    fetched_from_salesforce=False,
+                    saved_to_file=None,
+                    error="失敗😀",
+                ),
+            )
+
+        assert history_path.read_bytes() == before
+
 
 class TestDownloadScheduled:
     """定期取得は「有効」なものだけを対象にする。"""
