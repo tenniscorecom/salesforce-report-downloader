@@ -15,8 +15,11 @@ ignore = [
 
 [tool.ruff.lint.flake8-bugbear]
 # column() は dataclasses.field() を返すので、dataclass のデフォルトに置いてよい
-# （呼び出しの結果を共有してしまう「可変デフォルト」には当たらない）
-extend-immutable-calls = ["comken.toolbox.master_table.column"]
+# （呼び出しの結果を共有してしまう「可変デフォルト」には当たらない）。
+# comken の toolbox.master_table は 2026-09 に
+# services.salesforce_downloader.report_master へ移設された（古いパスは
+# 既に存在しないため Ruff B008 が誤検知する）。
+extend-immutable-calls = ["comken.services.salesforce_downloader.report_master.column"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 # 相対 import は禁止。ドットを数える作業を残さないため。

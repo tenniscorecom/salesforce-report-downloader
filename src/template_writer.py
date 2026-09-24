@@ -19,7 +19,7 @@ API が無い（読み込み・検証に集中する）。雛形生成は利用�
 import dataclasses
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from comken.constants import Color
 from comken.core.table.model import Table as CoreTable
@@ -35,6 +35,7 @@ from comken.services.salesforce_downloader.sheets.master import ReportEntry
 from comken.services.salesforce_downloader.sheets.schedule import SCHEDULE_SHEET_NAME, ScheduleRule
 from comken.toolbox.excel import Excel
 from openpyxl import Workbook, load_workbook
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
@@ -54,6 +55,14 @@ _DATA_VALIDATION_ROWS = 1000
 # `Color.LIGHT_GRAY` を使う（強く出すと「エラー行」に見えるため）
 _EXAMPLE_FILL_COLOR = Color.LIGHT_GRAY
 _EXAMPLE_FILL = PatternFill(fill_type="solid", fgColor=_EXAMPLE_FILL_COLOR)
+
+# 「スケジュール」シートで「取得頻度」と矛盾する「曜日」「日付」セルに付ける
+# エラー色（薄い赤 + 濃い赤文字）。``ScheduleRule.validate()`` で読み込み時に
+# エラー化されるので、ここでの色付けは **書き間違いを編集時点で気づかせる**
+# 補助。``choices`` のセルの塗りつぶし色（=エラー）として Excel の表示に
+# 馴染むよう、``Color.PINK`` 相当の薄い赤 + 濃い赤文字を使う
+_ERROR_FILL = PatternFill(fill_type="solid", fgColor="FFC7CE")  # 薄い赤
+_ERROR_FONT = Font(color="9C0006")  # 濃い赤
 
 # 見出し行を除いた1行目が Excel の何行目か（見出しが1行目のため）
 _FIRST_DATA_ROW = 2
@@ -177,6 +186,12 @@ def create_template(
     # 十分な行数ぶんの範囲に適用し、あとから行を足しても効くようにする
     _apply_choice_validations(sheet, specs, len(rows))
 
+    # 「スケジュール」シートの場合、「取得頻度」と矛盾する「曜日」「日付」を
+    # 赤く塗る条件付き書式を付ける（編集時点で気づかせるため）
+    if row_cls is ScheduleRule:
+        schedule_last_row = _FIRST_DATA_ROW + len(rows) - 1 + _DATA_VALIDATION_ROWS
+        _apply_schedule_conditional_formatting(sheet, schedule_last_row, row_cls)
+
     _auto_width(sheet)
     sheet.freeze_panes = "A2"
 
@@ -292,6 +307,7 @@ def create_combined_workbook(path: str | Path) -> Path:
         specs_schedule,
         SCHEDULE_EXAMPLES,
         mark_as_example=existing_schedule is None,
+        row_cls=ScheduleRule,
     )
     _finalize_sheet(
         book,
@@ -327,9 +343,16 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
     （1行目）を読んで列位置を探すので、列の並び順は問わない。
 
     ドロップダウンを付ける対象は `ScheduleRule.column_specs()` から動的に拾う
-    （``choices`` が宣言された列）。`祝日対応` は「取得しない」「取得する」の
-    2値プルダウン（`HOLIDAY_SKIP` / `HOLIDAY_FETCH`）。「曜日」「日付」「取得時刻」
-    （記録用）は自由記述のため対象外。
+    （``choices`` が宣言された列）。`祝日対応` は「取得しない」「取得する」
+    「1営業日前」「1営業日後」の 4 値プルダウン（`HOLIDAY_SKIP` /
+    `HOLIDAY_FETCH` / `HOLIDAY_BEFORE` / `HOLIDAY_AFTER`）。「曜日」「日付」
+    「取得時刻」（記録用）は自由記述のため対象外。
+
+    **「曜日」「日付」セルには赤い条件付き書式も付与する。**「取得頻度」と
+    矛盾するセル（毎週なのに曜日が空、毎月なのに日付が空、毎日・毎営業日に
+    曜日が入っている、等）を編集時点で気づかせるため。``create_template()``
+    / ``create_combined_workbook()`` で生成したシートにも同じ書式が
+    付く（``_finalize_sheet`` 経由で同じ関数を呼ぶ）。
 
     Args:
         path: 「スケジュール」シートを持つ Excel ファイル（既存）。
@@ -361,9 +384,7 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
     # 存在する列だけにドロップダウンを当てる。`ScheduleRule.column_specs()` 経由で
     # 宣言を1か所に保つ（`column()` の宣言を足せば自動でドロップダウンが付く）
     choices_by_header: dict[str, tuple[str, ...]] = {
-        spec.header: spec.choices
-        for _, spec, _, _ in ScheduleRule.column_specs()
-        if spec.choices
+        spec.header: spec.choices for _, spec, _, _ in ScheduleRule.column_specs() if spec.choices
     }
     # 既定値のない列は `allow_blank=False` にする（ドロップダウンからの空欄提出を
     # 許さない）。既定値の有無は `column_specs()` の 4 要素目から取る
@@ -390,6 +411,10 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
         validation.add(f"{letter}2:{letter}{last_row}")
         sheet.add_data_validation(validation)
         applied += 1
+
+    # 「取得頻度」と矛盾する「曜日」「日付」セルを赤く塗る条件付き書式。
+    # ドロップダウンと同じ範囲（データ行全体）に適用し、行追加にも追従する
+    _apply_schedule_conditional_formatting(sheet, last_row, ScheduleRule)
 
     book.save(source)
     book.close()
@@ -435,9 +460,7 @@ def _existing_rows_or_none(
     try:
         raw_rows = read_raw_rows(path, row_cls.SHEET_NAME)
     except (SheetNotFoundError, ExcelFileNotFoundError):
-        logger.debug(
-            "既存データなし（シート未存在）: path=%s, sheet=%s", path, row_cls.SHEET_NAME
-        )
+        logger.debug("既存データなし（シート未存在）: path=%s, sheet=%s", path, row_cls.SHEET_NAME)
         return None
     headers = [spec.header for _, spec, _, _ in specs]
     result: list[dict] = []
@@ -496,9 +519,7 @@ def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) ->
         # 消して次の ``Excel(path)`` で新規ブックとして作る。
         book.close()
         path.unlink()
-        logger.debug(
-            "全シートを削除したためファイルごと作り直し: path=%s", path
-        )
+        logger.debug("全シートを削除したためファイルごと作り直し: path=%s", path)
         return
     if deleted:
         book.save(path)
@@ -540,17 +561,29 @@ def _finalize_sheet(
     examples: list[dict],
     *,
     mark_as_example: bool = True,
+    row_cls: type[MasterRow] | None = None,
 ) -> None:
     """`create_data_sheet` で書き出したシートに雛形用の装飾を後付けする。
 
     ``mark_as_example=False`` のときは記入例用の薄い背景色を付けない
     （マイグレーションされた実データは白背景のままにする）。
+
+    ``row_cls`` が ``ScheduleRule`` のときは「曜日」「日付」セルへの
+    条件付き書式（取得頻度との矛盾を赤く塗る）も追加する。
+    既存ブックへの後付け（``apply_schedule_dropdowns``）側と挙動を揃える
+    ため、同じ ``_apply_schedule_conditional_formatting`` を呼ぶ。
     """
     sheet = book[full_sheet_name]
     headers = [spec.header for _, spec, _, _ in specs]
     example_count = len(examples)
     _apply_template_font(sheet, example_count + _DATA_VALIDATION_ROWS)
     _apply_choice_validations(sheet, specs, example_count)
+    if row_cls is ScheduleRule:
+        # ドロップダウンと同じ最終行まで（=``_DATA_VALIDATION_ROWS`` ぶん余裕）
+        schedule_last_row = _FIRST_DATA_ROW + example_count - 1 + _DATA_VALIDATION_ROWS
+        _apply_schedule_conditional_formatting(
+            sheet, schedule_last_row, cast("type[ScheduleRule]", row_cls)
+        )
     _auto_width(sheet)
     sheet.freeze_panes = "A2"
     if mark_as_example:
@@ -704,6 +737,118 @@ def _apply_choice_validations(
         choice_column_count,
         len(specs),
         last_row,
+    )
+
+
+def _apply_schedule_conditional_formatting(
+    sheet: Worksheet, last_row: int, row_cls: type[ScheduleRule]
+) -> None:
+    """「スケジュール」シートに「取得頻度」と矛盾するセルを赤く塗る条件付き書式。
+
+    ``row_cls`` の ``column()`` 宣言（``header()`` 経由）から動的に列見出しを
+    解決する（列順変更・改名に追従する）。以下のセルを赤く塗る:
+
+    - 「曜日」セル: 「取得頻度」が「毎週」なのに空、または「取得頻度」が「毎週」
+      以外なのに入っている
+    - 「日付」セル: 「取得頻度」が「毎月」なのに空、または「取得頻度」が「毎月」
+      以外なのに入っている
+
+    「取得頻度」が空の行は判定しない（未記入の行を赤くしないため）。
+
+    ``ScheduleRule.validate()`` が読み込み時に同様の組み合わせを
+    ``MasterRowValueError`` に変換するので、これは**編集時点で書き間違いを
+    気づかせるための赤いハイライト**。読み込みは引き続き止まる。
+
+    Args:
+        sheet: 「スケジュール」シート。
+        last_row: 条件付き書式を適用する最終行（データ行の終端。ドロップダウン
+            と同じ範囲を共用する想定）。
+        row_cls: ``ScheduleRule`` クラス。列見出しはこの ``column()`` 宣言から
+            動的に取得する。
+
+    Raises:
+        ValueError: 「取得頻度」「曜日」「日付」のいずれかの列がシートに
+            見つからない場合。雛形はこのリポジトリが生成するので、列が
+            無いのは実装バグ（黙ってスキップしない）。
+    """
+    # ScheduleRule の宣言から実際の Excel 見出しを取り出す（改名・列順変更に追従）
+    frequency_header = row_cls.header("frequency")
+    weekday_header = row_cls.header("raw_weekday")
+    day_header = row_cls.header("raw_day_of_month")
+    header_to_letter = {
+        str(cell.value): _column_letter(index)
+        for index, cell in enumerate(next(sheet.iter_rows(min_row=1, max_row=1)), start=1)
+        if cell.value is not None
+    }
+    frequency_letter = header_to_letter.get(frequency_header)
+    weekday_letter = header_to_letter.get(weekday_header)
+    day_letter = header_to_letter.get(day_header)
+    missing = [
+        header
+        for header, letter in (
+            (frequency_header, frequency_letter),
+            (weekday_header, weekday_letter),
+            (day_header, day_letter),
+        )
+        if letter is None
+    ]
+    if missing:
+        # 雛形はこのリポジトリが生成する。列が無いのは実装バグ → 黙って
+        # スキップせず明示的に失敗させる
+        raise ValueError(
+            f"スケジュールシートに必須の列が見つかりません: {missing} / sheet={sheet.title}"
+        )
+    first_row = _FIRST_DATA_ROW
+    weekday_range = f"{weekday_letter}{first_row}:{weekday_letter}{last_row}"
+    day_range = f"{day_letter}{first_row}:{day_letter}{last_row}"
+    freq_range = f"${frequency_letter}{first_row}"
+    weekday_ref = f"${weekday_letter}{first_row}"
+    day_ref = f"${day_letter}{first_row}"
+    # 「毎週」なのに「曜日」が空 → 赤
+    sheet.conditional_formatting.add(
+        weekday_range,
+        FormulaRule(
+            formula=[f'AND({freq_range}="毎週",{weekday_ref}="")'],
+            stopIfTrue=False,
+            fill=_ERROR_FILL,
+            font=_ERROR_FONT,
+        ),
+    )
+    # 「毎週」以外で「曜日」に入っている → 赤
+    sheet.conditional_formatting.add(
+        weekday_range,
+        FormulaRule(
+            formula=[f'AND({freq_range}<>"",{freq_range}<>"毎週",{weekday_ref}<>"")'],
+            stopIfTrue=False,
+            fill=_ERROR_FILL,
+            font=_ERROR_FONT,
+        ),
+    )
+    # 「毎月」なのに「日付」が空 → 赤
+    sheet.conditional_formatting.add(
+        day_range,
+        FormulaRule(
+            formula=[f'AND({freq_range}="毎月",{day_ref}="")'],
+            stopIfTrue=False,
+            fill=_ERROR_FILL,
+            font=_ERROR_FONT,
+        ),
+    )
+    # 「毎月」以外で「日付」に入っている → 赤
+    sheet.conditional_formatting.add(
+        day_range,
+        FormulaRule(
+            formula=[f'AND({freq_range}<>"",{freq_range}<>"毎月",{day_ref}<>"")'],
+            stopIfTrue=False,
+            fill=_ERROR_FILL,
+            font=_ERROR_FONT,
+        ),
+    )
+    logger.debug(
+        "雛形: スケジュールシートへ条件付き書式を適用: sheet=%s, 曜日=%s, 日付=%s",
+        sheet.title,
+        weekday_range,
+        day_range,
     )
 
 

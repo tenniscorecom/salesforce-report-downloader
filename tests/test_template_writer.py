@@ -166,9 +166,7 @@ class TestCreateTemplateScheduleRule:
     """`ScheduleRule` の雛形がそのまま読み込めるか。"""
 
     def test_generated_template_can_be_loaded(self, tmp_path):
-        path = create_template(
-            tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES
-        )
+        path = create_template(tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES)
         rules = ScheduleRule.load(path)
         assert [r.schedule_key for r in rules] == ["S001"]
         assert rules[0].report_key == "1001"
@@ -176,9 +174,7 @@ class TestCreateTemplateScheduleRule:
 
     def test_choice_columns_get_dropdown(self, tmp_path):
         """`choices` 列（「取得頻度」「曜日」「祝日対応」「有効」）だけにドロップダウンが付く。"""
-        path = create_template(
-            tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES
-        )
+        path = create_template(tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES)
         ws = load_workbook(path)[f"PY_{SCHEDULE_SHEET_NAME}"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
         # 取得頻度=C列, 曜日=F列, 祝日対応=H列, 有効=I列
@@ -242,9 +238,7 @@ class TestApplyScheduleDropdowns:
     def test_missing_schedule_sheet_raises(self, tmp_path):
         """「スケジュール」シートが無いブックでは SheetNotFoundError。"""
         with Excel(tmp_path / "no_sched.xlsx") as book:
-            book.create_data_sheet("別のシート").create_table(
-                "別のシート", Table(["列"], [])
-            )
+            book.create_data_sheet("別のシート").create_table("別のシート", Table(["列"], []))
         with pytest.raises(SheetNotFoundError):
             apply_schedule_dropdowns(tmp_path / "no_sched.xlsx")
 
@@ -253,6 +247,52 @@ class TestApplyScheduleDropdowns:
 
         with pytest.raises(ExcelFileNotFoundError):
             apply_schedule_dropdowns(tmp_path / "無い.xlsx")
+
+    def test_conditional_formatting_highlights_contradicting_cells(self, tmp_path):
+        """「取得頻度」と矛盾する「曜日」「日付」セルを赤く塗る条件付き書式が付く。
+
+        列文字は ``ScheduleRule.column_specs()`` から動的に解決されている
+        （固定文字列にしないことで列順変更に追従する）ことを、ルール本体に
+        ``$C`` / ``$F`` / ``$G`` が現れるかで確認する。
+        """
+        path = _make_schedule_book(
+            tmp_path / "スケジュール.xlsx",
+            [["S001", "1001", "毎日", "10:00", "", "", "", "取得しない", "○"]],
+        )
+        apply_schedule_dropdowns(path)
+        wb = load_workbook(path)
+        ws = wb[self._PY_SCHEDULE]
+
+        # ``ConditionalFormattingList`` を ``{範囲文字列: [数式, ...]}`` に変換。
+        # キーは ``ConditionalFormatting`` オブジェクトなので ``sqref`` で文字列化する
+        rules_by_range: dict[str, list[str]] = {}
+        for cf, rules in ws.conditional_formatting._cf_rules.items():
+            rules_by_range[str(cf.sqref)] = [str(rule.formula[0]) for rule in rules]
+
+        # 「曜日」列 (F) と「日付」列 (G) に書式が付く
+        assert "F2:F1001" in rules_by_range, rules_by_range
+        assert "G2:G1001" in rules_by_range, rules_by_range
+
+        # 曜日セルのルール: 「毎週」なのに空、または「毎週」以外で埋まっている
+        weekday_formulas = rules_by_range["F2:F1001"]
+        assert any('AND($C2="毎週",$F2="")' in formula for formula in weekday_formulas), (
+            weekday_formulas
+        )
+        assert any('AND($C2<>"",$C2<>"毎週",$F2<>"")' in formula for formula in weekday_formulas), (
+            weekday_formulas
+        )
+
+        # 日付セルのルール: 「毎月」なのに空、または「毎月」以外で埋まっている
+        day_formulas = rules_by_range["G2:G1001"]
+        assert any('AND($C2="毎月",$G2="")' in formula for formula in day_formulas), day_formulas
+        assert any('AND($C2<>"",$C2<>"毎月",$G2<>"")' in formula for formula in day_formulas), (
+            day_formulas
+        )
+
+        # 条件付き書式が「取得頻度」列 ($C) と自列を参照している（列文字がズレていない）
+        for formula in weekday_formulas + day_formulas:
+            assert "$C2" in formula, f"「取得頻度」列を参照していない: {formula}"
+            assert "$F2" in formula or "$G2" in formula, f"自列を参照していない: {formula}"
 
 
 # ── 3シートまとめて 1 ブック ──────────────────────────────────────────────────
@@ -609,9 +649,7 @@ class TestMigrateTemplate:
         assert "I2:I1003" in ranges
         # 「記入方法」シートは新列構成で作り直されている
         assert "記入方法" in wb.sheetnames
-        guide_text = "\n".join(
-            str(c.value) for row in wb["記入方法"].iter_rows() for c in row
-        )
+        guide_text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
         # 新列（allow_empty, exceeds_row_limit, use_soql の見出し）も記入方法シートに載る
         assert "0件あり" in guide_text
         assert "2000件超" in guide_text

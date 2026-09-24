@@ -1102,6 +1102,56 @@ class TestHistory:
         assert rows[0]["ファイル名"] == "a.csv"
         assert rows[1]["ファイル名"] == "b.csv"
 
+    def test_record_does_not_rewrite_when_header_is_invalid(self, tmp_path, monkeypatch):
+        """重複見出しの履歴CSVに対して ``record()`` を呼ぶと、``CSV`` クラスが
+        見出しの検証で ``CSVError`` を上げて停止する。ファイルは書き換え
+        られない（既存ファイルをそのまま残し、二重見出しなどの更なる事故を
+        防ぐ）。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        # ``is_new=False`` の経路を踏ませるため、空でないうちに
+        # 重複見出しの履歴CSVを書いておく
+        self._seed_legacy_history(
+            history_path,
+            header=["管理番号", "管理番号"],
+            row=["1001", "1001"],
+        )
+        before = history_path.read_bytes()
+
+        from comken.exceptions import CSVError
+
+        with pytest.raises(CSVError):
+            self._record_for(
+                history_path,
+                key="1001",
+                summary="顧客一覧",
+                url=URL_A,
+                group="営業事務グループ",
+                assignee="山田",
+                file_name="b.csv",
+            )
+
+        # ファイルがバイト単位で不変（書き換え・追記ともに行われない）
+        assert history_path.read_bytes() == before
+
     def test_history_when_csv_write_fails(self, tmp_path, monkeypatch):
         """Salesforce 取得は成功したが CSV 書き込みが失敗 → 成否=失敗 /
         Salesforce取得結果=成功 / 保存結果=失敗 / エラーコード=送出された例外クラス名。"""
@@ -1903,6 +1953,104 @@ class TestScheduleDedup:
         assert keys == ["S_MON", "S_WED"]
 
 
+# ── 同時起動対策 ─────────────────────────────────────────────────────────
+class TestRunLock:
+    """``download_scheduled()`` がプロセス間ロックで多重実行を抑止する。"""
+
+    def test_returns_empty_when_run_lock_is_held_by_another_handle(self, tmp_path, monkeypatch):
+        """同じプロセス内の別ハンドルで実行ロックを保持している間に
+        ``download_scheduled()`` を呼ぶと、Salesforce へ問い合わせずに空リストを返す。
+
+        msvcrt のロックはファイルハンドルに紐づくため、別 ``HistoryFileLock``
+        インスタンスが同じファイルを掴んでいる状態でもロック衝突する
+        （= WinActor が別プロセスで掴んでいる状況を疑似する）。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        # ``load_schedule`` は schedule シート無しでも空リストを返す（後方互換）。
+        # schedule 行が無いレポートは ``downloaded_today()`` 経由で判定するため、
+        # 「スケジュール」シート無しでも Salesforce への問い合わせが発生する
+
+        from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
+
+        # 別プロセス（=別 ``HistoryFileLock`` ハンドル）が掴んでいる状態を疑似
+        run_lock_path = tmp_path / "ダウンロード履歴.csv.run"
+        other_handle = HistoryFileLock(run_lock_path, timeout=10)
+        other_handle.__enter__()
+        try:
+            site = fake_salesforce()
+            with patch("src.service.site_for", return_value=site):
+                saved = download_scheduled()
+            # Salesforce へ問い合わせない（=ロック取得で弾かれた）
+            assert site.return_value.__enter__().report.get.call_count == 0
+            # 空リストを返す（=終了コード0相当の正常終了）
+            assert saved == []
+            # 履歴にも追記されない
+            assert not history_path.exists() or _history_rows({"history_path": history_path}) == []
+        finally:
+            other_handle.__exit__(None, None, None)
+
+    def test_propagates_lock_timeout_from_download_body(self, tmp_path, monkeypatch):
+        """実行ロックは取得できるが、本体の ``history.truncated_today`` などで
+        ``HistoryLockTimeoutError`` が出ると、``download_scheduled()`` は
+        空リストを返さず**例外をそのまま送出する**。
+
+        旧実装ではロック取得と本体の両方をまとめて ``except`` していたため、
+        履歴CSV 用ロックの本当の障害が「他プロセスが進行中」として隠れて
+        しまっていた。修正後はロック取得部分だけを ``except`` するため、
+        本体側の ``HistoryLockTimeoutError`` はそのまま外へ伝播する。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        from comken.exceptions import HistoryLockTimeoutError
+
+        def _raise_lock_timeout(*args, **kwargs):
+            # ``history.truncated_today()`` の呼び出しすべてで擬似的に
+            # 履歴ロック取得失敗を発生させる（=履歴ロックの本当の障害）
+            raise HistoryLockTimeoutError(history_path, 10.0)
+
+        monkeypatch.setattr(service_module.history, "truncated_today", _raise_lock_timeout)
+
+        with (
+            patch("src.service.site_for", return_value=fake_salesforce()),
+            pytest.raises(HistoryLockTimeoutError),
+        ):
+            download_scheduled()
+
+
 def _patch_default_calendar(monkeypatch: pytest.MonkeyPatch, *, holidays: set) -> None:
     """``service.default_calendar()`` を固定の祝日セットを持つ偽物に差し替える。"""
 
@@ -1973,6 +2121,82 @@ def make_master_with_schedule(
 def _history_rows(paths: dict) -> list[dict]:
     with CSV(paths["history_path"]) as csv_file:
         return csv_file.read()
+
+
+# ── 1 実行の基準日時を固定（日付またぎ対策） ──────────────────────────────
+class TestFixedCurrentAcrossExecution:
+    """``download_scheduled()`` が ``clock_now()`` を 1 回だけ取って全工程で共有する。
+
+    23:59 に始まった取得が日付をまたぐと、判定・出力ファイル名・履歴の
+    「実行日時」がバラバラの日付になり、翌日のスケジュールキーが「昨日
+    成功済み」で飛ぶ事故が起きる。これを ``clock_now()`` を 1 回だけ
+    取って ``current`` に固定し、全工程に配る実装で防ぐ。
+    """
+
+    def test_filename_and_history_use_start_date_when_crossing_midnight(
+        self, tmp_path, monkeypatch
+    ):
+        """``clock_now()`` を「1 回目=23:59:50、以降=翌日 00:01」に差し替えて
+        1 件取得すると、出力ファイル名・履歴の「実行日時」ともに**開始日**
+        （23:59:50 の日付）で揃う。
+
+        旧実装（``record()`` が ``now()`` を毎回呼ぶ）では、ファイル名は
+        ``clock_now()`` 由来の翌日になり、履歴は ``now()`` 由来の実時間で
+        書かれるため、開始日で揃わない。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        # 「スケジュール」シート無し（後方互換: 空 schedule で毎回対象）。
+        # この場合 ``output_path()`` は ``now=current`` の方を使うため、
+        # 開始日で揃う経路も検証できる。
+
+        start_dt = dt.datetime(2026, 9, 23, 23, 59, 50)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        next_day_dt = dt.datetime(2026, 9, 24, 0, 1, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+
+        def _clock_now_then_next_day():
+            # 1 回目は開始時刻、以降は翌日 00:01 を返す。
+            # ``current`` への固定（service.py）と ``output_path`` 内の
+            # フォールバック（provider.py）で呼ばれる側の差を再現する
+            _clock_now_then_next_day.count += 1
+            return start_dt if _clock_now_then_next_day.count == 1 else next_day_dt
+
+        _clock_now_then_next_day.count = 0
+        monkeypatch.setattr(service_module, "clock_now", _clock_now_then_next_day)
+        monkeypatch.setattr(provider_module, "clock_now", _clock_now_then_next_day)
+
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            saved = download_scheduled()
+
+        # 出力ファイル名の日付は開始日（20260923）
+        assert len(saved) == 1
+        filename = saved[0].name
+        assert filename.startswith("1001_20260923_"), (
+            f"出力ファイル名が開始日 (20260923) で始まっていない: {filename}"
+        )
+
+        # 履歴の「実行日時」は開始時刻（2026-09-23 23:59:50）で固定されている
+        with CSV(history_path) as csv_file:
+            rows = csv_file.read()
+        assert len(rows) == 1
+        assert rows[0]["実行日時"] == "2026-09-23 23:59:50", (
+            f"履歴の実行日時が開始時刻ではない: {rows[0]['実行日時']!r}"
+        )
 
 
 class TestRequiredHistory:

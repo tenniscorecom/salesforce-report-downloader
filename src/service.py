@@ -49,6 +49,7 @@ r"""src/service.py — 取得の本体。
 - 管理表から1行を引く `_find()` → comken の provider.py（`requests` を経由しない側に置く）
 """
 
+import contextlib
 import datetime as dt
 import logging
 import tempfile
@@ -62,8 +63,8 @@ from comken.core.table.model import Table
 from comken.core.timer import measure
 from comken.exceptions import (
     ComkenError,
+    CSVError,
     EmptyReportError,
-    HistoryHeaderMismatchError,
     HistoryLockTimeoutError,
     HistoryWriteError,
     ReportFolderNotFoundError,
@@ -71,6 +72,7 @@ from comken.exceptions import (
     ReportReservePathLimitError,
     ScheduledDownloadFailedError,
 )
+from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
 from comken.services.salesforce_downloader.paths import (
     HISTORY_PATH,
     MASTER_PATH,
@@ -135,11 +137,30 @@ def download_scheduled(
     「有効」だけで毎回対象にする（後方互換）。
     この機能追加を境に既存のレポートが突然取得されなくなる事故を防ぐため。
 
+    **同時起動の扱い:** WinActor からの呼び出しが重なったり、前回の取得が
+    長引いて 2 回目のポーリングが食い違うと、同じレポートを 2 プロセスが
+    「今日は未取得」と判定して二重に取得する事故が起きる。これを防ぐため、
+    この関数全体（対象選定〜履歴追記の完了まで）を `HistoryFileLock` で
+    プロセス間排他する。ロックが取れない場合は**例外にせず**ログだけ出して
+    空リスト ``[]`` を返す（終了コード0）。別の実行が進行中なら、それが
+    今回の分の取得も担当するため、次のポーリングで追従できる。失敗扱いに
+    すると運用者に誤報が飛ぶため、敢えて正常終了にする。
+
+    **実行日時の扱い:** 23:59 に始まった取得が日付をまたいで終わると、
+    判定・出力ファイル名・履歴の「実行日時」がバラバラの日付になり、
+    翌日のスケジュールキーが「昨日成功済み」で飛ぶ事故が起きる。これを
+    防ぐため、関数冒頭で 1 回取った `clock_now()` の値を全工程（スケジュール
+    判定・``output_path``・履歴の「実行日時」）で共有する。
+
     Args:
         project: 履歴の「プロジェクト」列へ残す呼び出し元の名前。
         filters_by_report: ``{管理番号: [Report APIフィルタ, ...]}``。各フィルタは
             ``{"column": ..., "operator": ..., "value": ...}`` の形で指定する。
             ブラウザ経由・SOQL経由のレポートには指定できない（``ValueError``）。
+
+    Returns:
+        保存したファイルのパス一覧。1件も取得対象が無いとき・別の実行が
+        進行中でロックが取れなかったときは空リスト ``[]``。
 
     Raises:
         ReportNotRegisteredError: ``filters_by_report`` に管理表未登録の管理番号がある場合。
@@ -148,6 +169,40 @@ def download_scheduled(
         ScheduledDownloadFailedError: 1件でも取得できなかった場合。**取得できたものは
             保存したうえで**送出する。ログだけに出して正常終了すると、スケジューラや
             RPA 基盤から見て成功と区別が付かない。
+    """
+    # **同時起動防止:** 履歴CSVとは別のロックファイル
+    # （``{HISTORY_PATH}.run.lock``）で、対象選定〜履歴追記をひとまとまりに
+    # プロセス間排他する。ロックが取れないときは別プロセスが進行中なので、
+    # 例外にせず警告ログだけ出して ``[]`` を返す。
+    # ``HistoryFileLock`` は名前のとおり履歴用ロックの部品だが、Windows の
+    # msvcrt ロックはファイル単位なので、``HISTORY_PATH`` とは違う
+    # ファイルを渡せば履歴読み書き（``{HISTORY_PATH}.lock``）と衝突しない。
+    # ``ExitStack`` を使い、ロック取得**だけ**を try/except で囲う。本体側で
+    # ``HistoryLockTimeoutError`` が上がっても、それは履歴読み書きの障害なので
+    # そのまま伝播させる（``[]`` で握りつぶすと「履歴の障害」が別の実行に紛れて
+    # 隠れる）。
+    run_lock_path = Path(f"{HISTORY_PATH}.run")
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(HistoryFileLock(run_lock_path, timeout=0))
+        except HistoryLockTimeoutError:
+            # 進行中の実行が今回の分の取得も担当する。失敗扱いにすると
+            # WinActor / RPA 基盤から見て誤報になるため、空リスト + 正常終了
+            logger.warning("別の実行が進行中のため今回はスキップします: %s", run_lock_path)
+            return []
+        return _download_scheduled_locked(project, filters_by_report=filters_by_report)
+
+
+def _download_scheduled_locked(
+    project: str,
+    *,
+    filters_by_report: dict[str, list[dict]] | None,
+) -> list[Path]:
+    """``download_scheduled()`` のロック取得後に動く本体。
+
+    実行ロックを ``download_scheduled()`` で取得し、その内側で動くコア部分を
+    切り出したヘルパー。``download_scheduled()`` 自体は薄いラッパーに
+    留めて、本体の長さ・複雑度を上げないようにする。
     """
     entries = load_master(MASTER_PATH)
     filters_by_report = filters_by_report or {}
@@ -163,6 +218,11 @@ def download_scheduled(
         if rule.enabled:
             rules_by_report.setdefault(rule.report_key, []).append(rule)
 
+    # **この実行の基準日時を 1 か所で固定。** スケジュール判定・ファイル名・
+    # 履歴の「実行日時」の 3 か所が同じ ``current`` を見ることで、23:59 に
+    # 始まった取得が日付をまたいでも、開始日で揃う（翌日 00:01 に終わった
+    # として履歴が残ると、翌日の同じスケジュールキーが「成功済み」で飛ぶ
+    # 事故を防ぐ）。
     current = clock_now()
     # 祝日は「今日が祝日か」だけ分かればよいので、1日分の set を作る
     holidays = _todays_holiday_set(current)
@@ -192,6 +252,7 @@ def download_scheduled(
                         schedule_rule.desired_time if schedule_rule is not None else None
                     ),
                     filters=filters_by_report.get(entry.key),
+                    current=current,
                 )
             )
         except (ComkenError, OSError) as e:
@@ -239,12 +300,23 @@ class _Attempt:
     """
 
     def __init__(
-        self, entry: ReportEntry, project: str, history_path: Path, schedule_key: str = ""
+        self,
+        entry: ReportEntry,
+        project: str,
+        history_path: Path,
+        schedule_key: str = "",
+        *,
+        executed_at: dt.datetime | None = None,
     ) -> None:
         self._entry = entry
         self._project = project
         self._history_path = history_path
         self._schedule_key = schedule_key
+        # この実行の開始時刻。``_download_scheduled_locked()`` で 1 回取った
+        # ``clock_now()`` の値をそのまま運ぶ。日付をまたぐ長い実行でも、
+        # 履歴の「実行日時」が開始時刻で揃う（=翌日分のスケジュールキーが
+        # 「昨日成功済み」として誤判定されるのを防ぐ）
+        self._executed_at = executed_at
         self._started = time.perf_counter()
 
     def record_failure(self, exc: BaseException) -> None:
@@ -262,6 +334,7 @@ class _Attempt:
             entry=self._entry,
             project=self._project,
             row=row,
+            executed_at=self._executed_at,
         )
 
     def record_success(self, path: Path, rows: Table) -> None:
@@ -285,6 +358,7 @@ class _Attempt:
             entry=self._entry,
             project=self._project,
             row=row,
+            executed_at=self._executed_at,
         )
 
 
@@ -296,6 +370,7 @@ def _download(
     *,
     schedule_run_time: dt.time | None = None,
     filters: list[dict] | None = None,
+    current: dt.datetime | None = None,
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
@@ -304,19 +379,25 @@ def _download(
     ``%Y%m%d_%H%M`` のタイムスタンプ値として使われる）。
     スケジュール行が無いレポート（後方互換、``schedule_key == ""``）は ``None``
     のままでよく、``_save()`` 側で現在時刻にフォールバックする。
+
+    ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``
+    の値。``_save()`` 経由で ``output_path(now=current)`` に渡し、
+    ``_Attempt`` 経由で履歴の「実行日時」に渡す。日付をまたぐ長い実行でも
+    判定・ファイル名・履歴が同じ「開始日」で揃うために 1 実行で同じ値を
+    共有する。
     """
-    attempt = _Attempt(entry, project, history_path, schedule_key)
+    attempt = _Attempt(entry, project, history_path, schedule_key, executed_at=current)
     try:
         _require_folder(entry)
         table = _fetch(entry, filters)
-        path = _save(entry, table, schedule_run_time=schedule_run_time)
+        path = _save(entry, table, schedule_run_time=schedule_run_time, current=current)
     except Exception as exc:
         try:
             attempt.record_failure(exc)
         except (
             HistoryWriteError,
             HistoryLockTimeoutError,
-            HistoryHeaderMismatchError,
+            CSVError,
         ) as history_exc:
             # 元の取得失敗 (`exc`) を ``__cause__`` に乗せて送出する。
             # 履歴書込み失敗の ``history_exc`` はメッセージに含めて、
@@ -439,6 +520,7 @@ def _save(
     table: Table,
     *,
     schedule_run_time: dt.time | None = None,
+    current: dt.datetime | None = None,
 ) -> Path:
     """行数と `allow_empty` に応じて保存先へ書き込み、書き終わったパスを返す。
 
@@ -451,12 +533,17 @@ def _save(
     同じパスへの上書きは想定しない — ``cached_report()`` 側はフォルダ内検索で
     当日分の最新ファイルを返すので、何度実行しても履歴と当日の最新状態は崩れない。
 
+    ``current`` は ``_download_scheduled_locked()`` で固定した ``clock_now()`` の値。
+    ``output_path(now=current)`` に渡すことで、23:59 に始まった実行が日付をまたいで
+    終わっても、出力ファイル名が開始日で揃う。``None`` のときは ``output_path()``
+    側で ``clock_now()`` にフォールバックする（既存の単体テスト経路を残すため）。
+
     **失敗時の後始末について:** 書き込みが例外の原因になった場合は、既存の
     ``_download()`` の ``except Exception`` 経路で ``_Attempt.record_failure()``
     を経由して ``ScheduledDownloadFailedError`` に変換される。書きかけのファイルも
     ``unlink(missing_ok=True)`` で後始末する。
     """
-    path = _reserve_unique_path(output_path(entry, schedule_run_time), entry.key)
+    path = _reserve_unique_path(output_path(entry, schedule_run_time, now=current), entry.key)
     try:
         # 問い合わせは成功したが明細が無い。**0件あり × なら失敗扱い、○ なら正常終了**
         if not table and not entry.allow_empty:
@@ -539,17 +626,23 @@ def _matched_schedule_key(
       時刻を持つ行がある限りそちらを優先する
     - いずれの行も ``is_due()`` False なら False, ""
     - いずれかの行が ``is_due()`` True でも、今日すでに成功済みなら False, ""
+
+    ``current`` は呼び出し元で固定した基準日時。dedup 判定にも ``current.date()``
+    を渡し、スケジュール判定と履歴チェックが同じ「日」を見るようにする
+    （23:59 をまたぐ実行で「判定は開始日・履歴は翌日」となる事故を防ぐ）。
     """
     rules = rules_by_report.get(entry.key)
     if not rules:
         # スケジュール行が無いレポート: ``downloaded_today()`` で 1 日 1 回までに
         # 制限する（後方互換）。戻り値のキーは空文字
-        return not history.downloaded_today(HISTORY_PATH, entry.key), ""
+        return not history.downloaded_today(HISTORY_PATH, entry.key, date=current.date()), ""
     due_rules = [
         rule
         for rule in rules
         if rule.is_due(current, holidays=holidays)
-        and not history.schedule_succeeded_today(HISTORY_PATH, rule.schedule_key)
+        and not history.schedule_succeeded_today(
+            HISTORY_PATH, rule.schedule_key, date=current.date()
+        )
     ]
     if not due_rules:
         return False, ""

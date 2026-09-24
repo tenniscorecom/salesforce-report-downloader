@@ -13,11 +13,10 @@
 """
 
 import csv
-import io
+import datetime as dt
 import logging
 from pathlib import Path
 
-from comken.constants import Encoding
 from comken.core.clock import now
 from comken.core.files import atomic_write
 from comken.exceptions import GroupNotRegisteredError, HistoryWriteError
@@ -31,7 +30,7 @@ from comken.services.salesforce_downloader.sheets.history import (
     migrate_row,
 )
 from comken.services.salesforce_downloader.sheets.master import ReportEntry
-from comken.toolbox.csv import read_text
+from comken.toolbox.csv import CSV
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +43,7 @@ def record(
     entry: ReportEntry,
     project: str,
     row: HistoryRow,
+    executed_at: dt.datetime | None = None,
 ) -> None:
     """履歴を1行追記する。ファイルが無ければ見出し行から作る。
 
@@ -55,6 +55,11 @@ def record(
             保存先は `output_path()` で組み立て直した値を出す（`_resolved_folder()`）。
         project: 呼び出したプロジェクト名。
         row: 履歴1行の本体（成否・各段階の結果・件数・エラー）。
+        executed_at: 「実行日時」列に書く値。**その実行の開始時刻**を 1 実行で
+            固定して渡すことで、23:59 に始まった実行が日付をまたいでも、判定・
+            ファイル名・履歴のすべてが開始日で揃う。``None`` のときは従来どおり
+            ``now()``（呼び出した瞬間の時刻）で書く（テストなど、時刻固定が
+            不要な呼び出し側の後方互換）。
     """
     path = Path(path)
     logger.debug(
@@ -64,8 +69,9 @@ def record(
         row.schedule_key,
         project,
     )
+    timestamp = now() if executed_at is None else executed_at
     values = [
-        now().strftime(_TIMESTAMP_FORMAT),
+        timestamp.strftime(_TIMESTAMP_FORMAT),
         entry.key,
         row.schedule_key,
         entry.summary,
@@ -139,30 +145,32 @@ def _migrate_if_needed(path: Path) -> None:
     増減・並び替えがあっても、運用中の履歴は ``migrate_row()`` で吸収して
     新しい ``COLUMNS`` の見出しに揃え直す。
 
-    文字コードは ``read_text()`` の自動判定（UTF-8 BOM / CP932）で吸収する。
-    人が Excel で開いて保存し直すと CP932 へ化けるため、プログラムが書く
-    UTF-8 BOM 以外のエンコーディングでも読み込める必要がある。書き換え後は
-    次の ``_append()`` と同じく UTF-8 BOM 付きへ正規化する（同じ ``_append()``
-    ループからの追記と整合させるため）。
+    読み取りは ``comken.toolbox.csv.CSV`` に委譲する。文字コード自動判定
+    （UTF-8 BOM / CP932）・見出しの検証（空・重複）・列数不一致の検出は
+    ``CSV`` クラスが担当する。**重複見出し・空見出しの履歴CSVは書き換えず
+    停止する**（``CSV.read()`` が ``CSVInvalidHeaderError`` を上げる）。人が
+    Excel で開いて保存し直すと CP932 へ化けるため、プログラムが書く UTF-8 BOM
+    以外のエンコーディングでも読み込める必要がある。書き換え後は次の ``_append()``
+    と同じく UTF-8 BOM 付きへ正規化する（同じ ``_append()`` ループからの
+    追記と整合させるため）。
 
     この書き換えは ``HistoryFileLock`` の中で呼び出される前提になっている
     （``_append()`` の呼び出し経路が ``with HistoryFileLock(path):`` 内）。
     """
-    text = read_text(path, encoding=Encoding.AUTO)
-    actual = tuple(next(csv.reader(io.StringIO(text)), None) or ())
+    # まず ``CSV`` に読ませて壊れた見出しを早期に弾く（``CSVInvalidHeaderError``
+    # がそのまま呼出側へ伝播する）。正常時だけ実際の rows を取り出す
+    with CSV(path, read_only=True) as csv_file:
+        table = csv_file.read()
+    actual = tuple(table.columns)
     if actual == COLUMNS:
         return  # 既に最新構成
     if not actual:
         # 見出しすら無い壊れたファイルは触らない。``_append()`` がそのまま
         # 追記を進めて、二重見出しなどの更なる事故を防ぐ
-        logger.debug(
-            "履歴マイグレーションをスキップ（見出しなし）: path=%s", path
-        )
+        logger.debug("履歴マイグレーションをスキップ（見出しなし）: path=%s", path)
         return
     # 古い見出し → 全行を新しい COLUMNS に揃え直してアトミックに書き換え
-    reader = csv.DictReader(io.StringIO(text), fieldnames=actual)
-    next(reader, None)  # ヘッダー行を捨てる
-    migrated_rows = [migrate_row(row) for row in reader]
+    migrated_rows = [migrate_row(row) for row in table.to_rows()]
     logger.debug(
         "履歴マイグレーション開始: path=%s, 古い列=%s → 新しい列=%s, 行数=%d",
         path,
