@@ -1152,9 +1152,101 @@ class TestHistory:
         # ファイルがバイト単位で不変（書き換え・追記ともに行われない）
         assert history_path.read_bytes() == before
 
+    def test_record_writes_to_file_once_for_migration_and_append(self, tmp_path, monkeypatch):
+        """古い列構成の履歴CSVに ``record()`` を呼ぶと、マイグレーションと
+        新しい1行の追記が **1回のファイル全体書き直し** で完了する
+        （マイグレーションのための書き直しと追記のための書き直しを別々に
+        行わない）。
+
+        2026-09 の ``CSV`` クラス移行前は ``_migrate_if_needed()`` が
+        マイグレーションで 1 回、 ``_append()`` が追記で 1 回、合計 2 回
+        書き直す実装だったが、新仕様では ``CSV`` クラスの ``with`` ブロック
+        を抜けるときの ``CSV._write`` 1 回で両方を兼ねる（マイグレ後の旧データ
+        + 新規追記 = 2 行を 1 回で書き出す）。
+        """
+        import comken.toolbox.csv.file as csv_file_module
+
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        # 末尾に「旧バージョン列」を足した18列の見出しと 18 列の行。
+        # 「旧バージョン列」をマイグレーションで捨て、 ``COLUMNS`` 順へ
+        # 揃えたうえで新行を足すシナリオを使う
+        legacy_header = [*history.COLUMNS, "旧バージョン列"]
+        legacy_row = [
+            "2024-01-01 09:00:00",
+            "1001",
+            "",
+            "顧客一覧",
+            "00O5g00000ABCDE",
+            URL_A,
+            "定期実行",
+            "成功",
+            "成功",
+            "成功",
+            "顧客一覧",
+            "a.csv",
+            "1",
+            "0.10",
+            "",
+            "",
+            "",
+            "旧バージョン列の値",
+        ]
+        self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)
+
+        # ``CSV._write`` の呼び出し回数と、そのとき書き出される行数を数える。
+        # ``_append()`` 内の ``with CSV(...) as csv_file:`` の ``__exit__``
+        # が 1 回だけ呼ばれることを確認する
+        original_write = csv_file_module.CSV._write
+        calls: list[int] = []
+
+        def counting_write(self, table):
+            calls.append(len(table))
+            return original_write(self, table)
+
+        monkeypatch.setattr(csv_file_module.CSV, "_write", counting_write)
+
+        self._record_for(
+            history_path,
+            key="1001",
+            summary="顧客一覧",
+            url=URL_A,
+            group="営業事務グループ",
+            assignee="山田",
+            file_name="b.csv",
+        )
+
+        # マイグレーション後の1行 + 追記の1行 = 2行を1回で書き出す。
+        # 2回（マイグレーションで1回、追記で1回）に分割されていたら落ちる
+        assert len(calls) == 1
+        assert calls[0] == 2
+
     def test_history_when_csv_write_fails(self, tmp_path, monkeypatch):
         """Salesforce 取得は成功したが CSV 書き込みが失敗 → 成否=失敗 /
-        Salesforce取得結果=成功 / 保存結果=失敗 / エラーコード=送出された例外クラス名。"""
+        Salesforce取得結果=成功 / 保存結果=失敗 / エラーコード=送出された例外クラス名。
+
+        2026-09 に履歴CSV書き込みも ``comken.toolbox.csv.CSV`` クラスを使うよう
+        なったため、``src.service.CSV._write`` を直接モックすると履歴CSV書き込み
+        経路でも同じモックが発火してしまう。保存先CSV書き込みだけを失敗させる
+        ために ``service._write_csv()`` 関数を直接モックする。
+        """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = make_master(
@@ -1175,17 +1267,14 @@ class TestHistory:
         _patch_master_path(monkeypatch, master, history_path)
 
         write_error = OSError("書き込み失敗")
-
-        def _raise_write(path, fieldnames, *args, **kwargs):
-            raise write_error
-
         with (
             patch(
                 "src.service.site_for",
                 return_value=fake_salesforce(),
             ),
-            patch(
-                "src.service.CSV._write",
+            patch.object(
+                service_module,
+                "_write_csv",
                 side_effect=write_error,
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1306,7 +1395,13 @@ class TestHistory:
         assert row["原因区分"] == "データなし"
 
     def test_cause_is_file_when_csv_write_fails(self, tmp_path, monkeypatch):
-        """CSV 書き込みが OSError で失敗 → 「ファイル」（共有サーバー・権限）。"""
+        """CSV 書き込みが OSError で失敗 → 「ファイル」（共有サーバー・権限）。
+
+        2026-09 に履歴CSV書き込みも ``comken.toolbox.csv.CSV`` クラスを使うよう
+        なったため、``CSV._write`` を直接モックすると履歴CSV書き込み経路でも
+        同じモックが発火してしまう。保存先CSV書き込みだけを失敗させるために
+        ``service._write_csv()`` 関数を直接モックする。
+        """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = make_master(
@@ -1332,8 +1427,9 @@ class TestHistory:
                 "src.service.site_for",
                 return_value=fake_salesforce(),
             ),
-            patch(
-                "src.service.CSV._write",
+            patch.object(
+                service_module,
+                "_write_csv",
                 side_effect=write_error,
             ),
             pytest.raises(ScheduledDownloadFailedError),

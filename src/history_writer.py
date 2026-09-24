@@ -12,13 +12,12 @@
 （`downloaded_today()` 等）が壊れる。
 """
 
-import csv
 import datetime as dt
 import logging
 from pathlib import Path
 
 from comken.core.clock import now
-from comken.core.files import atomic_write
+from comken.core.table import Table
 from comken.exceptions import GroupNotRegisteredError, HistoryWriteError
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
 from comken.services.salesforce_downloader.provider import output_path
@@ -123,67 +122,45 @@ def _stage(value: bool | None) -> str:
 def _append(path: Path, values: list) -> None:
     """1行を追記する。見出し行はファイルを作るときだけ書く。
 
-    Excel が読めるよう UTF-8 BOM 付きにする。newline="" は csv モジュールの作法
-    （Windows で空行が入るのを防ぐ）。
+    既存見出しが古い構成のときは、全行を ``migrate_row()`` で今の ``COLUMNS``
+    に揃え直したうえで、新しい1行を足して **1回の保存で** 書き込む
+    （マイグレーションと追記を別々に2回書き直さない）。既存見出しが
+    重複・空など致命的に壊れていると、 ``CSV`` クラスがそのまま例外を
+    上げてファイルは何も書き換えない。
+
+    書き込みは ``comken.toolbox.csv.CSV`` クラスに委譲する。文字コード自動判定
+    （UTF-8 BOM / CP932）・見出しの検証（空・重複）・列数不一致の検出は
+    ``CSV`` クラスが担当する。書き換え後は次の追記と同じく UTF-8 BOM 付きへ
+    正規化される（同じ ``with`` からの追記と整合させるため）。
+
+    パフォーマンス面の注意: 1 回あたりにファイル全体を原子的に書き直すため、
+    行数が増えるほど 1 回の書き込みコストは増える。履歴の規模
+    （1 日数十件程度）では許容できる。
+
+    この関数は ``HistoryFileLock`` の中で呼び出される前提になっている
+    （``record()`` の呼び出し経路が ``with HistoryFileLock(path):`` 内）。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     is_new = not path.exists() or path.stat().st_size == 0
-    if not is_new:
-        _migrate_if_needed(path)
-    with path.open("a", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
+    record_dict = dict(zip(COLUMNS, values, strict=True))
+    # ``is_new=True`` のときだけ ``columns=`` を渡す。既存ファイルに ``columns=``
+    # を渡すと「見出しなしのファイル」扱いとなり、最初の1行をデータとして読んで
+    # しまうため、渡すのは新規ファイル限定。
+    with CSV(path, columns=list(COLUMNS) if is_new else None) as csv_file:
         if is_new:
-            writer.writerow(COLUMNS)
-        writer.writerow(values)
-
-
-def _migrate_if_needed(path: Path) -> None:
-    """既存見出しが古い構成なら、ファイル全体を新しい ``COLUMNS`` に書き換える。
-
-    既に ``COLUMNS`` と一致しているときは何もしない（毎回ファイル全体を
-    書き換えるのは無駄なので、変更が必要なときだけ動かす）。``COLUMNS`` の
-    増減・並び替えがあっても、運用中の履歴は ``migrate_row()`` で吸収して
-    新しい ``COLUMNS`` の見出しに揃え直す。
-
-    読み取りは ``comken.toolbox.csv.CSV`` に委譲する。文字コード自動判定
-    （UTF-8 BOM / CP932）・見出しの検証（空・重複）・列数不一致の検出は
-    ``CSV`` クラスが担当する。**重複見出し・空見出しの履歴CSVは書き換えず
-    停止する**（``CSV.read()`` が ``CSVInvalidHeaderError`` を上げる）。人が
-    Excel で開いて保存し直すと CP932 へ化けるため、プログラムが書く UTF-8 BOM
-    以外のエンコーディングでも読み込める必要がある。書き換え後は次の ``_append()``
-    と同じく UTF-8 BOM 付きへ正規化する（同じ ``_append()`` ループからの
-    追記と整合させるため）。
-
-    この書き換えは ``HistoryFileLock`` の中で呼び出される前提になっている
-    （``_append()`` の呼び出し経路が ``with HistoryFileLock(path):`` 内）。
-    """
-    # まず ``CSV`` に読ませて壊れた見出しを早期に弾く（``CSVInvalidHeaderError``
-    # がそのまま呼出側へ伝播する）。正常時だけ実際の rows を取り出す
-    with CSV(path, read_only=True) as csv_file:
+            csv_file.append(record_dict)
+            return
+        # 既存ファイル: ``CSV.read()`` が見出し検証（重複・空）を行う。
+        # 検証失敗時の ``CSVInvalidHeaderError`` 系はそのまま呼出側へ伝播する
         table = csv_file.read()
-    actual = tuple(table.columns)
-    if actual == COLUMNS:
-        return  # 既に最新構成
-    if not actual:
-        # 見出しすら無い壊れたファイルは触らない。``_append()`` がそのまま
-        # 追記を進めて、二重見出しなどの更なる事故を防ぐ
-        logger.debug("履歴マイグレーションをスキップ（見出しなし）: path=%s", path)
-        return
-    # 古い見出し → 全行を新しい COLUMNS に揃え直してアトミックに書き換え
-    migrated_rows = [migrate_row(row) for row in table.to_rows()]
-    logger.debug(
-        "履歴マイグレーション開始: path=%s, 古い列=%s → 新しい列=%s, 行数=%d",
-        path,
-        actual,
-        COLUMNS,
-        len(migrated_rows),
-    )
-    with (
-        atomic_write(path) as temporary_path,
-        temporary_path.open("w", encoding="utf-8-sig", newline="") as f,
-    ):
-        writer = csv.writer(f)
-        writer.writerow(COLUMNS)
-        for row in migrated_rows:
-            writer.writerow([row.get(column, "") for column in COLUMNS])
-    logger.debug("履歴マイグレーション完了: path=%s", path)
+        if tuple(table.columns) == COLUMNS:
+            # 既に最新構成 → 既存 Table に 1 行足すだけ
+            table.append(record_dict)
+            csv_file.replace(table)
+            return
+        # 見出しが古い構成 → ``migrate_row`` で今の ``COLUMNS`` に揃え、
+        # そこに今回の 1 行を足して 1 回で書き直す
+        migrated_rows = [migrate_row(row) for row in table.to_rows()]
+        new_table = Table(list(COLUMNS), migrated_rows)
+        new_table.append(record_dict)
+        csv_file.replace(new_table)
