@@ -243,9 +243,9 @@ class TestApplyScheduleDropdowns:
             apply_schedule_dropdowns(tmp_path / "no_sched.xlsx")
 
     def test_missing_file_raises(self, tmp_path):
-        from comken.exceptions import ExcelFileNotFoundError
+        from comken.exceptions import ComkenFileNotFoundError
 
-        with pytest.raises(ExcelFileNotFoundError):
+        with pytest.raises(ComkenFileNotFoundError):
             apply_schedule_dropdowns(tmp_path / "無い.xlsx")
 
     def test_conditional_formatting_highlights_contradicting_cells(self, tmp_path):

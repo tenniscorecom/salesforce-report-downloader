@@ -23,7 +23,7 @@ from typing import Any, cast
 
 from comken.constants import Color
 from comken.core.table.model import Table as CoreTable
-from comken.exceptions import ExcelFileNotFoundError, SheetNotFoundError
+from comken.exceptions import ComkenFileNotFoundError, SheetNotFoundError
 from comken.services.salesforce_downloader.report_master import (
     ColumnSpec,
     MasterRow,
@@ -358,12 +358,16 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
         path: 「スケジュール」シートを持つ Excel ファイル（既存）。
 
     Raises:
-        ExcelFileNotFoundError: ``path`` が存在しない場合。
+        ComkenFileNotFoundError: ``path`` が存在しない場合。
         SheetNotFoundError: 「スケジュール」シートが無い場合。
     """
     source = Path(path)
     if not source.exists():
-        raise ExcelFileNotFoundError(source)
+        raise ComkenFileNotFoundError(
+            "Excel ファイル",
+            source,
+            "パスが正しいか、ファイルが存在するかを確認してください。",
+        )
     book = load_workbook(source)
     # `comken.toolbox.excel.Excel.create_data_sheet()` は `PY_` プレフィックスを
     # 自動付与するため、シート探索も `PY_` 付きで行う。プレフィックス無しの
@@ -449,7 +453,7 @@ def _existing_rows_or_none(
     Note:
         ``ExcelApplicationNotAvailableError`` など、ファイルは存在するが別の理由で
         読めないケースでは例外をそのまま伝播させる。``SheetNotFoundError`` と
-        ``ExcelFileNotFoundError`` だけが「既存データ無し」として ``None`` に
+        ``ComkenFileNotFoundError`` だけが「既存データ無し」として ``None`` に
         フォールバックする。
     """
     if not path.exists():
@@ -459,7 +463,7 @@ def _existing_rows_or_none(
         return None
     try:
         raw_rows = read_raw_rows(path, row_cls.SHEET_NAME)
-    except (SheetNotFoundError, ExcelFileNotFoundError):
+    except (SheetNotFoundError, ComkenFileNotFoundError):
         logger.debug("既存データなし（シート未存在）: path=%s, sheet=%s", path, row_cls.SHEET_NAME)
         return None
     headers = [spec.header for _, spec, _, _ in specs]

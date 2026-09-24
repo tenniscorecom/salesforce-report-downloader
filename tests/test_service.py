@@ -19,10 +19,10 @@ import pytest
 from comken.core.table import Table
 from comken.exceptions import (
     HistoryWriteError,
-    InvalidReportURLError,
     MasterDuplicateValueError,
     MasterRowValueError,
     ReportNotRegisteredError,
+    SalesforceReportIDNotFoundError,
     ScheduledDownloadFailedError,
 )
 from comken.services.salesforce_downloader import (
@@ -324,7 +324,7 @@ class TestLoadMaster:
                 ]
             ],
         )
-        with pytest.raises(InvalidReportURLError) as e:
+        with pytest.raises(SalesforceReportIDNotFoundError) as e:
             load_master(master)
         assert "1001" in str(e.value)  # 行番号ではなく管理番号で示す（空行があるとズレるため）
 
@@ -783,7 +783,7 @@ class TestHistory:
         """テスト用: ``record()`` を ``paths`` fixture の差し替え経由で呼ぶ。
 
         ``_resolved_folder()`` が ``provider.output_path()`` を経由するため、
-        管理表が ``MASTER_PATH`` に実在しないと ``ExcelFileNotFoundError``
+        管理表が ``MASTER_PATH`` に実在しないと ``ComkenFileNotFoundError``
         に近い失敗をする。fixture 経由で ``MASTER_PATH`` / ``HISTORY_PATH`` を
         差し替えてから呼ぶ。
         """
