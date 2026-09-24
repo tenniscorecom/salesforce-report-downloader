@@ -58,7 +58,6 @@ from pathlib import Path
 
 from comken.core.clock import now as clock_now
 from comken.core.files import atomic_write
-from comken.core.holidays import default_calendar
 from comken.core.table.model import Table
 from comken.core.timer import measure
 from comken.exceptions import (
@@ -103,7 +102,7 @@ CAUSE_FILE = "ファイル"
 CAUSE_PROGRAM = "プログラム"
 
 # ``_reserve_path`` が連番を足して空きファイル名を探索する回数の上限。
-# ``comken.core.holidays.calendar.BUSINESS_DAY_SEARCH_LIMIT`` と同じ理由で、
+# ``comken.core.calendar.BUSINESS_DAY_SEARCH_LIMIT`` と同じ理由で、
 # 共有サーバーの同期・権限異常などで ``FileExistsError`` が返り続けると無限
 # ループになるため、必ず上限を切る。
 RESERVE_PATH_LIMIT = 1000
@@ -224,10 +223,8 @@ def _download_scheduled_locked(
     # として履歴が残ると、翌日の同じスケジュールキーが「成功済み」で飛ぶ
     # 事故を防ぐ）。
     current = clock_now()
-    # 祝日は「今日が祝日か」だけ分かればよいので、1日分の set を作る
-    holidays = _todays_holiday_set(current)
 
-    targets, already_failed = _select_targets(entries, rules_by_report, current, holidays)
+    targets, already_failed = _select_targets(entries, rules_by_report, current)
     logger.info("定期取得の対象: %d 件", len(targets))
 
     saved: list[Path] = []
@@ -606,7 +603,6 @@ def _matched_schedule_key(
     entry: ReportEntry,
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,
-    holidays: set[dt.date],
 ) -> tuple[bool, str]:
     """このレポートを今取得すべきか、すべきなら根拠のスケジュールキーを返す。
 
@@ -627,6 +623,9 @@ def _matched_schedule_key(
     - いずれの行も ``is_due()`` False なら False, ""
     - いずれかの行が ``is_due()`` True でも、今日すでに成功済みなら False, ""
 
+    祝日判定は ``ScheduleRule.is_due()`` が ``comken.core.calendar`` の統一
+    カレンダーを直接見るため、呼び出し側でカレンダーを用意する必要はない。
+
     ``current`` は呼び出し元で固定した基準日時。dedup 判定にも ``current.date()``
     を渡し、スケジュール判定と履歴チェックが同じ「日」を見るようにする
     （23:59 をまたぐ実行で「判定は開始日・履歴は翌日」となる事故を防ぐ）。
@@ -639,7 +638,7 @@ def _matched_schedule_key(
     due_rules = [
         rule
         for rule in rules
-        if rule.is_due(current, holidays=holidays)
+        if rule.is_due(current)
         and not history.schedule_succeeded_today(
             HISTORY_PATH, rule.schedule_key, date=current.date()
         )
@@ -656,7 +655,6 @@ def _select_targets(
     entries: dict[str, ReportEntry],
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,
-    holidays: set[dt.date],
 ) -> tuple[list[tuple[ReportEntry, str, ScheduleRule | None]], list[str]]:
     """定期取得の対象を「有効」かつ「取得すべき」かつ「当日未失敗」のレポートに絞る。
 
@@ -692,7 +690,7 @@ def _select_targets(
     for entry in entries.values():
         if not entry.enabled:
             continue
-        is_due, schedule_key = _matched_schedule_key(entry, rules_by_report, current, holidays)
+        is_due, schedule_key = _matched_schedule_key(entry, rules_by_report, current)
         if not is_due:
             continue
         if history.truncated_today(HISTORY_PATH, entry.key, current.date()):
@@ -714,17 +712,6 @@ def _select_targets(
                     break
         targets.append((entry, schedule_key, matched_rule))
     return targets, already_failed
-
-
-def _todays_holiday_set(current: dt.datetime) -> set[dt.date]:
-    """今日が祝日なら {今日}、そうでなければ空集合を返す。
-
-    ``is_due()`` の祝日スキップ判定は「対象日が holidays に含まれるか」だけ見る
-    ので、期間を取って集合化する必要は無く、当日1日分だけ用意すれば十分
-    （1日分の判定にしか使わないため。``ScheduleRule.is_due`` の引数を
-    整えた実装詳細）。
-    """
-    return {current.date()} if default_calendar().is_holiday(current.date()) else set()
 
 
 def _failure_row(exc: BaseException, seconds: float, schedule_key: str = "") -> HistoryRow:

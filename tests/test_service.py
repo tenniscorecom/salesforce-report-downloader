@@ -1610,7 +1610,6 @@ class TestDownloadScheduled:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         with patch("src.service.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
@@ -1643,7 +1642,6 @@ class TestDownloadScheduled:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         with patch("src.service.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
@@ -1675,7 +1673,6 @@ class TestDownloadScheduled:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         with patch("src.service.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
@@ -1714,7 +1711,6 @@ class TestDownloadScheduled:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         site = fake_salesforce()
         with patch("src.service.site_for", return_value=site):
@@ -1729,6 +1725,76 @@ class TestDownloadScheduled:
         assert rows[0]["管理番号"] == "1001"
         assert rows[0]["スケジュールキー"] == "S002"
         assert rows[0]["成否"] == "成功"
+
+    def test_schedule_rule_excludes_on_holiday(self, tmp_path, monkeypatch):
+        """``holiday_policy`` が既定の「取得しない」のとき、祝日（例: 2026-05-04 みどりの日）は
+        スケジュール一致でも対象外になる。
+
+        ``ScheduleRule.is_due()`` が ``comken.core.calendar`` の統一カレンダーを
+        直接見て祝日判定する経路を確認する。``clock_now`` を祝日の 12:00 に
+        固定して「毎週・月曜・09:00」のスケジュールが曜日・時刻では一致する状態を
+        作っても、祝日判定で ``is_due=False`` になる。
+        """
+        from comken.services.salesforce_downloader.sheets.schedule import (
+            FREQUENCY_BUSINESS_DAY,
+            FREQUENCY_DAILY,
+            FREQUENCY_MONTHLY,
+            FREQUENCY_WEEKLY,
+            ScheduleRule,
+        )
+
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        # 2026-05-04 は月曜・みどりの日。12:00 固定で「毎週・月曜・09:00」は
+        # 曜日・時刻条件が一致する状態
+        fixed_now = dt.datetime(2026, 5, 4, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        master = make_master_with_schedule(
+            tmp_path / "管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "祝日判定",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+            schedule_rows=[
+                ["S001", "1001", "毎週", "09:00", "", "月", "", "取得しない", "○"],
+            ],
+        )
+        _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            saved = download_scheduled()
+        # 祝日（みどりの日）なので ``is_due`` 内で除外され、保存されない
+        assert saved == []
+        assert list(base_path.glob("1001_*.csv")) == []
+
+        # **壊した版:** ``ScheduleRule.is_due`` を祝日を見ない版（=``_raw_date_matches``
+        # + 時刻条件のみ）に差し替えると、曜日と時刻が一致するだけで ``True`` になり
+        # 取得される＝このテストが落ちる（=祝日スキップが実装で効いていることの証拠）
+        def _broken_is_due(self, now):
+            if not self.enabled or not self._raw_date_matches(now.date()):
+                return False
+            if self.frequency in {
+                FREQUENCY_DAILY,
+                FREQUENCY_WEEKLY,
+                FREQUENCY_MONTHLY,
+                FREQUENCY_BUSINESS_DAY,
+            }:
+                return self.start_time is None or now.time() >= self.start_time
+            return False
+
+        monkeypatch.setattr(ScheduleRule, "is_due", _broken_is_due)
+        site = fake_salesforce()
+        with patch("src.service.site_for", return_value=site):
+            saved = download_scheduled()
+        assert site.return_value.__enter__.return_value.report.get.call_count == 1
+        assert [path.name.split("_")[0] for path in saved] == ["1001"]
 
 
 # ── スケジュール単位の重複実行防止（今回の機能の核心）───────────────────
@@ -1764,7 +1830,6 @@ class TestScheduleDedup:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         site = fake_salesforce()
         with patch("src.service.site_for", return_value=site):
@@ -1808,7 +1873,6 @@ class TestScheduleDedup:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         # 1 回目は OSError で保存失敗、2 回目は成功する
         original_write_csv = service_module._write_csv
@@ -1867,7 +1931,6 @@ class TestScheduleDedup:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         # 保存段階で OSError を起こして失敗させる（_Attempt.record_failure() の経路を通る）
         def fail(path, table):
@@ -1919,7 +1982,6 @@ class TestScheduleDedup:
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         # 1 回目: 水曜 12:00 → S_WED が is_due=True、ただし履歴に何もないので取得
         first_site = fake_salesforce()
@@ -2049,16 +2111,6 @@ class TestRunLock:
             pytest.raises(HistoryLockTimeoutError),
         ):
             download_scheduled()
-
-
-def _patch_default_calendar(monkeypatch: pytest.MonkeyPatch, *, holidays: set) -> None:
-    """``service.default_calendar()`` を固定の祝日セットを持つ偽物に差し替える。"""
-
-    class _FakeCalendar:
-        def is_holiday(self, date: object) -> bool:
-            return date in holidays
-
-    monkeypatch.setattr(service_module, "default_calendar", lambda: _FakeCalendar())
 
 
 def make_master_with_schedule(
@@ -2626,7 +2678,6 @@ class TestTruncatedSkip:
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        _patch_default_calendar(monkeypatch, holidays=set())
 
         # 当日 truncated 済み = スケジュール一致だが 2000件超で失敗
         self._seed_truncated_failure(history_path, when=fixed_now)
