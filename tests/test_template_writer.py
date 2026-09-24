@@ -264,10 +264,11 @@ class TestApplyScheduleDropdowns:
         ws = wb[self._PY_SCHEDULE]
 
         # ``ConditionalFormattingList`` を ``{範囲文字列: [数式, ...]}`` に変換。
-        # キーは ``ConditionalFormatting`` オブジェクトなので ``sqref`` で文字列化する
+        # 公開イテレータで ``(cf, rules)`` を回せば、``_cf_rules``（非公開）に
+        # 頼らず同じ検証ができる
         rules_by_range: dict[str, list[str]] = {}
-        for cf, rules in ws.conditional_formatting._cf_rules.items():
-            rules_by_range[str(cf.sqref)] = [str(rule.formula[0]) for rule in rules]
+        for cf in ws.conditional_formatting:
+            rules_by_range[str(cf.sqref)] = [str(rule.formula[0]) for rule in cf.rules]
 
         # 「曜日」列 (F) と「日付」列 (G) に書式が付く
         assert "F2:F1001" in rules_by_range, rules_by_range

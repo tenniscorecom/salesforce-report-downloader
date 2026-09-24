@@ -53,7 +53,7 @@ def read_cached_table() -> None:
         logger.warning("本日のキャッシュがまだ無いため、今回はスキップします")
         return
 
-    rows = table.read_rows()
+    rows = table.to_rows()
     logger.info("読み取った行数: %d", len(rows))
 
 
@@ -81,7 +81,7 @@ def read_cached_file_directly() -> None:
 
     with CSV(path, read_only=True) as csv_file:
         table = csv_file.read()
-    logger.info("読み取った行数: %d（%s）", len(table.read_rows()), path)
+    logger.info("読み取った行数: %d（%s）", len(table.to_rows()), path)
 
 
 if __name__ == "__main__":

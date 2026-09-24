@@ -2266,7 +2266,7 @@ def make_master_with_schedule(
     return path
 
 
-def _history_rows(paths: dict) -> list[dict]:
+def _history_rows(paths: dict) -> Table:
     with CSV(paths["history_path"]) as csv_file:
         return csv_file.read()
 
@@ -2317,14 +2317,16 @@ class TestFixedCurrentAcrossExecution:
         start_dt = dt.datetime(2026, 9, 23, 23, 59, 50)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         next_day_dt = dt.datetime(2026, 9, 24, 0, 1, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
 
-        def _clock_now_then_next_day():
-            # 1 回目は開始時刻、以降は翌日 00:01 を返す。
-            # ``current`` への固定（service.py）と ``output_path`` 内の
-            # フォールバック（provider.py）で呼ばれる側の差を再現する
-            _clock_now_then_next_day.count += 1
-            return start_dt if _clock_now_then_next_day.count == 1 else next_day_dt
+        # 1 回目は開始時刻、以降は翌日 00:01 を返す。
+        # ``current`` への固定（service.py）と ``output_path`` 内の
+        # フォールバック（provider.py）で呼ばれる側の差を再現する
+        call_count = 0
 
-        _clock_now_then_next_day.count = 0
+        def _clock_now_then_next_day():
+            nonlocal call_count
+            call_count += 1
+            return start_dt if call_count == 1 else next_day_dt
+
         monkeypatch.setattr(service_module, "clock_now", _clock_now_then_next_day)
         monkeypatch.setattr(provider_module, "clock_now", _clock_now_then_next_day)
 
