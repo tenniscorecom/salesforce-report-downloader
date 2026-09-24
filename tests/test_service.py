@@ -758,9 +758,10 @@ class TestHistory:
         """テスト用: 任意の見出し・値の履歴CSVを ``history_path`` に書く。
 
         ``COLUMNS`` と違う列構成を試したいテストで使う。``_append()`` の
-        「新規ファイル＝見出しを書く」分岐を経由せず、``_migrate_if_needed()``
-        の経路を直接テストするため、書き込みは Python 標準の ``csv.writer`` で
-        直接行う。出力は ``_append()`` と同じく UTF-8 BOM 付きにする。
+        「新規ファイル＝見出しを書く」分岐を経由せず、既存ファイルの経路
+        （見出し検証・マイグレーション）を直接踏ませるため、Python 標準の
+        ``csv.writer`` でテストデータを直接書く。出力は ``_append()`` と同じく
+        UTF-8 BOM 付きにする。
         """
         history_path.parent.mkdir(parents=True, exist_ok=True)
         with history_path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -1036,9 +1037,10 @@ class TestHistory:
         assert rows[1]["管理番号"] == "1001"
         assert rows[1]["ファイル名"] == "b.csv"
 
-    def test_record_does_not_rewrite_when_header_is_already_current(self, tmp_path, monkeypatch):
-        """既に新 ``COLUMNS`` になっている履歴CSVに対しては、``record()`` 呼び出しで
-        ファイル全体を書き直さない（既存実装のロック区間内動作と同じ）。
+    def test_record_appends_when_header_is_already_current(self, tmp_path, monkeypatch):
+        """既に新 ``COLUMNS`` になっている履歴CSVに対して ``record()`` を呼ぶと、
+        既存の行を保持したまま今回の 1 行が末尾に足される（ ``CSV`` クラスの
+        ``replace()`` でファイル全体を 1 回だけ書き直す経路）。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -1155,14 +1157,10 @@ class TestHistory:
     def test_record_writes_to_file_once_for_migration_and_append(self, tmp_path, monkeypatch):
         """古い列構成の履歴CSVに ``record()`` を呼ぶと、マイグレーションと
         新しい1行の追記が **1回のファイル全体書き直し** で完了する
-        （マイグレーションのための書き直しと追記のための書き直しを別々に
-        行わない）。
-
-        2026-09 の ``CSV`` クラス移行前は ``_migrate_if_needed()`` が
-        マイグレーションで 1 回、 ``_append()`` が追記で 1 回、合計 2 回
-        書き直す実装だったが、新仕様では ``CSV`` クラスの ``with`` ブロック
-        を抜けるときの ``CSV._write`` 1 回で両方を兼ねる（マイグレ後の旧データ
-        + 新規追記 = 2 行を 1 回で書き出す）。
+        （マイグレーションと追記を別々に 2 回書き直さず、 1 回の保存にまとめる）。
+        ``CSV`` クラスの ``with`` ブロックを抜けるときの ``CSV._write`` が
+        1 回だけ呼ばれ、マイグレ後の旧データ + 新規追記 = 2 行を 1 回で
+        書き出す。
         """
         import comken.toolbox.csv.file as csv_file_module
 
@@ -1234,7 +1232,8 @@ class TestHistory:
         )
 
         # マイグレーション後の1行 + 追記の1行 = 2行を1回で書き出す。
-        # 2回（マイグレーションで1回、追記で1回）に分割されていたら落ちる
+        # ``_write`` が 2 回（マイグレーションで 1 回、追記で 1 回）に分割
+        # されていたら落ちる
         assert len(calls) == 1
         assert calls[0] == 2
 

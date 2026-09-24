@@ -285,11 +285,6 @@ class _Attempt:
     `try/except` はそのまま（失敗の段階と原因区分は `_failure_row()` が
     例外の型だけから決める）。
 
-    履歴の「実行方式」列は **固定で `TRIGGER_SCHEDULED`**（=`定期`）になった。
-    `download_scheduled()` しか残っていないので、トリガは1値しか取らない。
-    引数で渡さずクラス内で固定することで、``_download`` のシグネチャを簡略化した
-    （1値しか渡らない引数を残すのはYAGNI違反）。
-
     ``schedule_key`` はスケジュール行に紐付く取得で値が入り、スケジュール行が無い
     レポートの取得（後方互換）は空文字。``_matched_schedule_key()`` が
     戻り値の第2要素として返した値をそのまま受け取り、``HistoryRow.schedule_key``
