@@ -45,14 +45,9 @@ class _StubReport(SoqlReport):
 
 
 @pytest.fixture(autouse=True)
-def _registered_soql_reports():
-    """``_registry.SOQL_REPORTS`` にテスト用の1件だけを登録する。"""
-    original = _registry.SOQL_REPORTS
-    _registry.SOQL_REPORTS = (_StubReport,)
-    try:
-        yield
-    finally:
-        _registry.SOQL_REPORTS = original
+def _registered_soql_reports(monkeypatch):
+    """``registered_reports()`` がテスト用の1件だけを返すようにする。"""
+    monkeypatch.setattr(_registry, "registered_reports", lambda: (_StubReport,))
 
 
 class TestFetchRoutesToSoql:
