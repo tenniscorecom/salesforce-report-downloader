@@ -1900,7 +1900,7 @@ class TestDownloadScheduled:
         """``holiday_policy`` が既定の「取得しない」のとき、祝日（例: 2026-05-04 みどりの日）は
         スケジュール一致でも対象外になる。
 
-        ``ScheduleRule.is_due()`` が ``comken.core.calendar`` の統一カレンダーを
+        ``ScheduleRule.is_due()`` が ``comken.core.holidays`` の統一カレンダーを
         直接見て祝日判定する経路を確認する。``clock_now`` を祝日の 12:00 に
         固定して「毎週・月曜・09:00」のスケジュールが曜日・時刻では一致する状態を
         作っても、祝日判定で ``is_due=False`` になる。

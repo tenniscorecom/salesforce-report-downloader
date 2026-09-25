@@ -16,7 +16,7 @@ import datetime as dt
 import logging
 from pathlib import Path
 
-from comken.core.clock import now
+from comken.core.dates import now
 from comken.core.table import Table
 from comken.exceptions import GroupNotRegisteredError, HistoryWriteError, InvalidTableInputError
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock

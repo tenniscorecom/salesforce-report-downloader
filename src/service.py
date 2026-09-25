@@ -56,7 +56,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from comken.core.clock import now as clock_now
+from comken.core.dates import now as clock_now
 from comken.core.files import atomic_write
 from comken.core.table.model import Table
 from comken.core.timer import measure
@@ -102,7 +102,7 @@ CAUSE_FILE = "ファイル"
 CAUSE_PROGRAM = "プログラム"
 
 # ``_reserve_path`` が連番を足して空きファイル名を探索する回数の上限。
-# ``comken.core.calendar.BUSINESS_DAY_SEARCH_LIMIT`` と同じ理由で、
+# ``comken.core.holidays.WORKDAY_SEARCH_LIMIT`` と同じ理由で、
 # 共有サーバーの同期・権限異常などで ``FileExistsError`` が返り続けると無限
 # ループになるため、必ず上限を切る。
 RESERVE_PATH_LIMIT = 1000
@@ -553,7 +553,7 @@ def _reserve_unique_path(base_path: Path, report_key: str) -> Path:
     同じフォルダに既存ファイルがあると連番（ ``_1`` / ``_2`` …）を足して別の
     ファイル名を探す。 ``RESERVE_PATH_LIMIT`` を超えると ``ReportReservePathLimitError``
     を送出する（権限・同期の異常で ``FileExistsError`` が返り続ける無限ループを
-    避けるため）。 ``BUSINESS_DAY_SEARCH_LIMIT`` と同じ考え方で上限を切っている。
+    避けるため）。 ``WORKDAY_SEARCH_LIMIT`` と同じ考え方で上限を切っている。
 
     ``report_key`` はエラーメッセージに含めるためだけで、ファイル名の組み立てに
     は使わない（呼び出し側が ``base_path`` を組み立てる時点で決定済みのため）。
@@ -618,7 +618,7 @@ def _matched_schedule_key(
     - いずれの行も ``is_due()`` False なら False, ""
     - いずれかの行が ``is_due()`` True でも、今日すでに成功済みなら False, ""
 
-    祝日判定は ``ScheduleRule.is_due()`` が ``comken.core.calendar`` の統一
+    祝日判定は ``ScheduleRule.is_due()`` が ``comken.core.holidays`` の統一
     カレンダーを直接見るため、呼び出し側でカレンダーを用意する必要はない。
 
     ``current`` は呼び出し元で固定した基準日時。dedup 判定にも ``current.date()``
