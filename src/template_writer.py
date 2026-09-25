@@ -21,7 +21,7 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
-from comken.constants import Color
+from comken.toolbox.excel import Color
 from comken.core.table.model import Table as CoreTable
 from comken.exceptions import ComkenFileNotFoundError, SheetNotFoundError
 from comken.services.salesforce_downloader.report_master import (
