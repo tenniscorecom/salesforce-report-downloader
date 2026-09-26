@@ -20,6 +20,7 @@ from comken.core.holidays import (
     non_workdays_before,
     nth_workday,
 )
+from comken.core.timer import measure
 from comken.exceptions import (
     SheetNotFoundError,
 )
@@ -429,6 +430,7 @@ def _parse_day_of_month(value: object) -> tuple[bool, int | None, int | None]:
     return False, int(text), None
 
 
+@measure
 def load_schedule(path: str | Path | None = None) -> list[ScheduleRule]:
     """スケジュール管理シートを読んで、``ScheduleRule`` のリストを返す。
 
