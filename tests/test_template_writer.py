@@ -10,21 +10,21 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-import comken.services.salesforce_downloader.paths as _paths_module
 import pytest
 from comken.core.table import Table
 from comken.exceptions import SheetNotFoundError
-from comken.services.salesforce_downloader.report_master import MasterRow, column
-from comken.services.salesforce_downloader.sheets.group_settings import GroupSetting
-from comken.services.salesforce_downloader.sheets.master import EXAMPLES, ReportEntry, load_master
-from comken.services.salesforce_downloader.sheets.schedule import (
+from comken.toolbox.excel import Excel
+from openpyxl import load_workbook
+
+import src.paths as _paths_module
+from src.report_master import MasterRow, column
+from src.sheets.group_settings import GroupSetting
+from src.sheets.master import EXAMPLES, ReportEntry, load_master
+from src.sheets.schedule import (
     SCHEDULE_SHEET_NAME,
     ScheduleRule,
     load_schedule,
 )
-from comken.toolbox.excel import Excel
-from openpyxl import load_workbook
-
 from src.template_writer import (
     GROUP_SETTING_EXAMPLES,
     REPORT_ENTRY_GUIDE_INTRO,
@@ -80,7 +80,7 @@ class TestCreateTemplateReportEntry:
 
     def test_examples_point_at_different_reports(self, tmp_path):
         """記入例が同じレポートを指していると、check が重複として報告してしまう。"""
-        from comken.services.salesforce_downloader.sheets.master import shared_report_ids
+        from src.sheets.master import shared_report_ids
 
         path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
         entries = load_master(path)
@@ -148,7 +148,7 @@ class TestCreateTemplateGroupSetting:
 
     def test_unique_group_constraint_is_preserved(self, tmp_path):
         """`unique=True` の列が読み込み側の検証で生きている（同じ値の重複を弾ける）。"""
-        from comken.exceptions import MasterDuplicateValueError
+        from src.exceptions import MasterDuplicateValueError
 
         path = create_template(
             tmp_path / "設定.xlsx",
@@ -301,11 +301,15 @@ class TestApplyScheduleDropdowns:
 
 @pytest.fixture
 def paths(tmp_path, monkeypatch):
-    """管理表・履歴の共有定数を tmp_path に差し替える（load_* 系を使うため）。"""
+    """管理表・履歴の共有定数を tmp_path に差し替える（load_* 系を使うため）。
+
+    履歴パスは comken 側 (``comken.services.salesforce_downloader.paths.HISTORY_PATH``)
+    に集約されたので、文字列経由で patch する。
+    """
     master = tmp_path / "レポート管理表.xlsx"
     history = tmp_path / "ダウンロード履歴.csv"
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
-    monkeypatch.setattr(_paths_module, "HISTORY_PATH", history)
+    monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history)
     return master, history
 
 
@@ -330,7 +334,7 @@ class TestCreateCombinedWorkbook:
         assert [r.schedule_key for r in rules] == ["S001"]
 
     def test_load_group_settings_reads_settings(self, paths):
-        from comken.services.salesforce_downloader.sheets.group_settings import (
+        from src.sheets.group_settings import (
             load_group_settings,
         )
 

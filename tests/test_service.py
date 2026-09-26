@@ -13,32 +13,29 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# paths fixture が monkeypatch.setattr に直接渡せるよう、paths モジュールを import しておく
-import comken.services.salesforce_downloader.paths as _paths_module
 import pytest
 from comken.core.table import Table
 from comken.exceptions import (
+    HistoryLockTimeoutError,
     HistoryWriteError,
-    MasterDuplicateValueError,
-    MasterRowValueError,
-    ReportNotRegisteredError,
     SalesforceReportIDNotFoundError,
-    ScheduledDownloadFailedError,
 )
-from comken.services.salesforce_downloader import (
-    cached_report_path,
-    load_master,
-    shared_report_ids,
-)
-from comken.services.salesforce_downloader import provider as provider_module
-from comken.services.salesforce_downloader.cli import main as cli
-from comken.services.salesforce_downloader.sheets import history
+from comken.services.salesforce_downloader import history
 from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 
-from src import history_writer
+# paths fixture が monkeypatch.setattr に直接渡せるよう、paths モジュールを import しておく
+import src.paths as _paths_module
 from src import service as service_module
+from src.cli import main as cli
+from src.exceptions import (
+    MasterDuplicateValueError,
+    MasterRowValueError,
+    ReportNotRegisteredError,
+    ScheduledDownloadFailedError,
+)
 from src.service import download_scheduled
+from src.sheets.master import load_master, shared_report_ids
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
@@ -184,13 +181,7 @@ def paths(tmp_path, monkeypatch):
     )
     history_path = tmp_path / "ダウンロード履歴.csv"
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
-    monkeypatch.setattr(_paths_module, "HISTORY_PATH", history_path)
-    # `service.MASTER_PATH` は `from ... import MASTER_PATH` で再束縛されているので、
-    # `_paths` の差し替えだけでは反映されない。明示的に同じ値を入れる
-    monkeypatch.setattr(service_module, "MASTER_PATH", master)
-    monkeypatch.setattr(service_module, "HISTORY_PATH", history_path)
-    # `provider` も `_paths` から import で束縛しているので同期する
-    monkeypatch.setattr(provider_module, "MASTER_PATH", master)
+    monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history_path)
     return {
         "master_path": master,
         "history_path": history_path,
@@ -199,34 +190,32 @@ def paths(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _reset_provider_cache():
-    """``provider._load_group_settings_cached()`` のプロセス内キャッシュをテストごとに破棄する。
+def _reset_paths_cache():
+    """``paths._load_group_settings_cached()`` のプロセス内キャッシュをテストごとに破棄する。
 
     ``output_path`` / ``report_folder`` が内部で ``MASTER_PATH`` をキーに
     設定シートを読むため、前のテストで作ったキャッシュが次のテストの設定シート
-    読込に混入しないようにする。``test_provider.py`` と同じ ``autouse=True`` で
+    読込に混入しないようにする。``test_paths.py`` と同じ ``autouse=True`` で
     全テストに作用させる。
     """
-    provider_module._reset_cached_master()
+    _paths_module._reset_cached_master()
     try:
         yield
     finally:
-        provider_module._reset_cached_master()
+        _paths_module._reset_cached_master()
 
 
 def _patch_master_path(monkeypatch: pytest.MonkeyPatch, master: Path, history: Path) -> None:
-    """``MASTER_PATH`` / ``HISTORY_PATH`` を 3 モジュール分同時に差し替えるヘルパー。
+    """``MASTER_PATH`` と履歴パスを差し替えるヘルパー。
 
-    ``service.py`` は ``from ... import MASTER_PATH`` でローカル束縛を作り、
-    ``provider.py`` も同じくローカル束縛を作る。 ``_paths`` モジュールも
-    直接参照される。3 者のモジュール属性を同時に揃えておかないと、新しい
-    管理表が読まれず、古い ``\\server\\share\\...`` を向いたままになる。
+    ``service.py`` はローカル束縛を持たず ``_Paths`` ラッパー経由で
+    ``src.paths`` のモジュール変数を呼び出し時に読むので、``_paths`` への
+    1 か所の patch だけで ``output_path`` / 管理表パスに反映される。
+    履歴パスは comken 側 (``comken.services.salesforce_downloader.paths.HISTORY_PATH``)
+    を文字列経由で patch する（``service.py`` 自身も同名で ``from ... import`` するため）。
     """
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
-    monkeypatch.setattr(_paths_module, "HISTORY_PATH", history)
-    monkeypatch.setattr(service_module, "MASTER_PATH", master)
-    monkeypatch.setattr(service_module, "HISTORY_PATH", history)
-    monkeypatch.setattr(provider_module, "MASTER_PATH", master)
+    monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history)
 
 
 def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
@@ -472,7 +461,7 @@ class TestDownloadScheduledRecord:
         # 両方が `clock_now` をローカル束縛にしているので両方差し替える必要がある）
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        monkeypatch.setattr(provider_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         collision = paths["base_path"] / "1001_20260918_0930.csv"
         collision.write_text("既存", encoding="utf-8")
         with patch("src.service.site_for", return_value=fake_salesforce()):
@@ -497,7 +486,7 @@ class TestDownloadScheduledRecord:
         # 両方が `clock_now` をローカル束縛にしているので両方差し替える必要がある）
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-        monkeypatch.setattr(provider_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         base = paths["base_path"] / "1001_20260918_0930.csv"
 
         # ベース名と ``_1`` 〜 ``_4`` までの連番を全部作っておく（計5ファイル）。
@@ -782,14 +771,13 @@ class TestHistory:
     ) -> None:
         """テスト用: ``record()`` を ``paths`` fixture の差し替え経由で呼ぶ。
 
-        ``_resolved_folder()`` が ``provider.output_path()`` を経由するため、
+        ``_resolved_folder()`` が ``paths.output_path()`` を経由するため、
         管理表が ``MASTER_PATH`` に実在しないと ``ComkenFileNotFoundError``
         に近い失敗をする。fixture 経由で ``MASTER_PATH`` / ``HISTORY_PATH`` を
         差し替えてから呼ぶ。
         """
-        from comken.services.salesforce_downloader.sheets.master import ReportEntry
-
-        from src.history_writer import record
+        from src.history import record
+        from src.sheets.master import ReportEntry
 
         entry = ReportEntry(
             key=key,
@@ -1521,8 +1509,8 @@ class TestHistory:
         """CP932 の履歴CSVに、CP932 で表せない文字（絵文字）を含む行を記録しようとすると、
         ``?`` に置換せず ``HistoryWriteError`` になり、履歴ファイルは不変。
         """
-        from comken.exceptions import HistoryWriteError
-        from comken.services.salesforce_downloader.sheets.master import ReportEntry
+        from src.history import record
+        from src.sheets.master import ReportEntry
 
         history_path = self._cp932_history(tmp_path, monkeypatch, header=list(history.COLUMNS))
         before = history_path.read_bytes()
@@ -1537,7 +1525,7 @@ class TestHistory:
             allow_empty=False,
         )
         with pytest.raises(HistoryWriteError):
-            history_writer.record(
+            record(
                 history_path,
                 entry=entry,
                 project="定期実行",
@@ -1905,7 +1893,7 @@ class TestDownloadScheduled:
         固定して「毎週・月曜・09:00」のスケジュールが曜日・時刻では一致する状態を
         作っても、祝日判定で ``is_due=False`` になる。
         """
-        from comken.services.salesforce_downloader.sheets.schedule import (
+        from src.sheets.schedule import (
             FREQUENCY_BUSINESS_DAY,
             FREQUENCY_DAILY,
             FREQUENCY_MONTHLY,
@@ -2267,8 +2255,6 @@ class TestRunLock:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
 
-        from comken.exceptions import HistoryLockTimeoutError
-
         def _raise_lock_timeout(*args, **kwargs):
             # ``history.truncated_today()`` の呼び出しすべてで擬似的に
             # 履歴ロック取得失敗を発生させる（=履歴ロックの本当の障害）
@@ -2402,7 +2388,7 @@ class TestFixedCurrentAcrossExecution:
             return start_dt if call_count == 1 else next_day_dt
 
         monkeypatch.setattr(service_module, "clock_now", _clock_now_then_next_day)
-        monkeypatch.setattr(provider_module, "clock_now", _clock_now_then_next_day)
+        monkeypatch.setattr(_paths_module, "clock_now", _clock_now_then_next_day)
 
         with patch("src.service.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
@@ -2433,7 +2419,7 @@ class TestRequiredHistory:
                 "src.service.site_for",
                 return_value=fake_salesforce(),
             ),
-            patch.object(history_writer, "_append", side_effect=OSError("履歴書込み失敗")),
+            patch.object(history, "_append", side_effect=OSError("履歴書込み失敗")),
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
@@ -2446,7 +2432,7 @@ class TestRequiredHistory:
                 "src.service.site_for",
                 return_value=fake_salesforce([]),
             ),
-            patch.object(history_writer, "_append", side_effect=OSError("履歴書込み失敗")),
+            patch.object(history, "_append", side_effect=OSError("履歴書込み失敗")),
             pytest.raises(ScheduledDownloadFailedError) as caught,
         ):
             download_scheduled()
@@ -2558,7 +2544,7 @@ class TestAllowEmpty:
             assert row["エラーコード"] == ""
 
     def test_scheduled_empty_report_can_be_received(self, tmp_path, monkeypatch):
-        """0件で成功した定期取得は、本日取得済みとして空のまま受け取れる。"""
+        """0件で成功した定期取得は、ファイルが空のまま読み取れる。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = make_master(
@@ -2578,9 +2564,10 @@ class TestAllowEmpty:
         )
         history_path = tmp_path / "履歴.csv"
         monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
-        monkeypatch.setattr(_paths_module, "HISTORY_PATH", history_path)
+        monkeypatch.setattr(
+            "comken.services.salesforce_downloader.paths.HISTORY_PATH", history_path
+        )
         _patch_master_path(monkeypatch, master, history_path)
-        monkeypatch.setattr(provider_module, "MASTER_PATH", master)
 
         with patch(
             "src.service.site_for",
@@ -2588,10 +2575,12 @@ class TestAllowEmpty:
         ):
             download_scheduled()
 
-        from comken.services.salesforce_downloader import cached_report
-
-        reader = cached_report("1001")
-        assert cached_report_path("1001").is_file()
+        # 保存された単一ファイルが空のまま読み取れる（glob でファイルを探して
+        # 直接 CSV で読む）
+        saved = list(base_path.glob("1001_*.csv"))
+        assert len(saved) == 1
+        with CSV(saved[0], read_only=True) as csv_file:
+            reader = csv_file.read()
         assert reader.to_rows() == []
 
     def test_master_without_allow_empty_column_defaults_to_no(self, tmp_path, monkeypatch):
@@ -2740,7 +2729,7 @@ class TestTruncatedSkip:
         テストでは Salesforce へ実際に 2000件超のレスポンスを返させる必要がない
         （=本物の大きな CSV を作ると遅い）ので、履歴だけ直接書く。
         列の並びは ``history.COLUMNS`` と一致させる
-        （`comken.services.salesforce_downloader.sheets.history.COLUMNS`）。
+        （``comken.services.salesforce_downloader.history.COLUMNS``）。
         """
         history_path.parent.mkdir(parents=True, exist_ok=True)
         history_path.write_text(

@@ -9,12 +9,12 @@ from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from comken.exceptions import SoqlReportNotRegisteredError
-from comken.services.salesforce_downloader.sheets.master import ReportEntry
-from comken.services.salesforce_downloader.soql_reports import _registry
-from comken.services.salesforce_downloader.soql_reports.base import SoqlReport
 
+from src.exceptions import SoqlReportNotRegisteredError
 from src.service import _fetch, _fetch_via_soql
+from src.sheets.master import ReportEntry
+from src.soql_reports import _registry
+from src.soql_reports.base import SoqlReport
 
 URL = "https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 

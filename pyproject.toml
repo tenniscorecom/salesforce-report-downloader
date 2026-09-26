@@ -2,7 +2,7 @@
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = [".pytest-tmp", ".pytest-*"]
+extend-exclude = [".pytest-tmp", ".pytest-*", "_scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "C4", "LOG", "G", "DTZ", "RUF", "TID"]
@@ -16,10 +16,9 @@ ignore = [
 [tool.ruff.lint.flake8-bugbear]
 # column() は dataclasses.field() を返すので、dataclass のデフォルトに置いてよい
 # （呼び出しの結果を共有してしまう「可変デフォルト」には当たらない）。
-# comken の toolbox.master_table は 2026-09 に
-# services.salesforce_downloader.report_master へ移設された（古いパスは
-# 既に存在しないため Ruff B008 が誤検知する）。
-extend-immutable-calls = ["comken.services.salesforce_downloader.report_master.column"]
+# 移設済みの `comken.toolbox.master_table.column()` は既に存在しないため
+# Ruff B008 が誤検知する。`src.report_master.column` を許可リストに明示する。
+extend-immutable-calls = ["src.report_master.column"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 # 相対 import は禁止。ドットを数える作業を残さないため。
@@ -39,4 +38,6 @@ max-complexity = 10
 
 [tool.pyright]
 # 開発時は隣接するcomkenリポジトリを直接参照する。実行環境ではPYTHON_LIBRARYを使う。
-extraPaths = ["../comken"]
+# src/ はプロジェクトルートからの絶対 import（`src.service` 等）で参照するため、
+# ルート自身もパスに含める。
+extraPaths = [".", "../comken"]

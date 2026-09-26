@@ -13,9 +13,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from comken.services.salesforce_downloader.sheets.master import ReportEntry
 
 from src.service import _fetch, _fetch_via_browser
+from src.sheets.master import ReportEntry
 
 ENTRY = ReportEntry(
     key="9001",

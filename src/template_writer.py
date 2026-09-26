@@ -1,8 +1,7 @@
 """src/template_writer.py — 雛形生成（管理表・スケジュール・設定）。
 
-**2026-09 に comken から切り出した。** comken の `report_master.py` には雛形生成の
-API が無い（読み込み・検証に集中する）。雛形生成は利用側プロジェクトの運用ニーズに
-合わせる必要があるため、ここに置く。
+`src.report_master` には雛形生成の API が無い（読み込み・検証に集中する）。
+雛形生成は運用ニーズに合わせたいので、このモジュールが担う。
 
 雛形は次の3つの関数で生成する:
 
@@ -12,8 +11,7 @@ API が無い（読み込み・検証に集中する）。雛形生成は利用�
   1 つの Excel ブックにまとめて生成
 
 記入例の背景色・Noto Sans JP フォント・選択列のドロップダウンなどの挙動は
-旧 `MasterRow.create_template()` を踏襲する（comken 側の旧実装は 2026-09 に
-このモジュールへ移設された）。
+旧 `MasterRow.create_template()` を踏襲する。
 """
 
 import dataclasses
@@ -21,24 +19,24 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
-from comken.toolbox.excel import Color
 from comken.core.table.model import Table as CoreTable
 from comken.exceptions import ComkenFileNotFoundError, SheetNotFoundError
-from comken.services.salesforce_downloader.report_master import (
-    ColumnSpec,
-    MasterRow,
-    read_raw_rows,
-)
-from comken.services.salesforce_downloader.sheets.group_settings import GroupSetting
-from comken.services.salesforce_downloader.sheets.master import EXAMPLES as REPORT_ENTRY_EXAMPLES
-from comken.services.salesforce_downloader.sheets.master import ReportEntry
-from comken.services.salesforce_downloader.sheets.schedule import SCHEDULE_SHEET_NAME, ScheduleRule
-from comken.toolbox.excel import Excel
+from comken.toolbox.excel import Color, Excel
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
+
+from src.report_master import (
+    ColumnSpec,
+    MasterRow,
+    read_raw_rows,
+)
+from src.sheets.group_settings import GroupSetting
+from src.sheets.master import EXAMPLES as REPORT_ENTRY_EXAMPLES
+from src.sheets.master import ReportEntry
+from src.sheets.schedule import SCHEDULE_SHEET_NAME, ScheduleRule
 
 logger = logging.getLogger(__name__)
 
