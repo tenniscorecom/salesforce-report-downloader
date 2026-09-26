@@ -478,7 +478,7 @@ def _fetch_via_browser(entry: ReportEntry) -> Table:
     `OPTIONS.PROFILE_ROOT` に永続化された既存のログイン状態をそのまま使う
     （事前に人が一度だけ ``go_login()`` + ``wait_for_manual_login()`` または
     ``login_with_credentials()`` で手動ログインしておく）。ログイン状態が
-    切れている場合はエクスポートがHTMLを返し、`SalesforceReportExportError`
+    切れている場合はエクスポートがHTMLを返し、`SalesforceError`
     （`ComkenError` のサブクラス）になる。`download_scheduled()` は
     既存の `ComkenError` 処理でそのまま次のレポートへ続行する。
 

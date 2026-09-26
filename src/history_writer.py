@@ -154,7 +154,7 @@ def _append(path: Path, values: list) -> None:
             csv_file.append(record_dict)
             return
         # 既存ファイル: ``CSV.read()`` が見出し検証（重複・空）を行う。
-        # 検証失敗時の ``CSVHeaderError`` 系はそのまま呼出側へ伝播する
+        # 検証失敗時の ``CSVError`` はそのまま呼出側へ伝播する
         table = csv_file.read()
         if tuple(table.columns) == COLUMNS:
             # 既に最新構成 → 既存 Table に 1 行足すだけ
