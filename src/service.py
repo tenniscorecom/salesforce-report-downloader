@@ -49,6 +49,7 @@ import logging
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from comken.core.dates import now as clock_now
 from comken.core.files import atomic_write
@@ -81,6 +82,12 @@ from src.sheets.master import (
 )
 from src.sheets.schedule import ScheduleRule, load_schedule
 from src.soql_reports import soql_report_for
+
+if TYPE_CHECKING:
+    # ブラウザ経由の戻り値の型だけ。``selenium`` 依存を実際にブラウザ経由の
+    # レポートを使うときだけ読み込むために、``_fetch_via_browser()`` 内で
+    # import する。型注釈は文字列扱いで十分なので ``TYPE_CHECKING`` に閉じる
+    from comken.toolbox.browser.sites.salesforce.base import SalesforceReportBrowser
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +174,11 @@ def download_scheduled(
     を参照）。SOQL経由のレポートは同じ管理番号の `SoqlReport` が
     `src.soql_reports` に登録されている必要がある
     （詳しくは `_fetch_via_soql()` を参照）。
+
+    **ブラウザの使い回し:** ブラウザ経由のレポートは、1 回の `download_scheduled()`
+    の実行の中で組織ごとにブラウザを 1 つだけ開いて使い回す（毎回起動しない）。
+    取得中に例外が出たブラウザはその場で閉じて dict から外し、次のレポートでは
+    新しいブラウザを開き直す（壊れた状態のブラウザを次のレポートへ引き継がない）。
 
     **「スケジュール」シート**にこのレポートの行が無いときは、
     「有効」だけで毎回対象にする（後方互換）。
@@ -273,35 +285,58 @@ def _download_scheduled_locked(
     # 直近の捕捉した例外を覚えておく（同じ失敗が複数件あっても、最後の1件だけを
     # 連鎖させる）。``None`` のままだと「原因例外が無い」ことを示す
     last_exception: BaseException | None = None
-    for entry, schedule_key, schedule_rule in targets:
-        try:
-            saved.append(
-                _download(
-                    entry,
-                    project,
-                    _paths().history_path,
-                    schedule_key,
-                    schedule_run_time=(
-                        schedule_rule.desired_time if schedule_rule is not None else None
-                    ),
-                    filters=filters_by_report.get(entry.key),
-                    current=current,
+    # ブラウザ経由のレポートで「同じ組織のブラウザを 1 回の実行で使い回す」ための入れ物。
+    # ``site_for()`` が返す ``type`` をキーに、開いたインスタンスを保持する。
+    # 最終的に ``finally`` で全部 ``__exit__()`` を呼んで閉じる（正常終了・想定外
+    # 例外どちらでも）。``_fetch_via_browser()`` 側で取得中に例外が出た場合は、
+    # 該当エントリを ``pop`` して ``__exit__()`` を呼んだうえで例外を上げる
+    # （壊れた状態のブラウザを次のレポートへ引き継がないため）
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] = {}
+    try:
+        for entry, schedule_key, schedule_rule in targets:
+            try:
+                saved.append(
+                    _download(
+                        entry,
+                        project,
+                        _paths().history_path,
+                        schedule_key,
+                        schedule_run_time=(
+                            schedule_rule.desired_time if schedule_rule is not None else None
+                        ),
+                        filters=filters_by_report.get(entry.key),
+                        current=current,
+                        browser_sessions=browser_sessions,
+                    )
                 )
-            )
-        except (ComkenError, OSError) as e:
-            # **想定した失敗は続ける。想定していない失敗は止める。**
-            # - `ComkenError` は `docs/ERRORS.md` に対処法が載っている想定内の失敗なので続行する
-            # - `OSError` は共有サーバー断・権限・パスなど運用上の失敗。保存先は
-            #   レポートごとに違うので、1本ダメでも他は書けるので続行する
-            # - それ以外（`TypeError` などプログラムのバグ）は想定していない。
-            #   `ScheduledDownloadFailedError`（＝「1件取れませんでした」）の顔で
-            #   出てくると、非エンジニアが「もう一度実行してみる」を繰り返すだけなので、
-            #   ここでは捕捉せず、その場で落として気づかせる
-            # KeyboardInterrupt など処理中断を示す例外は `ComkenError` / `OSError` の
-            #   どちらでもないので、これもそのまま抜ける
-            logger.error("取得に失敗しました: %s（%s）", entry.key, e)
-            failed.append(entry.key)
-            last_exception = e
+            except (ComkenError, OSError) as e:
+                # **想定した失敗は続ける。想定していない失敗は止める。**
+                # - `ComkenError` は `docs/ERRORS.md` に対処法が載っている想定内の失敗なので続行する
+                # - `OSError` は共有サーバー断・権限・パスなど運用上の失敗。保存先は
+                #   レポートごとに違うので、1本ダメでも他は書けるので続行する
+                # - それ以外（`TypeError` などプログラムのバグ）は想定していない。
+                #   `ScheduledDownloadFailedError`（＝「1件取れませんでした」）の顔で
+                #   出てくると、非エンジニアが「もう一度実行してみる」を繰り返すだけなので、
+                #   ここでは捕捉せず、その場で落として気づかせる
+                # KeyboardInterrupt など処理中断を示す例外は `ComkenError` / `OSError` の
+                #   どちらでもないので、これもそのまま抜ける
+                logger.error("取得に失敗しました: %s（%s）", entry.key, e)
+                failed.append(entry.key)
+                last_exception = e
+    finally:
+        # 使い回していたブラウザを全部閉じる。``_fetch_via_browser()`` 側で取得中に
+        # 例外が出たものは既に dict から外して ``__exit__()`` を呼んでいるので、
+        # ここに残っているのは「成功裡に使い終わったブラウザ」だけ。
+        # 想定外例外が ``for`` ループを抜けた場合もこの ``finally`` で閉じる
+        for sf in list(browser_sessions.values()):
+            try:
+                # ``exc_type`` は ``None`` を渡す（``type(None)`` ≒ ``NoneType`` を
+                # 渡すと、comken の ``BrowserSession.__exit__`` 側で
+                # ``exc_type is not None`` が真になり、正常終了でも毎回エラー時
+                # スクリーンショットが撮られてしまう）
+                sf.__exit__(None, None, None)
+            except Exception as close_exc:
+                logger.warning("ブラウザを閉じる途中で例外が発生しました: %s", close_exc)
 
     logger.info("定期取得: %d 件中 %d 件を取得しました。", len(targets), len(saved))
     if failed:
@@ -399,6 +434,7 @@ def _download(
     schedule_run_time: dt.time | None = None,
     filters: list[dict] | None = None,
     current: dt.datetime | None = None,
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
@@ -413,11 +449,16 @@ def _download(
     ``_Attempt`` 経由で履歴の「実行日時」に渡す。日付をまたぐ長い実行でも
     判定・ファイル名・履歴が同じ「開始日」で揃うために 1 実行で同じ値を
     共有する。
+
+    ``browser_sessions`` は ``_download_scheduled_locked()`` で作られた
+    使い回し用の dict（同じ組織のブラウザを 1 回の実行で共有するため）。
+    ``None`` のときは従来の「その場で開いて閉じる」動作（``_fetch()`` /
+    ``_fetch_via_browser()`` 側のキーワード既定値に従う）。
     """
     attempt = _Attempt(entry, project, history_path, schedule_key, executed_at=current)
     try:
         _require_folder(entry)
-        table = _fetch(entry, filters)
+        table = _fetch(entry, filters, browser_sessions=browser_sessions)
         path = _save(entry, table, schedule_run_time=schedule_run_time, current=current)
     except Exception as exc:
         try:
@@ -455,7 +496,12 @@ def _require_folder(entry: ReportEntry) -> None:
         raise ReportFolderNotFoundError(entry.key, folder)
 
 
-def _fetch(entry: ReportEntry, filters: list[dict] | None = None) -> Table:
+def _fetch(
+    entry: ReportEntry,
+    filters: list[dict] | None = None,
+    *,
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
+) -> Table:
     """Salesforce へ問い合わせて明細表を返す。
 
     つなぐ組織は URL のドメインで決まる（`site_for()`）。管理表に組織を選ぶ列は
@@ -470,6 +516,10 @@ def _fetch(entry: ReportEntry, filters: list[dict] | None = None) -> Table:
 
     SOQL経由・ブラウザ経由のどちらも `filters` は使えない（実行時フィルタの
     仕組みが無い）。
+
+    ``browser_sessions`` は ``_download_scheduled_locked()`` で作られた
+    使い回し用の dict。``None`` のときは従来通り「その場で開いて閉じる」
+    （``_fetch_via_browser()`` 側のキーワード既定値）。
     """
     if entry.use_soql:
         if filters is not None:
@@ -480,7 +530,7 @@ def _fetch(entry: ReportEntry, filters: list[dict] | None = None) -> Table:
             raise ValueError(
                 f"ブラウザ経由のレポートには実行時フィルタを指定できません: {entry.key}"
             )
-        return _fetch_via_browser(entry)
+        return _fetch_via_browser(entry, browser_sessions=browser_sessions)
     site = site_for(entry.url)
     with site() as salesforce:
         if filters is None:
@@ -507,7 +557,11 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
         return salesforce.query(instance.soql())
 
 
-def _fetch_via_browser(entry: ReportEntry) -> Table:
+def _fetch_via_browser(
+    entry: ReportEntry,
+    *,
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
+) -> Table:
     """ブラウザ経由で entry を取得し、`_fetch()` と同じ Table を返す。
 
     定期実行（無人）から呼ばれる前提のため、ここではログインを行わない。
@@ -518,6 +572,16 @@ def _fetch_via_browser(entry: ReportEntry) -> Table:
     （`ComkenError` のサブクラス）になる。`download_scheduled()` は
     既存の `ComkenError` 処理でそのまま次のレポートへ続行する。
 
+    **ブラウザの使い回し:** ``browser_sessions`` が渡されたときは、同じ組織
+    （``site_for()`` が返すクラス）のブラウザを 1 回の実行の中で使い回す。
+    まだ開いていなければ ``site_class()`` の ``__enter__()`` を直接呼んで開き、
+    ``go_login()`` を 1 回だけ実行して dict に登録する。次の同組織のレポートは
+    同じインスタンスを再利用する（``go_login()`` は再実行しない）。
+    取得中に例外が出たブラウザは dict から外して ``__exit__()`` を直接呼び、
+    次は新しいブラウザを開き直す（壊れた状態のブラウザを次へ引き継がない）。
+    ``browser_sessions`` が ``None`` のときは単体テスト・直接呼び出し経路として
+    「開いて閉じる」従来動作に戻る（``with site_class() as sf:``）。
+
     `selenium` 依存を、実際にブラウザ経由のレポートを使うときだけ読み込むよう、
     ここで初めて import する（管理表で誰も「2000件超」を「○」にしていない
     運用では `service.py` を import しても `selenium` は要らない）。
@@ -525,13 +589,59 @@ def _fetch_via_browser(entry: ReportEntry) -> Table:
     from comken.toolbox.browser.sites.salesforce import site_for as browser_site_for
 
     site_class = browser_site_for(entry.url)
-    with site_class() as sf:
-        sf.go_login()
+    if browser_sessions is None:
+        # 単体テスト・直接呼び出し経路。今まで通り「開いて閉じる」
+        with site_class() as sf:
+            sf.go_login()
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
+                dict(sf.export_reports({entry.url: tmp_path}))
+                with CSV(tmp_path, read_only=True) as source:
+                    return source.read()
+        raise AssertionError("unreachable")  # 上の with 内で必ず return する
+
+    # 同じ組織のブラウザが既に開いていれば再利用、無ければ開く
+    sf = browser_sessions.get(site_class)
+    if sf is None:
+        # ``__enter__()`` を直接呼ぶのは、``sf`` を ``browser_sessions`` に乗せて
+        # ``_download_scheduled_locked()`` 側の ``finally`` まで保持するため。
+        # クロージャに入れると外から参照できなくなる。``__exit__()`` は例外時
+        # または ``_download_scheduled_locked()`` 最後の ``finally`` で呼ぶ
+        sf = site_class()
+        sf.__enter__()
+        # ``__enter__()`` が成功した時点で dict に登録する。``go_login()`` が
+        # 例外を出しても「失敗したら閉じて入れ物から外す」範囲（下の
+        # ``try/except``）に入るので、後続のレポートで「壊れたブラウザ」を
+        # 再利用しない。``__enter__()`` 自体が失敗した場合は何も開いていないので、
+        # dict にも入れず、閉じもしない（``__exit__`` も未呼び出し）
+        browser_sessions[site_class] = sf
+        try:
+            sf.go_login()
+        except Exception:
+            # ``go_login()`` 失敗時も「壊れたブラウザを dict に残したまま次へ
+            # 渡さない」ため、閉じて dict から外す。閉じるときに起きた例外は
+            # 元の失敗を隠すので、警告ログに留めて元例外を上げる
+            browser_sessions.pop(site_class, None)
+            try:
+                sf.__exit__(None, None, None)
+            except Exception as close_exc:
+                logger.warning("ブラウザを閉じる途中で例外が発生しました: %s", close_exc)
+            raise
+    try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
             dict(sf.export_reports({entry.url: tmp_path}))
             with CSV(tmp_path, read_only=True) as source:
                 return source.read()
+    except Exception:
+        # 壊れた状態のブラウザを次回以降に渡さないため、ここで閉じて dict から外す。
+        # 閉じるときに起きた例外は元の失敗を隠すので、警告ログに留めて元例外を上げる
+        browser_sessions.pop(site_class, None)
+        try:
+            sf.__exit__(None, None, None)
+        except Exception as close_exc:
+            logger.warning("ブラウザを閉じる途中で例外が発生しました: %s", close_exc)
+        raise
 
 
 def _validate_filters_by_report(
