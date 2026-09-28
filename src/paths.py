@@ -7,9 +7,11 @@
 `comken.toolbox.salesforce` に依存しないことで、`requests` の入っていない環境でも
 このモジュールだけを使えるようにする。
 
-**2026-09 に出力パスの組み立てを 1 本化した。** フォルダは設定シートのベースパスのみ、
-ファイル名は ``{管理番号}_{スケジュール時刻:%Y%m%d_%H%M}.csv``。``assignee`` /
-``summary`` は管理表に残してあるが、出力パスには使わない。
+**2026-09 に出力パスの組み立てを 1 本化した。** フォルダは
+``ベースパス / 概要 /`` の 2 階層、ファイル名は
+``{管理番号}_{スケジュール時刻:%Y%m%d_%H%M}.csv``。``assignee`` は管理表に残して
+あるが、出力パスには使わない。``summary`` はフォルダ階層の 1 段目にだけ使う
+（人が業務ごとに探しやすくするため。ファイル名には混ぜない）。
 
 **履歴CSVの置き場所は `comken.services.salesforce_downloader.paths.HISTORY_PATH`
 に移した（境界は履歴）— このファイルは管理表だけを管理する。** 履歴の形式や
@@ -120,6 +122,38 @@ _GROUP_SETTINGS_CACHE_MAXSIZE = 16
 _group_settings_cache: OrderedDict[str, dict[str, Path]] = OrderedDict()
 
 
+# ── 概要からフォルダ名を作る ───────────────────────────────────────
+# 定期取得と SOQL レポートの両方がこの関数を使う（``src.soql_reports.runner`` 側に
+# 同じ目的の関数を 2 つ持たないため）。ファイル名には概要を混ぜず、フォルダ名として
+# のみ使うので、ここで Windows のファイル名規則に従って安全化する。
+#
+# - 使えない文字（``\ / : * ? " < > |``）は取り除く
+# - 長さは ``_SUMMARY_FOLDER_LIMIT`` 文字まで
+# - 空になったら「レポート」
+# - **Windows のフォルダ名として使えない「末尾の ``.`` と空白」も取り除く**
+#   （取り除いて空になったら「レポート」）
+_FORBIDDEN_IN_FOLDER_NAME = r'\/:*?"<>|'
+_SUMMARY_FOLDER_LIMIT = 30
+
+
+def summary_folder_name(summary: str) -> str:
+    """概要から安全なフォルダ名を作る。
+
+    ``output_path()`` と SOQL レポートの ``_file_path_of()`` の両方から呼ばれる
+    共通ヘルパー。Windows のファイル名規則に従って安全化し、パスが伸びすぎない
+    ように ``_SUMMARY_FOLDER_LIMIT`` 文字で切る。
+
+    ルール:
+    1. ``\\ / : * ? " < > |`` を取り除く
+    2. 30 文字で切る
+    3. 末尾の ``.`` と空白を取り除く
+    4. 空になったら「レポート」
+    """
+    cleaned = "".join(char for char in summary if char not in _FORBIDDEN_IN_FOLDER_NAME)
+    truncated = cleaned[:_SUMMARY_FOLDER_LIMIT].rstrip(" .")
+    return truncated or "レポート"
+
+
 def output_path(
     entry: ReportEntry,
     schedule_run_time: dt.time | None = None,
@@ -128,11 +162,15 @@ def output_path(
 ) -> Path:
     """レポートの保存先パス（唯一の出力先）を返す。
 
-    フォルダは ``report_folder()``（設定シートのベースパスをそのまま返す）。
-    ファイル名は ``{管理番号}_{時刻:%Y%m%d_%H%M}.csv``。時刻は ``schedule_run_time``
-    （今回の取得の根拠になったスケジュール行の「取得時刻」、``ScheduleRule.desired_time``
-    の値。記録用の希望時刻）を優先し、 ``None`` （スケジュール行が無いレポート、
-    後方互換）のときは ``now``（省略時は現在時刻）をそのまま使う。
+    フォルダは ``report_folder()``（ベースパス）/ ``summary_folder_name(entry.summary)``
+    （概要のフォルダ名）の 2 階層。ファイル名は ``{管理番号}_{時刻:%Y%m%d_%H%M}.csv``。
+    時刻は ``schedule_run_time``（今回の取得の根拠になったスケジュール行の「取得時刻」、
+    ``ScheduleRule.desired_time`` の値。記録用の希望時刻）を優先し、 ``None``
+    （スケジュール行が無いレポート、後方互換）のときは ``now``（省略時は現在時刻）
+    をそのまま使う。
+
+    **概要のフォルダは保存時に呼び出し側が ``mkdir`` で作る**（この関数は作らない）。
+    ベースのフォルダは作らないし検査もしない（検査は ``service._require_folder`` の責務）。
 
     常に新規ファイルとして扱う（同じパスへの上書きは想定しない。衝突回避は呼び出し側
     ``Salesforceレポートダウンローダー`` の ``_reserve_unique_path`` の責務）。
@@ -158,7 +196,11 @@ def output_path(
         base_dt = dt.datetime.combine(current.date(), schedule_run_time)
     else:
         base_dt = current
-    return folder / f"{entry.key}_{base_dt.strftime('%Y%m%d_%H%M')}.csv"
+    return (
+        folder
+        / summary_folder_name(entry.summary)
+        / f"{entry.key}_{base_dt.strftime('%Y%m%d_%H%M')}.csv"
+    )
 
 
 def report_folder(entry: ReportEntry, group_settings: dict[str, Path]) -> Path:

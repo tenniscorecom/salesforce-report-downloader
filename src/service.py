@@ -63,6 +63,7 @@ from comken.exceptions import (
     HistoryLockTimeoutError,
     HistoryWriteError,
 )
+from comken.runtime import is_dry_run
 from comken.services.salesforce_downloader import history
 from comken.services.salesforce_downloader.history import HistoryRow
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
@@ -428,6 +429,12 @@ class _Attempt:
             project=self._project,
             row=row,
             executed_at=self._executed_at,
+            # **履歴の「保存先」は実際にファイルを置いたフォルダを書く**。出力パスは
+            # ベース配下に「概要」フォルダを掘った 2 階層になるので、 ``path.parent``
+            # (= ベース / 概要) を渡す。渡さないと ``record()`` 側で
+            # ``output_path().parent`` を組み立て直そうとして、概要の決定ロジックが
+            # 履歴側に漏れ出す。
+            folder=path.parent,
         )
 
 
@@ -491,15 +498,24 @@ def _require_folder(entry: ReportEntry) -> None:
     作らずに失敗させる。無いのは書き間違いのことが多く、勝手に作ると
     誰も読まない場所へ置き続けることになる。
 
-    保存先フォルダは `_paths().output_path()` が内部で `report_folder()` 経由で
-    組み立てる（管理表の「グループ」＋設定シートの「ベースURL」）。
+    検査するのは「**ベースフォルダ**」のみ。出力パスは「ベース / 概要」の
+    2 階層になったが、ここで作るかを分けるのはベースの有無だけで十分
+    （概要のフォルダは ``_save()`` が ``mkdir(exist_ok=True)`` で自動作成する。
+    ここで概要の有無まで検査すると、保存のたびに人が概要フォルダを掘る必要が
+    出て、運用上の意味がない）。
+
+    保存先フォルダは ``report_folder()`` が組み立てる
+    （管理表の「グループ」＋設定シートの「ベースURL」）。
     `entry.group` が設定シートに無い場合はここより先に
     `GroupNotRegisteredError` が上がる（フォルダの有無より先に、
     そもそも出力先を決められないという、より根本的なエラーとして扱う）。
     """
-    folder = _paths().output_path(entry, schedule_run_time=None).parent
-    if not folder.is_dir():
-        raise ReportFolderNotFoundError(entry.key, folder)
+    from src.paths import MASTER_PATH as _MASTER_PATH
+    from src.paths import _load_group_settings_cached, report_folder
+
+    base = report_folder(entry, _load_group_settings_cached(_MASTER_PATH))
+    if not base.is_dir():
+        raise ReportFolderNotFoundError(entry.key, base)
 
 
 def _fetch(
@@ -686,11 +702,21 @@ def _save(
     ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
 
-    保存先は ``_paths().output_path()`` が返す単一のパス（``{管理番号}_{スケジュール時刻}.csv``）。
+    保存先は ``_paths().output_path()`` が返す単一のパス
+    （``ベース/概要/{管理番号}_{スケジュール時刻}.csv``）。
     衝突回避は ``_reserve_unique_path()`` で常に（連番 ``_1`` / ``_2`` … を付けて）。
     同じパスへの上書きは想定しない — 取得済みキャッシュを読む側（`pathlib.Path.glob()`
     で `_paths().output_path()` が組み立てたパスを探す運用）は、同じフォルダ内の連番を全部
     候補に含めて新しい順で拾えるので、何度実行しても履歴と当日の最新状態は崩れない。
+
+    **概要のフォルダは保存名の予約前にここで ``mkdir`` する。** ベースフォルダは
+    ``_download()`` 側の ``_require_folder()`` で先に検査済みなので、
+    ``parents=False`` で「無ければ失敗する」をそのまま流用できる（ベースが既に
+    無い場合はここで ``FileNotFoundError`` が出る。先に ``_require_folder()`` で
+    ``ReportFolderNotFoundError`` に変換する流れが壊れないよう、 ``_save()`` 単体で
+    動くテスト経路のために ``OSError`` のまま伝播させる）。**dry-run 中は
+    ``mkdir`` もしない**（``comken.runtime.dry_run`` のブロック内では保存もしない設計に
+    沿って、フォルダだけ作ると「書き込まないのにフォルダだけが残る」事故を防ぐ）。
 
     ``current`` は ``_download_scheduled_locked()`` で固定した ``clock_now()`` の値。
     ``_paths().output_path(now=current)`` に渡すことで、23:59 に始まった実行が日付をまたいで
@@ -703,6 +729,11 @@ def _save(
     ``unlink(missing_ok=True)`` で後始末する。
     """
     base = _paths().output_path(entry, schedule_run_time, now=current)
+    # **概要のフォルダは保存名の予約前に ``mkdir`` する。** ベースフォルダは
+    # ``_require_folder()`` で先に検査済みなので ``parents=False`` で安全。
+    # dry-run 中は作らない（保存もしない運用に合わせた防御）
+    if not is_dry_run():
+        base.parent.mkdir(exist_ok=True)
     path = _reserve_unique_path(base, entry.key)
     try:
         # 問い合わせは成功したが明細が無い。**0件あり × なら失敗扱い、○ なら正常終了**

@@ -140,9 +140,10 @@ def paths(tmp_path, monkeypatch):
     ここでは**無効**にして対象外にしている。`1003` も無効。
 
     出力先フォルダは設定シート（`グループ` → ベースパス）のみで組み立てる。
-    2026-09 に「担当者 / 概要」のフォルダ階層は廃止されたので、`ベース` 配下に
-    pre-create するのは `ベース` 自体だけ（`担当者` / `概要` のサブフォルダは
-    作らない）。
+    2026-09 に「担当者 / 概要」のフォルダ階層は廃止されたが、定期取得と SOQL の
+    共通化で「ベース / 概要」の 2 階層に戻した（人が業務ごとに探しやすくする
+    ため）。 ``ベース`` 配下に pre-create するのは ``ベース`` 自体だけ
+    （概要フォルダは ``_save()`` が ``mkdir(exist_ok=True)`` で自動作成する）。
     """
     base_path = tmp_path / "ベース"
     base_path.mkdir()
@@ -182,10 +183,18 @@ def paths(tmp_path, monkeypatch):
     history_path = tmp_path / "ダウンロード履歴.csv"
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
     monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history_path)
+    # 1001（顧客一覧）と 1002（売上実績）の概要フォルダ名を ``summary_folder_name()``
+    # 経由で返す。glob パターンを組み立てる側で同じ関数を呼び直すと、運用中の
+    # テストが「概要→フォルダ名」の契約にロックインされるので、fixture 側で
+    # 一度だけ計算して各テストへ配る形にする
+    from src.paths import summary_folder_name
+
     return {
         "master_path": master,
         "history_path": history_path,
         "base_path": base_path,
+        "summary_folder_1001": summary_folder_name("顧客一覧"),
+        "summary_folder_1002": summary_folder_name("売上実績"),
     }
 
 
@@ -449,7 +458,8 @@ class TestDownloadScheduledRecord:
             download_scheduled()
             download_scheduled()
         # 1 回目だけ取得される。出力は単一ファイル（時刻付き）の 1 件だけ
-        saved = list(paths["base_path"].glob("1001_*.csv"))
+        # 「ベース / 概要」の 2 階層目で glob する
+        saved = list((paths["base_path"] / paths["summary_folder_1001"]).glob("1001_*.csv"))
         assert len(saved) == 1
         # `report.get()` は 1 回しか呼ばれない（2 回目はスキップ）
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
@@ -462,14 +472,17 @@ class TestDownloadScheduledRecord:
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
-        collision = paths["base_path"] / "1001_20260918_0930.csv"
+        # 「ベース / 概要」の 2 階層目に衝突ファイルを作る
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        summary_dir.mkdir(exist_ok=True)
+        collision = summary_dir / "1001_20260918_0930.csv"
         collision.write_text("既存", encoding="utf-8")
         with patch("src.service.site_for", return_value=fake_salesforce()):
             download_scheduled()
         # 既存ファイルは上書きされない
         assert collision.read_text(encoding="utf-8") == "既存"
         # もう1つ作られたファイル = 衝突回避で _1 が付いたファイル
-        archive = paths["base_path"] / "1001_20260918_0930_1.csv"
+        archive = summary_dir / "1001_20260918_0930_1.csv"
         assert archive.exists()
 
     def test_reserve_path_raises_when_all_sequential_names_are_taken(self, paths, monkeypatch):
@@ -487,7 +500,10 @@ class TestDownloadScheduledRecord:
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
-        base = paths["base_path"] / "1001_20260918_0930.csv"
+        # 「ベース / 概要」の 2 階層目に衝突ファイルを作る
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        summary_dir.mkdir(exist_ok=True)
+        base = summary_dir / "1001_20260918_0930.csv"
 
         # ベース名と ``_1`` 〜 ``_4`` までの連番を全部作っておく（計5ファイル）。
         # ``_reserve_unique_path`` は base と ``_1`` 〜 ``_4`` を試して全部 FileExistsError
@@ -496,7 +512,7 @@ class TestDownloadScheduledRecord:
             if sequence == 0:
                 candidate = base
             else:
-                candidate = paths["base_path"] / f"1001_20260918_0930_{sequence}.csv"
+                candidate = summary_dir / f"1001_20260918_0930_{sequence}.csv"
             candidate.write_text("埋まり", encoding="utf-8")
 
         with (
@@ -580,6 +596,132 @@ class TestDownloadScheduledRecord:
             download_scheduled()
         # `atomic_write()` 由来の一時ファイル（``~`` プレフィックス）は残らない
         assert list(paths["base_path"].glob("~*")) == []
+
+    def test_saves_file_under_base_and_summary_folder(self, paths):
+        """ファイルが ``ベース / 概要 / 管理番号_時刻.csv`` に保存される。
+
+        2026-09 に「ベース / 概要」の 2 階層に戻したので、 glob で ``ベース / 概要``
+        配下のファイルが拾えることを確認する（ベース直下には何も作られない）。
+        """
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            download_scheduled()
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        assert summary_dir.is_dir()
+        saved = list(summary_dir.glob("1001_*.csv"))
+        assert len(saved) == 1
+        # ベース直下には CSV が無い（担当者フォルダも無い）
+        assert list(paths["base_path"].glob("*.csv")) == []
+
+    def test_summary_folder_is_created_on_demand(self, paths):
+        """概要のフォルダは保存時に ``mkdir`` で自動作成される。"""
+        # 念のため未作成を確認
+        assert not (paths["base_path"] / paths["summary_folder_1001"]).exists()
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            download_scheduled()
+        # 概要フォルダが作られた
+        assert (paths["base_path"] / paths["summary_folder_1001"]).is_dir()
+
+    def test_base_folder_missing_raises_and_does_not_create_summary(self, tmp_path, monkeypatch):
+        """ベースフォルダが無いときは ``ScheduledDownloadFailedError`` で抜け、
+        概要のフォルダも作られない（勝手に作らない原則）。
+
+        ``_require_folder()`` がベースフォルダの不在を ``ReportFolderNotFoundError``
+        に変換し、その後 ``mkdir`` は走らない（ ``_save()`` に到達する前に
+        例外で抜けるため）。 ``mkdir`` が ``parents=False`` で走るとベースが
+        無いときに ``FileNotFoundError`` で落ちるが、それを**概要側で**
+        起こしてしまうと運用上の意味が無いので、ベース無しのときは概要の
+        フォルダ作成も抑止されることを確認する。
+        """
+        missing_base = tmp_path / "存在しないベース"
+        master = make_master(
+            tmp_path / "管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "テストグループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["テストグループ", str(missing_base)]],
+        )
+        _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
+        with (
+            patch(
+                "src.service.site_for",
+                return_value=fake_salesforce(),
+            ),
+            pytest.raises(ScheduledDownloadFailedError),
+        ):
+            download_scheduled()
+        # ベースは作られない
+        assert not missing_base.exists()
+        # ベース配下の「概要」フォルダも作られない（ ``_save()`` に到達しないため）
+        assert not (missing_base / "顧客一覧").exists()
+
+    def test_history_saves_folder_is_base_plus_summary(self, paths):
+        """履歴の「保存先」列が ``ベース / 概要`` になる。
+
+        2026-09 に「概要」をフォルダ階層に使うようにしたので、comken の
+        ``report_path()`` が ``保存先 / ファイル名`` でファイルを
+        引けるように、履歴には**実際にファイルを置いたフォルダ**を書く
+        （ベースのままだと ``report_path()`` がファイルを見つけられない）。
+        """
+        # ``report_path`` は comken 側で ``__getattr__`` 経由の遅延 import なので、
+        # ``from ... import report_path`` 経由だと pyright が型情報を引けない
+        # （戻り値が ``object`` 扱い）。モジュール経由なら型注釈の ``Path | None``
+        # がそのまま見えるので、このテストではモジュール import を使う
+        from comken.services.salesforce_downloader import history as _history
+
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            download_scheduled()
+        # 履歴の「保存先」列が ``ベース / 概要`` のフォルダを指している
+        row = _history_rows(paths)[-1]
+        assert row["保存先"] == str(paths["base_path"] / paths["summary_folder_1001"])
+        # comken の ``report_path()`` が履歴から正しいパスを組み立てて
+        # ファイルを引ける（これが成功しないと下流が CSV を読みに行けない）
+        latest = _history.report_path("1001")  # type: ignore[attr-defined]
+        assert latest is not None
+        assert latest.is_file()
+        assert latest.parent == paths["base_path"] / paths["summary_folder_1001"]
+
+    def test_two_reports_with_same_summary_share_folder(self, tmp_path, monkeypatch, paths):
+        """同じ概要の管理番号は、同じフォルダに別ファイル名で保存される。
+
+        人が業務（=概要）ごとに探しやすくする設計なので、概要フォルダが
+        自動で集約されることを確認する。
+        """
+        from dataclasses import replace
+
+        from src.sheets.master import load_master
+
+        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001
+        # ``paths`` fixture と同じベース/履歴を使い、両方とも同じ概要に揃える
+        # （fixture の戻り値は dict なので、引数 ``paths`` を介さず直接 ``paths["base_path"]``
+        # 等を使う。 ``paths`` は monkeypatch を内側で使うので ``fixture`` 引数の名前
+        # ``monkeypatch`` とは別物になる点に注意）
+        entries = load_master(paths["master_path"])
+        entry_1002 = replace(entries["1002"], enabled=True, summary="顧客一覧")
+        all_entries = {**entries, "1002": entry_1002}
+        # ``service_module.load_master`` を新しい dict を返す関数で差し替える
+        monkeypatch.setattr(service_module, "load_master", lambda _master_path: all_entries)
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            saved = download_scheduled()
+
+        # 両方とも同じ「ベース / 概要」配下に保存される
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        assert summary_dir.is_dir()
+        assert len(saved) == 2
+        keys = sorted(p.name.split("_")[0] for p in summary_dir.glob("*.csv"))
+        assert keys == ["1001", "1002"]
+        # 同じ概要なので、フォルダは 1 つしかない（同じフォルダに 2 ファイル）
+        subdirs = [p for p in paths["base_path"].iterdir() if p.is_dir()]
+        assert subdirs == [summary_dir]
 
 
 class TestHistory:
@@ -1553,9 +1695,9 @@ class TestDownloadScheduled:
     def test_one_failure_does_not_stop_the_rest(self, tmp_path, monkeypatch):
         """1 件でフォルダ未作成エラーが出ても、別件は保存される。
 
-        2026-09 にフォルダ階層が「ベースパスのみ」に1本化されたので、
-        ``1001`` のグループ設定だけ存在しないベースパスを指すようにして
-        「フォルダ未作成エラー」を起こし、``1002`` は既存パスに繋ぐ。
+        2026-09 に「ベース / 概要」の 2 階層になったので、 ``1001`` のグループ設定だけ
+        存在しないベースパスを指すようにして「フォルダ未作成エラー」を起こし、
+        ``1002`` は既存パスに繋ぐ（ ``1002`` 側のベースは存在する前提）。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -1596,7 +1738,11 @@ class TestDownloadScheduled:
             download_scheduled()
         # "1001" で失敗しても "1002" は保存されている（続けたうえで最後に知らせる）。
         # 出力は単一ファイル化されているので、`*.csv` は ``1002`` のもの 1 件だけ
-        keys = sorted(path.name.split("_")[0] for path in base_path.glob("1002_*.csv"))
+        # 「ベース / 概要」の 2 階層目で glob する
+        from src.paths import summary_folder_name as _summary_folder_name
+
+        summary_dir = base_path / _summary_folder_name("通る方")
+        keys = sorted(path.name.split("_")[0] for path in summary_dir.glob("1002_*.csv"))
         assert keys == ["1002"]
         # ``1001`` のフォルダ（存在しない）には当然ファイルは無い
         assert not missing_path.exists()
@@ -1649,7 +1795,11 @@ class TestDownloadScheduled:
             download_scheduled()
 
         # 成功した "1002" のファイルだけが残る（出力は単一ファイル化）
-        keys = sorted(path.name.split("_")[0] for path in base_path.glob("1002_*.csv"))
+        # 「ベース / 概要」の 2 階層目で glob する
+        from src.paths import summary_folder_name as _summary_folder_name
+
+        summary_dir = base_path / _summary_folder_name("取得成功")
+        keys = sorted(path.name.split("_")[0] for path in summary_dir.glob("1002_*.csv"))
         assert keys == ["1002"]
 
     def test_unexpected_error_stops_the_run_immediately(self, tmp_path, monkeypatch):
@@ -1996,7 +2146,11 @@ class TestScheduleDedup:
         # 1 回目だけ Salesforce へ問い合わせる（2 回目は履歴を見てスキップ）
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
         # 1 回目だけ取得されるので、保存ファイルは時刻付きの 1 件だけ
-        saved = list(base_path.glob("1001_*.csv"))
+        # 「ベース / 概要」の 2 階層目で glob する
+        from src.paths import summary_folder_name as _summary_folder_name
+
+        summary_dir = base_path / _summary_folder_name("曜日一致")
+        saved = list(summary_dir.glob("1001_*.csv"))
         assert len(saved) == 1
         # 履歴の「スケジュールキー」列に、根拠のキーが記録されている
         with CSV(tmp_path / "履歴.csv") as csv_file:
@@ -2528,7 +2682,11 @@ class TestAllowEmpty:
             download_scheduled()  # 例外にならない
 
         # 0 行でも Salesforce の列情報を持つ CSV が作られる（単一ファイルの 1 件）
-        saved = list(base_path.glob("1001_*.csv"))
+        # 「ベース / 概要」の 2 階層目で glob する
+        from src.paths import summary_folder_name as _summary_folder_name
+
+        summary_dir = base_path / _summary_folder_name("顧客一覧")
+        saved = list(summary_dir.glob("1001_*.csv"))
         assert len(saved) == 1
         with CSV(saved[0], read_only=True) as csv_file:
             assert csv_file.read().columns == ["名前", "金額"]
@@ -2576,8 +2734,11 @@ class TestAllowEmpty:
             download_scheduled()
 
         # 保存された単一ファイルが空のまま読み取れる（glob でファイルを探して
-        # 直接 CSV で読む）
-        saved = list(base_path.glob("1001_*.csv"))
+        # 直接 CSV で読む）。「ベース / 概要」の 2 階層目で glob する
+        from src.paths import summary_folder_name as _summary_folder_name
+
+        summary_dir = base_path / _summary_folder_name("顧客一覧")
+        saved = list(summary_dir.glob("1001_*.csv"))
         assert len(saved) == 1
         with CSV(saved[0], read_only=True) as csv_file:
             reader = csv_file.read()

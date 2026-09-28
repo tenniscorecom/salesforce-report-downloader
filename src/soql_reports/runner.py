@@ -37,6 +37,7 @@ from comken.core.table.model import Table
 from comken.exceptions import (
     ComkenError,
 )
+from comken.runtime import is_dry_run
 from comken.toolbox.csv import CSV
 from comken.toolbox.salesforce.sites import site_for
 
@@ -46,6 +47,7 @@ from src.exceptions import (
     ReportFolderNotFoundError,
     ReportReservePathLimitError,
 )
+from src.paths import summary_folder_name
 from src.soql_reports import _registry
 from src.soql_reports.base import SoqlReport
 
@@ -74,11 +76,7 @@ def _soql_download_failed_error(failed_keys: list[str]) -> DownloaderError:
 # 無限ループになるため、必ず上限を切る
 RESERVE_PATH_LIMIT = 1000
 
-# ファイル名に使えない文字。概要をファイル名に混ぜるので、ここで落とす
-_FORBIDDEN_IN_NAME = '\\/:*?"<>|'
-# 概要が長いとパスが伸びすぎるので、ファイル名に使うのはこの長さまで
-_SUMMARY_LIMIT = 30
-# ``DateNameBuilder.suffix()`` に渡す書式。「管理番号_概要_日付_時刻_マイクロ秒.csv」になる
+# ``DateNameBuilder.suffix()`` に渡す書式。「管理番号_日付_時刻_マイクロ秒.csv」になる
 _DATETIME_FORMAT = "%Y%m%d_%H%M%S_%f"
 
 
@@ -170,7 +168,15 @@ def _save(report_cls: type[SoqlReport], table: Table) -> Path:
     0 行・``ALLOW_EMPTY`` × → ``EmptyReportError``（=失敗）／○ → 空 CSV を置く。
     0 行でも ``SalesforceBase.query()`` が ``Table.columns`` を持って返るので、
     見出し行だけ書いた空 CSV を保存する。
+
+    **概要のフォルダは保存名の予約前に ``mkdir`` する。** ベース（``FOLDER``）は
+    ``_require_folder()`` で先に検査済みなので ``parents=False`` で安全。
+    dry-run 中は ``mkdir`` もしない（``service._save()`` と同じ防御）。
     """
+    path = _file_path_of(report_cls)
+    # **概要のフォルダは保存名の予約前に ``mkdir`` する。**
+    if not is_dry_run():
+        path.parent.mkdir(exist_ok=True)
     path = _reserve_path(report_cls)
     try:
         if not table and not report_cls.ALLOW_EMPTY:
@@ -206,21 +212,18 @@ def _reserve_path(report_cls: type[SoqlReport]) -> Path:
 def _file_path_of(report_cls: type[SoqlReport]) -> Path:
     """そのレポートを保存するパス。
 
-    ファイル名は「管理番号_概要_日付_時刻_マイクロ秒」。**管理番号を先頭に置く**のは、
-    概要や参照先のレポートが変わっても番号は変わらないため。拡張子は ``.csv``。
+    フォルダは ``FOLDER / 概要`` の 2 階層、ファイル名は「管理番号_日付_時刻_マイクロ秒」。
+    **管理番号を先頭に置く**のは、概要や参照先のレポートが変わっても番号は
+    変わらないため。拡張子は ``.csv``。概要はフォルダ名にだけ使い、ファイル名には
+    混ぜない（``src.paths.summary_folder_name()`` で安全化し、定期取得側と
+    同じ規則でフォルダ名を作る）。
     """
-    name = f"{report_cls.KEY}_{_safe_summary(report_cls.SUMMARY)}.csv"
-    return Path(report_cls.FOLDER) / DateNameBuilder(name).suffix(_DATETIME_FORMAT)
-
-
-def _safe_summary(summary: str) -> str:
-    """概要をファイル名に使える形にする。
-
-    ファイル名に使えない文字を除き、``_SUMMARY_LIMIT`` 文字までに切る
-    （空になったら「レポート」）。
-    """
-    cleaned = "".join(char for char in summary if char not in _FORBIDDEN_IN_NAME).strip()
-    return cleaned[:_SUMMARY_LIMIT] or "レポート"
+    name = f"{report_cls.KEY}.csv"
+    return (
+        Path(report_cls.FOLDER)
+        / summary_folder_name(report_cls.SUMMARY)
+        / DateNameBuilder(name).suffix(_DATETIME_FORMAT)
+    )
 
 
 def _write_csv(path: Path, table: Table) -> None:

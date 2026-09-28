@@ -153,16 +153,46 @@ class TestDownloadSoqlReports:
     """``download_soql_reports()`` のメインシナリオ。"""
 
     def test_saves_csv_in_folder(self, folder):
-        """取得した Table が指定フォルダへ CSV として保存される。"""
+        """取得した Table が ``FOLDER / 概要 /`` 配下へ CSV として保存される。
+
+        2026-09 に定期取得と SOQL レポートを「ベース / 概要」の 2 階層に揃えたので、
+        ファイルは ``FOLDER`` 直下ではなく ``FOLDER / 概要 /`` 配下に作られる
+        （``src.paths.summary_folder_name()`` が ``_DummyReport.SUMMARY``
+        を安全化して ``folder`` の直下に掘る）。
+        """
         _DummyReport.FOLDER = str(folder)
+        from src.paths import summary_folder_name
+
+        expected_summary = summary_folder_name(_DummyReport.SUMMARY)
         with patch.object(runner_module, "site_for", return_value=fake_salesforce()):
             saved = download_soql_reports([_DummyReport])
         assert len(saved) == 1
         csv_path = saved[0]
         assert csv_path.is_file()
-        assert csv_path.parent == folder
+        # ベース直下ではなく、「ベース / 概要」の 2 階層目にある
+        assert csv_path.parent == folder / expected_summary
+        # ファイル名には概要が混ざらない（管理番号_日時_マイクロ秒.csv）
+        assert csv_path.name.startswith(f"{_DummyReport.KEY}_")
+        assert "_" + _DummyReport.SUMMARY not in csv_path.name
         with CSV(csv_path, read_only=True) as csv_file:
             assert csv_file.read().to_rows() == ROWS
+
+    def test_saves_csv_under_summary_subfolder_created_on_demand(self, folder):
+        """概要のフォルダが無いときは ``_save()`` が ``mkdir`` で自動作成する。
+
+        ``FOLDER`` だけ用意して概要フォルダは作らないでおき、ダウンロードを走らせると
+        フォルダが無ければファイルが無いエラー（``FileNotFoundError``）になるはずだが、
+        ``mkdir(exist_ok=True)`` を入れることで自動作成され、保存できることを確認する。
+        """
+        _DummyReport.FOLDER = str(folder)
+        from src.paths import summary_folder_name
+
+        summary_dir = folder / summary_folder_name(_DummyReport.SUMMARY)
+        assert not summary_dir.exists()
+        with patch.object(runner_module, "site_for", return_value=fake_salesforce()):
+            saved = download_soql_reports([_DummyReport])
+        assert saved[0].is_file()
+        assert summary_dir.is_dir()
 
     def test_uses_default_registered_reports_when_argument_is_none(self, folder):
         """``reports=None`` のときは ``registered_reports()`` が使われる。"""
@@ -254,10 +284,14 @@ class TestSaveSemantics:
     def test_empty_rows_with_allow_empty_true_saves_empty_csv(self, folder):
         """0 行・``ALLOW_EMPTY=True`` は空 CSV を保存する（失敗扱いしない）。"""
         _AllowEmptyReport.FOLDER = str(folder)
+        from src.paths import summary_folder_name
+
         with patch.object(runner_module, "site_for", return_value=fake_empty_salesforce()):
             saved = download_soql_reports([_AllowEmptyReport])
         assert len(saved) == 1
         csv_path = saved[0]
+        # ベース直下ではなく、「ベース / 概要」の 2 階層目にある
+        assert csv_path.parent == folder / summary_folder_name(_AllowEmptyReport.SUMMARY)
         assert csv_path.is_file()
         with CSV(csv_path, read_only=True) as csv_file:
             table = csv_file.read()
@@ -278,12 +312,16 @@ class TestSaveSemantics:
 
 
 class TestReservePath:
-    """``_reserve_path()`` の連番制御（``service._reserve_path()`` と同じアルゴリズム）。"""
+    """``_reserve_path()`` の連番制御（``service._reserve_path()`` と同じアルゴリズム）。
+
+    2026-09 にファイル名から概要を外したので、衝突テストで作る「ベース名」も
+    概要を含まない形（``{KEY}_fixed.csv`` / ``{KEY}_limit.csv``）に揃える。
+    """
 
     def test_existing_file_does_not_get_overwritten(self, folder, monkeypatch):
         """既存ファイルと衝突したら連番（``_1`` / ``_2`` …）で別名を確保する。"""
         _DummyReport.FOLDER = str(folder)
-        base_name = f"{_DummyReport.KEY}_売上明細（テスト用）_fixed.csv"
+        base_name = f"{_DummyReport.KEY}_fixed.csv"
         collision = folder / base_name
         collision.write_text("既存", encoding="utf-8")
         monkeypatch.setattr(runner_module, "_file_path_of", lambda *_args, **_kwargs: collision)
@@ -299,7 +337,7 @@ class TestReservePath:
         """連番の上限に達したら ``DownloaderError`` に変換する。"""
         monkeypatch.setattr(runner_module, "RESERVE_PATH_LIMIT", 5)
         _DummyReport.FOLDER = str(folder)
-        base_name = f"{_DummyReport.KEY}_売上明細（テスト用）_limit.csv"
+        base_name = f"{_DummyReport.KEY}_limit.csv"
         base = folder / base_name
         monkeypatch.setattr(runner_module, "_file_path_of", lambda *_args, **_kwargs: base)
         for sequence in range(5):

@@ -35,6 +35,7 @@ def record(
     project: str,
     row: HistoryRow,
     executed_at: dt.datetime | None = None,
+    folder: str | Path | None = None,
 ) -> None:
     """履歴を1行追記する。ファイルが無ければ見出し行から作る。
 
@@ -47,7 +48,8 @@ def record(
     Args:
         path: 履歴 CSV のパス。
         entry: 管理表1行。管理番号・概要・レポートID・URLはこの中身を履歴に出す。
-            保存先は `output_path()` で組み立て直した値を出す（`_resolved_folder()`）。
+            保存先は ``folder`` が指定されていればその値を、指定が無ければ
+            ``output_path()`` で組み立て直した値を出す（`_resolved_folder()`）。
         project: 呼び出したプロジェクト名。
         row: 履歴1行の本体（成否・各段階の結果・件数・エラー）。型は comken 側の
             ``HistoryRow``（``src.history.HistoryRow`` は同じ型を再エクスポート）。
@@ -56,6 +58,12 @@ def record(
             ファイル名・履歴のすべてが開始日で揃う。``None`` のときは従来どおり
             ``now()``（呼び出した瞬間の時刻）で書く（テストなど、時刻固定が
             不要な呼び出し側の後方互換）。
+        folder: 履歴の「保存先」列に書く値。**実際にファイルを置いたフォルダ**
+            （``ベース/概要``）を文字列で渡す。``None`` のときは ``output_path()``
+            で組み立て直す（失敗の履歴など、ファイル未保存のケースの後方互換用）。
+            概要のフォルダは出力パス組み立て時に動的に決まるので、 ``_save()`` から
+            実保存パス（``path.parent``）を渡してもらう形にすると「概要の決定
+            ロジック」が履歴側に漏れ出さない。
     """
     from comken.services.salesforce_downloader.history import append_history
 
@@ -78,7 +86,7 @@ def record(
         "成否": SUCCESS if row.succeeded else FAILURE,
         "Salesforce取得結果": _stage(row.fetched_from_salesforce),
         "保存結果": _stage(row.saved_to_file),
-        "保存先": _resolved_folder(entry),
+        "保存先": str(folder) if folder is not None else _resolved_folder(entry),
         "ファイル名": row.file_name,
         "取得件数": "" if row.row_count is None else row.row_count,
         "処理秒数": f"{row.seconds:.2f}",

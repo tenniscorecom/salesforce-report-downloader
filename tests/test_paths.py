@@ -10,6 +10,10 @@
 廃止された。** ダウンローダー側で「本日のキャッシュを読み取る」用途は無くなったため、
 その分のテスト（`TestLatestTodayPath` / `TestCachedReport`）は削除している。
 
+**2026-09 にフォルダ階層を「ベースパス / 概要」の 2 階層に変更した。** 人が業務ごとに
+探しやすくするため ``entry.summary`` を ``summary_folder_name()`` で安全化して
+フォルダ名にする。テストはこの 2 階層構造を前提に組み立て直す。
+
 `MASTER_PATH` / `HISTORY_PATH` は `src.paths` のモジュール変数で、テストでは
 `monkeypatch.setattr` で tmp_path のパスへ差し替える。``_Paths`` ラッパー経由の
 ``output_path`` は呼び出し時点のモジュール変数を読むので、``src.paths`` 1 か所を
@@ -27,7 +31,7 @@ import src.paths as paths_module
 from src.exceptions import (
     GroupNotRegisteredError,
 )
-from src.paths import output_path
+from src.paths import output_path, summary_folder_name
 from src.sheets.group_settings import load_group_settings
 from src.sheets.master import load_master
 
@@ -46,6 +50,11 @@ HEADERS = [
 ]
 
 GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
+
+# paths fixture で使う管理表の概要列の値（``summary_folder_name()`` で安全化される）
+SUMMARY_1001 = "顧客一覧"
+SUMMARY_1002 = "売上実績"
+SUMMARY_1003 = "停止中"
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +98,8 @@ def paths(tmp_path, monkeypatch):
     に反映される。
 
     ベースパス（設定シート）だけを作り、その配下に「担当者」「概要」の
-    サブフォルダは作らない（新仕様のフォルダ階層はベースパスのみ）。
+    サブフォルダは作らない（``output_path()`` が指す概要フォルダは呼び出し側
+    ``service._save()`` が保存時に ``mkdir`` で作る）。
     """
     base_path = tmp_path / "ベース"
     base_path.mkdir()
@@ -100,7 +110,7 @@ def paths(tmp_path, monkeypatch):
                 "1001",
                 "営業本部",
                 "山田",
-                "顧客一覧",
+                SUMMARY_1001,
                 URL_A,
                 "○",
                 "",
@@ -109,7 +119,7 @@ def paths(tmp_path, monkeypatch):
                 "1002",
                 "営業本部",
                 "佐藤",
-                "売上実績",
+                SUMMARY_1002,
                 URL_B,
                 "○",
                 "",
@@ -118,7 +128,7 @@ def paths(tmp_path, monkeypatch):
                 "1003",
                 "営業本部",
                 "山田",
-                "停止中",
+                SUMMARY_1003,
                 URL_B,
                 "×",
                 "",
@@ -135,6 +145,10 @@ def paths(tmp_path, monkeypatch):
         "master_path": master,
         "history_path": history_path,
         "base_path": base_path,
+        # 概要のフォルダ名（``summary_folder_name()`` で安全化した後の値）。
+        # ``output_path()`` の戻り値の組み立てに使う
+        "summary_folder_1001": summary_folder_name(SUMMARY_1001),
+        "summary_folder_1002": summary_folder_name(SUMMARY_1002),
     }
 
 
@@ -142,19 +156,27 @@ class TestOutputPath:
     """``output_path()`` は唯一の出力パスを組み立てる。"""
 
     def test_uses_schedule_run_time_when_provided(self, paths):
-        """``schedule_run_time`` を渡したら stem に ``%Y%m%d_%H%M`` で埋め込む。"""
+        """``schedule_run_time`` を渡したら stem に ``%Y%m%d_%H%M`` で埋め込む。
+
+        フォルダは「ベースパス / 概要」の 2 階層、ファイル名は
+        ``{管理番号}_{時刻:%Y%m%d_%H%M}.csv``。
+        """
         entry = load_master(paths["master_path"])["1001"]
         run_time = dt.time(9, 0)
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         path = output_path(entry, run_time, now=fixed_now)
-        assert path == paths["base_path"] / "1001_20260918_0900.csv"
+        assert path == (
+            paths["base_path"] / paths["summary_folder_1001"] / "1001_20260918_0900.csv"
+        )
 
     def test_falls_back_to_now_when_schedule_run_time_is_none(self, paths):
         """スケジュール行が無いレポート（後方互換）は ``now`` をそのまま使う。"""
         entry = load_master(paths["master_path"])["1001"]
         fixed_now = dt.datetime(2026, 1, 7, 13, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         path = output_path(entry, None, now=fixed_now)
-        assert path == paths["base_path"] / "1001_20260107_1330.csv"
+        assert path == (
+            paths["base_path"] / paths["summary_folder_1001"] / "1001_20260107_1330.csv"
+        )
 
     def test_uses_clock_now_when_now_argument_is_omitted(self, paths, monkeypatch):
         """``now`` 引数も省略した場合は ``clock_now()`` の現在時刻を使う。"""
@@ -168,16 +190,20 @@ class TestOutputPath:
         # でローカル束縛を作るので、ローカル属性も同期する必要がある
         monkeypatch.setattr("src.paths.clock_now", lambda: fixed_now)
         _ = clock_now  # ローカル束縛を作っただけで未参照、という警告の抑止
-        assert path == paths["base_path"] / "1001_20260504_0700.csv"
+        assert path == (
+            paths["base_path"] / paths["summary_folder_1001"] / "1001_20260504_0700.csv"
+        )
 
-    def test_folder_is_base_path_only(self, paths):
-        """フォルダは「ベースパス」のみ。「担当者」「概要」の階層は無い。"""
+    def test_folder_is_base_path_plus_summary(self, paths):
+        """フォルダは「ベースパス / 概要」の 2 階層。「担当者」は階層に影響しない。"""
         entry = load_master(paths["master_path"])["1001"]
         path = output_path(entry, schedule_run_time=dt.time(9, 0))
-        assert path.parent == paths["base_path"]
-        # 担当者・概要がパスに現れない
+        # ベースパスの直下には「概要」フォルダが来る
+        assert path.parent == paths["base_path"] / paths["summary_folder_1001"]
+        # 「担当者」は階層に影響しない（パスに出ない）
         assert "山田" not in path.parts
-        assert "顧客一覧" not in path.parts
+        # 「概要」は **フォルダ名として** パスに出る（ファイル名には混ぜない）
+        assert paths["summary_folder_1001"] in path.parts
 
     def test_unknown_group_raises_group_not_registered(self, tmp_path, monkeypatch):
         """``report_folder()`` 経由の ``GroupNotRegisteredError`` がそのまま上がる。"""
@@ -190,7 +216,7 @@ class TestOutputPath:
                     "1001",
                     "未知グループ",
                     "山田",
-                    "顧客一覧",
+                    SUMMARY_1001,
                     URL_A,
                     "○",
                     "",
@@ -215,10 +241,13 @@ class TestGroupSettingsLoading:
         assert settings == {"営業本部": paths["base_path"]}
 
     def test_output_path_uses_report_folder(self, paths):
-        """``output_path()`` が ``report_folder()`` を経由してベースパス配下に作る。"""
+        """``output_path()`` が ``report_folder()`` を経由してベースパス配下に作る。
+
+        ベースパスの直下に「概要」フォルダが来る（2 階層）。
+        """
         entry = load_master(paths["master_path"])["1001"]
         path = output_path(entry, schedule_run_time=dt.time(9, 0))
-        assert path.parent == paths["base_path"]
+        assert path.parent == paths["base_path"] / paths["summary_folder_1001"]
         assert path.name.startswith("1001_")
         assert path.name.endswith(".csv")
 
@@ -239,6 +268,47 @@ class TestReportFolder:
         with pytest.raises(GroupNotRegisteredError) as caught:
             paths_module.report_folder(entry, {"別グループ": paths["base_path"]})
         assert "営業本部" in str(caught.value)
+
+
+class TestSummaryFolderName:
+    """``summary_folder_name()`` は Windows のファイル名規則に従って安全化する。
+
+    定期取得と SOQL レポートの両方がこの関数を使う（``src.soql_reports.runner``
+    側に同じ目的の関数を 2 つ持たないため）。
+    """
+
+    def test_strips_forbidden_chars(self):
+        """``\\ / : * ? " < > |`` を取り除く。"""
+        result = summary_folder_name('a\\b/c:d*e?f"g<h>i|j')
+        assert result == "abcdefghij"
+
+    def test_truncates_to_limit(self):
+        """30 文字より長い概要は 30 文字で切る。"""
+        result = summary_folder_name("あ" * 40)
+        assert len(result) == 30
+
+    def test_falls_back_to_report_when_empty(self):
+        """空文字、または使えない文字だけになった場合は「レポート」。"""
+        assert summary_folder_name("") == "レポート"
+        assert summary_folder_name("///") == "レポート"
+        assert summary_folder_name("\\/?:*") == "レポート"
+
+    def test_strips_trailing_dots_and_spaces(self):
+        """Windows のフォルダ名で使えない「末尾の ``.`` と空白」を取り除く。
+
+        先頭の空白はそのまま（trailing だけ落とす。``strip()`` ではない）。
+        """
+        assert summary_folder_name("顧客一覧...") == "顧客一覧"
+        assert summary_folder_name("顧客一覧 .") == "顧客一覧"
+        assert summary_folder_name("顧客一覧   ") == "顧客一覧"
+        # 末尾にスペースが残っていなければ、先頭のスペースはそのまま
+        assert summary_folder_name(" 顧客一覧") == " 顧客一覧"
+
+    def test_falls_back_to_report_when_only_trailing_punctuation(self):
+        """使える文字はあるが末尾の「``.`` と空白」を取り除いて空になる場合は「レポート」。"""
+        assert summary_folder_name(".") == "レポート"
+        assert summary_folder_name(" . ") == "レポート"
+        assert summary_folder_name("...") == "レポート"
 
 
 class TestMasterPathPatchEffect:
