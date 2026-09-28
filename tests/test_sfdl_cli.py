@@ -197,3 +197,55 @@ class TestSfdlCheckReferenceNotes:
         out = capsys.readouterr().out
         assert code == 0
         assert "無効化された" in out or "無効" in out
+
+
+class TestSfdlInitExitCode:
+    """``sfdl init`` の終了コードと雛形生成。
+
+    ``init`` は ``create_combined_workbook()`` を呼ぶ薄いラッパーで、
+
+    - 存在しないパスなら雛形を作って 0 で終わる
+    - 既存ファイルがあるなら上書きせず 1 で終わる
+
+    を確認する。雛形がそのまま ``check`` を通るかも見る（雛形側の整合性が
+    崩れていないことを CI で早期発見する）。
+    """
+
+    def test_creates_template_and_check_passes(self, tmp_path):
+        """存在しないパスで init → 0、ファイルができ、そのファイルへの check も 0。
+
+        雛形の記入例は「スケジュール S001 → レポート 1001」「グループ営業本部 →
+        設定シートに登録」のように整合しているので、雛形自体がそのまま
+        相互参照エラー無しで読めることを確かめる。
+        """
+        path = tmp_path / "new_master.xlsx"
+        assert not path.exists()
+
+        code = sfdl_main(["init", str(path)])
+        assert code == 0
+        assert path.exists()
+
+        # 同じパスに対して check を走らせ、相互参照エラーで落ちないことを確認
+        check_code = sfdl_main(["check", str(path)])
+        assert check_code == 0
+
+    def test_refuses_to_overwrite_existing_file(self, tmp_path):
+        """既存ファイルに init → 1、ファイルの中身（バイト列）が変わっていない。
+
+        ``--force`` を持たせない仕様なので、既存ファイルは何があっても
+        上書きされない。中身が壊れないことをバイト列で確認する。
+
+        本物の雛形 xlsx を既存ファイルにするのは、ガードが無いと
+        ``create_combined_workbook()`` がマイグレーションとして上書き保存してしまい、
+        それをバイト列の変化で検出できるようにするため。
+        """
+        path = tmp_path / "existing_master.xlsx"
+        # 先に init を走らせ、本物の雛形 xlsx を「既存ファイル」として用意する
+        code = sfdl_main(["init", str(path)])
+        assert code == 0
+        original_bytes = path.read_bytes()
+
+        # 同じパスにもう一度 init。ガードが効いていれば 1 で弾かれ中身も不変
+        code = sfdl_main(["init", str(path)])
+        assert code == 1
+        assert path.read_bytes() == original_bytes

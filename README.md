@@ -83,6 +83,18 @@ python -m src.cli check
 書き方の誤り（管理番号の重複、URL からレポート ID を取り出せない等）は取得のときにも
 止まるが、**編集した直後にその場で分かる**ほうが直すのが早い。
 
+**管理表の雛形を新規作成するには:**
+
+```bat
+python -m src.cli init [path]
+```
+
+`init` は、「管理表」「スケジュール」「設定」の 3 シートと「記入方法」シートを
+1 ブックにまとめて生成する（`src.template_writer.create_combined_workbook()` を呼ぶ）。
+**path 省略時は `src.paths.MASTER_PATH`**。**既存ファイルがある場合は上書きしない**
+（`--force` 等のオプションは無い。既存のファイルを雛形で置き換えたいときは、
+ファイルを移動してから実行する）。雛形を生成したら、あとは人が手で編集する。
+
 ## レポートを増やす・減らす
 
 **このプロジェクトは触りません。** このリポジトリが持つ管理表（`レポート管理表.xlsx`）に
@@ -104,11 +116,11 @@ python -m src.cli check
 「`ベースパス / ファイル`」の単一階層に1本化した。`担当者` / `概要` は管理表に
 記録用として残るが、出力パスには影響しない。
 
-**管理表（Excel）は非エンジニアが手動で用意・編集する。** 雛形の生成は
-`src/template_writer.py` の関数
-（`create_combined_workbook()` / `create_template()`）で行う。**「管理表」
-「スケジュール」「設定」の3シートを1つのブックにまとめて生成**したい場合は
-`create_combined_workbook(path)` を呼ぶ（詳しくは同モジュールの docstring を参照）。
+**管理表（Excel）は非エンジニアが手動で用意・編集する。** 雛形は
+`python -m src.cli init [path]` で作り、**以降は手で編集する**。雛形生成の本体は
+`src/template_writer.py` の `create_combined_workbook()` で、CLI はそれを呼ぶ
+薄いラッパーになっている（Python から直接 `create_combined_workbook(path)` を
+呼んでもよい。詳しくは同モジュールの docstring を参照）。
 
 「スケジュール」シートの雛形には、**「取得頻度」と矛盾する「曜日」「日付」
 セルが赤く塗られる条件付き書式**が付く（毎週なのに曜日が空、毎月なのに

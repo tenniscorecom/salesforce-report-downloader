@@ -1,6 +1,7 @@
 r"""src/cli.py — 管理表まわりの保守コマンド。
 
     python -m src.cli check                       管理表を検査する
+    python -m src.cli init [path]                 管理表の雛形を作る
 
 **これは保守用のコマンドで、業務の定期実行ではない。** 毎日の取得は個別プロジェクトから
 `download_scheduled()` を呼ぶ（ライブラリには**実行される単位を置かない**）。
@@ -9,8 +10,14 @@ r"""src/cli.py — 管理表まわりの保守コマンド。
 書き方の誤り（管理番号の重複、URL からレポート ID を取り出せない等）は取得のときにも
 止まるが、**編集した直後にその場で分かる**ほうが直すのが早い。
 
+`init` は、管理表の雛形を新規作成するためのもの。「管理表」「スケジュール」「設定」の
+3 シートと「記入方法」シートを 1 ブックにまとめて生成する。**既存ファイルがある場合は
+上書きしない**（``--force`` 等のオプションは持たせない。雛形をやり直したいときは、
+既存ファイルを移動してから実行する）。
+
 このファイルが持つもの:
 - 管理表の検査（`check`）
+- 管理表の雛形生成（`init`）
 
 ここに書かないもの:
 - 業務の定期実行 → 利用プロジェクトから `download_scheduled()` を呼ぶ
@@ -34,6 +41,7 @@ from src.sheets.master import (
     shared_report_ids,
 )
 from src.sheets.schedule import ScheduleRule, load_schedule
+from src.template_writer import create_combined_workbook
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.cli",
-        description="Salesforce レポート管理表の検査",
+        description="Salesforce レポート管理表の作成・検査",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -77,6 +85,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"管理表のパス（省略時: {MASTER_PATH}）",
     )
     check.set_defaults(run=_run_check)
+
+    init = subparsers.add_parser(
+        "init", help="管理表の雛形（管理表/スケジュール/設定/記入方法）を作る"
+    )
+    init.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        default=None,
+        help=f"管理表のパス（省略時: {MASTER_PATH}）。既存ファイルがある場合は上書きしない",
+    )
+    init.set_defaults(run=_run_init)
 
     return parser
 
@@ -103,6 +123,30 @@ def _run_check(args: argparse.Namespace) -> list[str]:
 
     # 相互参照エラー。1件目で止めず全て集めて呼び出し元へ返す
     return _collect_cross_errors(entries, rules, settings)
+
+
+def _run_init(args: argparse.Namespace) -> list[str]:
+    """管理表の雛形を作る。既存ファイルがある場合は上書きせず終了コード 1。
+
+    **雛形は ``create_combined_workbook()`` に集約されており、ここではパスの
+    決定と既存チェックだけを行う。** ``--force`` のような上書きオプションは
+    持たせない（誤って実データ管理表を消すのを防ぐため）。既存ファイルを
+    置き換えたいときは、利用者がファイルを移動してから実行する。
+
+    戻り値は正常完了時は空リスト ``[]``。既存ファイルがあった場合は
+    ``ComkenError`` を送出し、``main()`` の既存ハンドリングで「エラー: ...」と
+    stderr に出して終了コード 1 にする（雛形生成の失敗時も同じルートに乗る）。
+    """
+    path = args.path or MASTER_PATH
+    if path.exists():
+        raise ComkenError(
+            f"既にあります: {path}（上書きしません。"
+            "別のパスを指定するか、既存ファイルを移動してから実行してください）"
+        )
+    create_combined_workbook(path)
+    print(f"作成しました: {path}")
+    print("記入後に python -m src.cli check で確認してください")
+    return []
 
 
 def _print_summary(
