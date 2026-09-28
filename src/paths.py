@@ -34,7 +34,6 @@ import datetime as dt
 import logging
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from comken.core.dates import now as clock_now
 
@@ -43,9 +42,7 @@ from src.exceptions import (
     GroupNotRegisteredError,
     ReportNotRegisteredError,
 )
-
-if TYPE_CHECKING:
-    from src.sheets.master import ReportEntry
+from src.sheets.master import ReportEntry
 
 logger = logging.getLogger(__name__)
 

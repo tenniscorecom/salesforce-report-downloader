@@ -43,6 +43,8 @@ r"""src/service.py — 取得の本体。
 - 管理表から1行を引く `_find()` → src.paths（`requests` を経由しない側に置く）
 """
 
+from __future__ import annotations
+
 import contextlib
 import datetime as dt
 import logging
@@ -86,7 +88,9 @@ from src.soql_reports import soql_report_for
 if TYPE_CHECKING:
     # ブラウザ経由の戻り値の型だけ。``selenium`` 依存を実際にブラウザ経由の
     # レポートを使うときだけ読み込むために、``_fetch_via_browser()`` 内で
-    # import する。型注釈は文字列扱いで十分なので ``TYPE_CHECKING`` に閉じる
+    # import する。``from __future__ import annotations`` で注釈を文字列扱いに
+    # しているので、``TYPE_CHECKING`` に閉じてよい（無いと Python 3.13 以下で
+    # import 時に NameError）
     from comken.toolbox.browser.sites.salesforce.base import SalesforceReportBrowser
 
 logger = logging.getLogger(__name__)

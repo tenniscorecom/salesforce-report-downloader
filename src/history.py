@@ -13,7 +13,6 @@
 import datetime as dt
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from comken.core.dates import now
 from comken.services.salesforce_downloader.history import (
@@ -24,9 +23,7 @@ from comken.services.salesforce_downloader.history import (
 )
 
 from src.exceptions import GroupNotRegisteredError
-
-if TYPE_CHECKING:
-    from src.sheets.master import ReportEntry
+from src.sheets.master import ReportEntry
 
 logger = logging.getLogger(__name__)
 
