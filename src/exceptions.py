@@ -1,26 +1,17 @@
 """src/exceptions.py — Salesforce レポートダウンローダーの例外。
 
-履歴の読み書き・ロックに関する例外（``DownloaderError`` / ``HistoryWriteError`` /
-``HistoryLockTimeoutError``）は comken 側の `comken.exceptions` に集約した。
 ダウンローダーが送出する例外クラス（管理表・スケジュール・SOQL・フォルダまわりの
-業務例外）をこのモジュールに置く。
+業務例外）をこのモジュールに置く。``DownloaderError`` は comken 側の
+``comken.exceptions.DownloaderError`` をそのまま使うので、基底クラスとしてだけ
+import する（再エクスポートはしない。利用側で ``from comken.exceptions import
+DownloaderError`` を直接書いてください）。
 """
 
 from pathlib import Path
 
-from comken.exceptions import ComkenError
-from comken.exceptions import DownloaderError as _ComkenDownloaderError
+from comken.exceptions import ComkenError, DownloaderError
 
-# ``DownloaderError`` は comken 側の基底クラスを使う（``HistoryWriteError`` /
-# ``HistoryLockTimeoutError`` / ``ReportNotDownloadedError`` の親）。
-# ``DownloaderError`` 自体は comken.exceptions 側で定義されているため、
-# このモジュールでは再定義せず comken 側のクラスをそのまま再エクスポートする。
-DownloaderError = _ComkenDownloaderError
-
-
-# `DownloaderError` の re-export は IDE/静的解析の利便性のため。
 __all__ = [
-    "DownloaderError",
     "ReportNotRegisteredError",
     "GroupNotRegisteredError",
     "SoqlReportNotRegisteredError",

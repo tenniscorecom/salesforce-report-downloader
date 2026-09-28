@@ -3,6 +3,9 @@
 `sheets/` の他のファイルと同じく、**このファイルは「スケジュール」シートに何が
 あるか（`ScheduleRule`）と、その値を使った判定ロジックを持つ**。Excel を読む・
 雛形を作る仕組みは `src.report_master`（`sheets/` の外）にある。
+
+``load_schedule()`` はパスを引数で受け取る（``MASTER_PATH`` は呼び出し側で
+管理する）。設定シート（``src.sheets.group_settings``）と同じ設計。
 """
 
 import datetime as dt
@@ -22,12 +25,10 @@ from comken.core.holidays import (
 )
 from comken.core.timer import measure
 from comken.exceptions import (
+    DownloaderError,
     SheetNotFoundError,
 )
 
-from src.exceptions import (
-    DownloaderError,
-)
 from src.report_master import MasterRow, column
 
 FREQUENCY_DAILY = "毎日"
@@ -431,7 +432,7 @@ def _parse_day_of_month(value: object) -> tuple[bool, int | None, int | None]:
 
 
 @measure
-def load_schedule(path: str | Path | None = None) -> list[ScheduleRule]:
+def load_schedule(path: str | Path) -> list[ScheduleRule]:
     """スケジュール管理シートを読んで、``ScheduleRule`` のリストを返す。
 
     **シートが存在しない場合はエラーにせず空リストを返す。** この機能を
@@ -448,7 +449,8 @@ def load_schedule(path: str | Path | None = None) -> list[ScheduleRule]:
     レポート管理表との突き合わせは呼び出し側 ``download_scheduled()`` の責務。
 
     Args:
-        path: 管理表（Excel）のパス。``None`` のときは ``MASTER_PATH``。
+        path: 管理表（Excel）のパス。レポート管理表と同じブック内の
+            「スケジュール」シートを読むので、管理表のパスをそのまま渡す。
 
     Returns:
         宣言順に並んだ ``ScheduleRule`` のリスト。
@@ -459,10 +461,6 @@ def load_schedule(path: str | Path | None = None) -> list[ScheduleRule]:
         MasterDuplicateValueError: スケジュールキーが重複している行がある場合。
         ComkenFileNotFoundError: ``path`` が存在しない場合。
     """
-    if path is None:
-        from src.paths import MASTER_PATH
-
-        path = MASTER_PATH
     source = Path(path)
     # **シートが無い場合は空リストを返す。** この機能をまだ使っていない管理表を
     # 読み込み時に壊さないため。``ComkenFileNotFoundError`` などの「ファイル自体に

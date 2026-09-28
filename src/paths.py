@@ -38,9 +38,9 @@ from collections import OrderedDict
 from pathlib import Path
 
 from comken.core.dates import now as clock_now
+from comken.exceptions import DownloaderError
 
 from src.exceptions import (
-    DownloaderError,
     GroupNotRegisteredError,
     ReportNotRegisteredError,
 )
@@ -186,11 +186,7 @@ def output_path(
     Raises:
         GroupNotRegisteredError: 設定シートにないグループ名の場合（``report_folder()`` 経由）。
     """
-    # ``MASTER_PATH`` は呼び出し時点のモジュール変数を参照する（テストでは
-    # ``monkeypatch.setattr(paths, "MASTER_PATH", ...)`` で差し替える）。
-    from src.paths import MASTER_PATH as _MASTER_PATH
-
-    folder = report_folder(entry, _load_group_settings_cached(_MASTER_PATH))
+    folder = base_folder(entry)
     current = now if now is not None else clock_now()
     if schedule_run_time is not None:
         base_dt = dt.datetime.combine(current.date(), schedule_run_time)
@@ -201,6 +197,28 @@ def output_path(
         / summary_folder_name(entry.summary)
         / f"{entry.key}_{base_dt.strftime('%Y%m%d_%H%M')}.csv"
     )
+
+
+def base_folder(entry: ReportEntry) -> Path:
+    """管理表の1行から、保存先のベースフォルダを返す。
+
+    設定シート（管理表と同じブック内）の「グループ→ベースパス」を引いて
+    ``report_folder()`` に委譲する。フォルダは作らないし検査もしない
+    （存在検査は ``service._require_folder`` の責務）。
+
+    ``MASTER_PATH`` は呼び出し時点のモジュール変数を参照する（テストでは
+    ``monkeypatch.setattr(paths, "MASTER_PATH", ...)`` で差し替える）。
+
+    Args:
+        entry: レポート管理表の1行。
+
+    Returns:
+        保存先のベースフォルダの ``Path``。
+
+    Raises:
+        GroupNotRegisteredError: ``entry.group`` が設定シートに無い場合。
+    """
+    return report_folder(entry, _load_group_settings_cached(MASTER_PATH))
 
 
 def report_folder(entry: ReportEntry, group_settings: dict[str, Path]) -> Path:
@@ -222,12 +240,9 @@ def report_folder(entry: ReportEntry, group_settings: dict[str, Path]) -> Path:
     Raises:
         GroupNotRegisteredError: ``entry.group`` が ``group_settings`` に無い場合。
     """
-    # ``MASTER_PATH`` は呼び出し時点のモジュール変数を参照する。
-    from src.paths import MASTER_PATH as _MASTER_PATH
-
     base_path = group_settings.get(entry.group)
     if base_path is None:
-        raise GroupNotRegisteredError(entry.group, sorted(group_settings), _MASTER_PATH)
+        raise GroupNotRegisteredError(entry.group, sorted(group_settings), MASTER_PATH)
     return base_path
 
 

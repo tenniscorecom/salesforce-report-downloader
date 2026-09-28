@@ -9,8 +9,8 @@
 from __future__ import annotations
 
 from comken.core.discovery import find_subclasses
+from comken.exceptions import DownloaderError
 
-from src.exceptions import DownloaderError
 from src.soql_reports import reports
 from src.soql_reports.base import SoqlReport
 

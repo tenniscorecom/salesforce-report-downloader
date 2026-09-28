@@ -15,14 +15,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from comken.core.table import Table
 from comken.exceptions import (
+    DownloaderError,
     SalesforceError,
 )
 from comken.toolbox.csv import CSV
 
-from src.exceptions import (
-    DownloaderError,
-    SoqlReportNotRegisteredError,
-)
+from src.exceptions import SoqlReportNotRegisteredError
 from src.soql_reports import _registry, soql_report_for
 from src.soql_reports import runner as runner_module
 from src.soql_reports.base import SoqlReport

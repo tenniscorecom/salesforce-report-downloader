@@ -16,8 +16,8 @@ from comken.core.holidays import (
     nth_workday,
 )
 from comken.core.holidays._holidays import _Holidays, _set_calendar_for_test
+from comken.exceptions import DownloaderError
 
-from src.exceptions import DownloaderError
 from src.sheets.schedule import (
     FREQUENCY_BUSINESS_DAY,
     FREQUENCY_DAILY,

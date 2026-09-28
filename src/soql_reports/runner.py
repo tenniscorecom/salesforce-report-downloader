@@ -36,13 +36,13 @@ from comken.core.files import DateNameBuilder, atomic_write
 from comken.core.table.model import Table
 from comken.exceptions import (
     ComkenError,
+    DownloaderError,
 )
 from comken.runtime import is_dry_run
 from comken.toolbox.csv import CSV
 from comken.toolbox.salesforce.sites import site_for
 
 from src.exceptions import (
-    DownloaderError,
     EmptyReportError,
     ReportFolderNotFoundError,
     ReportReservePathLimitError,

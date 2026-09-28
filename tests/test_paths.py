@@ -270,6 +270,15 @@ class TestReportFolder:
         assert "営業本部" in str(caught.value)
 
 
+class TestBaseFolder:
+    """``base_folder()`` は ``MASTER_PATH`` 経由で設定シートを引いてベースパスを返す。"""
+
+    def test_returns_base_path_from_settings_sheet(self, paths):
+        """設定シートの「ベースURL」をそのまま返す。フォルダは作らない・検査しない。"""
+        entry = load_master(paths["master_path"])["1001"]
+        assert paths_module.base_folder(entry) == paths["base_path"]
+
+
 class TestSummaryFolderName:
     """``summary_folder_name()`` は Windows のファイル名規則に従って安全化する。
 

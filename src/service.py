@@ -65,11 +65,13 @@ from comken.exceptions import (
 )
 from comken.runtime import is_dry_run
 from comken.services.salesforce_downloader import history
+from comken.services.salesforce_downloader import paths as history_paths
 from comken.services.salesforce_downloader.history import HistoryRow
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
 from comken.toolbox.csv import CSV
 from comken.toolbox.salesforce.sites import site_for
 
+from src import paths
 from src.exceptions import (
     EmptyReportError,
     ReportFolderNotFoundError,
@@ -111,49 +113,15 @@ CAUSE_PROGRAM = "プログラム"
 RESERVE_PATH_LIMIT = 1000
 
 
-class _Paths:
-    """``src.paths`` のモジュール変数を呼び出し時点の値で束ねる軽量ラッパー。
+def _history_path() -> Path:
+    """呼び出し時点の履歴CSVのパスを ``Path`` で返す。
 
-    ``src.paths`` の ``MASTER_PATH`` はモジュール変数で、テストでは
-    ``monkeypatch.setattr(paths_module, "MASTER_PATH", ...)`` で差し替える。
-    ``from src.paths import MASTER_PATH`` でローカル束縛を作ると
-    ``service_module.MASTER_PATH`` を patch する経路が必要になり、patch 漏れ
-    の温床になる。代わりにこのラッパー経由で参照すれば、``paths`` のモジュール
-    属性を 1 か所 patch するだけで全箇所に反映される。
-
-    ``HISTORY_PATH`` は履歴CSVの置き場で comken 側にある。テストでは
-    ``comken.services.salesforce_downloader.paths.HISTORY_PATH`` を
-    ``monkeypatch.setattr`` で tmp_path に差し替える運用なので、呼び出し時点
-    でモジュール属性を読む形にする（``from ... import HISTORY_PATH`` で名前を
-    固定すると差し替えが効かない）。
+    履歴CSVの置き場は ``comken.services.salesforce_downloader.paths.HISTORY_PATH``
+    で、テストでは ``monkeypatch.setattr`` で comken 側のモジュール属性を
+    差し替える運用なので、呼び出し時点で ``history_paths.HISTORY_PATH`` を読む
+    （``from ... import HISTORY_PATH`` で名前を固定すると差し替えが効かない）。
     """
-
-    @property
-    def master_path(self) -> Path:
-        from src.paths import MASTER_PATH
-
-        return MASTER_PATH
-
-    @property
-    def history_path(self) -> Path:
-        from comken.services.salesforce_downloader.paths import HISTORY_PATH
-
-        return Path(HISTORY_PATH)
-
-    @property
-    def output_path(self):
-        from src.paths import output_path
-
-        return output_path
-
-
-_PATHS = _Paths()
-
-
-def _paths() -> _Paths:
-    """呼び出し時点の ``src.paths`` の値を返す。テストでは ``paths`` モジュール
-    の属性を patch するだけで全箇所に反映される。"""
-    return _PATHS
+    return Path(history_paths.HISTORY_PATH)
 
 
 @measure
@@ -225,17 +193,18 @@ def download_scheduled(
             RPA 基盤から見て成功と区別が付かない。
     """
     # **同時起動防止:** 履歴CSVとは別のロックファイル
-    # （``{_paths().history_path}.run.lock``）で、対象選定〜履歴追記をひとまとまりに
+    # （``{history_path}.run.lock``）で、対象選定〜履歴追記をひとまとまりに
     # プロセス間排他する。ロックが取れないときは別プロセスが進行中なので、
     # 例外にせず警告ログだけ出して ``[]`` を返す。
     # ``HistoryFileLock`` は名前のとおり履歴用ロックの部品だが、Windows の
-    # msvcrt ロックはファイル単位なので、``_paths().history_path`` とは違う
-    # ファイルを渡せば履歴読み書き（``{_paths().history_path}.lock``）と衝突しない。
+    # msvcrt ロックはファイル単位なので、``history_path`` とは違うファイルを
+    # 渡せば履歴読み書き（``{history_path}.lock``）と衝突しない。
     # ``ExitStack`` を使い、ロック取得**だけ**を try/except で囲う。本体側で
     # ``HistoryLockTimeoutError`` が上がっても、それは履歴読み書きの障害なので
     # そのまま伝播させる（``[]`` で握りつぶすと「履歴の障害」が別の実行に紛れて
     # 隠れる）。
-    run_lock_path = Path(f"{_paths().history_path}.run")
+    history_path = _history_path()
+    run_lock_path = Path(f"{history_path}.run")
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(HistoryFileLock(run_lock_path, timeout=0))
@@ -258,7 +227,7 @@ def _download_scheduled_locked(
     切り出したヘルパー。``download_scheduled()`` 自体は薄いラッパーに
     留めて、本体の長さ・複雑度を上げないようにする。
     """
-    entries = load_master(_paths().master_path)
+    entries = load_master(paths.MASTER_PATH)
     filters_by_report = filters_by_report or {}
     _validate_filters_by_report(filters_by_report, entries)
     _warn_shared_reports(entries)
@@ -266,7 +235,7 @@ def _download_scheduled_locked(
     # スケジュール管理表を読んで、レポートキーで引けるように索引化。**有効行だけ**を
     # 評価対象にする（無効行は曜日・時刻を足切りする材料にならない）。
     # シートが無い場合は空リスト（後方互換）
-    schedule_rules = load_schedule(_paths().master_path)
+    schedule_rules = load_schedule(paths.MASTER_PATH)
     rules_by_report: dict[str, list[ScheduleRule]] = {}
     for rule in schedule_rules:
         if rule.enabled:
@@ -306,7 +275,7 @@ def _download_scheduled_locked(
                     _download(
                         entry,
                         project,
-                        _paths().history_path,
+                        _history_path(),
                         schedule_key,
                         schedule_run_time=(
                             schedule_rule.desired_time if schedule_rule is not None else None
@@ -350,7 +319,7 @@ def _download_scheduled_locked(
         # 続けたぶん、最後に必ず知らせる（終了コードで落ちたことが分かるように）。
         # 直近の失敗を ``__cause__`` に乗せて送出する（呼び出し側が
         # ``raise X from original`` 相当の診断情報を得られるようにする）
-        raise ScheduledDownloadFailedError(failed, _paths().history_path) from last_exception
+        raise ScheduledDownloadFailedError(failed, _history_path()) from last_exception
     return saved
 
 
@@ -452,13 +421,13 @@ def _download(
     """1件を取得して保存し、成否を履歴に残す。
 
     ``schedule_run_time`` は唯一の出力ファイル名にスケジュール時刻を埋め込むために
-    ``_save()`` まで運ぶ（``_paths().output_path(entry, schedule_run_time)`` で
+    ``_save()`` まで運ぶ（``paths.output_path(entry, schedule_run_time)`` で
     ``%Y%m%d_%H%M`` のタイムスタンプ値として使われる）。
     スケジュール行が無いレポート（後方互換、``schedule_key == ""``）は ``None``
     のままでよく、``_save()`` 側で現在時刻にフォールバックする。
 
     ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``
-    の値。``_save()`` 経由で ``_paths().output_path(now=current)`` に渡し、
+    の値。``_save()`` 経由で ``paths.output_path(now=current)`` に渡し、
     ``_Attempt`` 経由で履歴の「実行日時」に渡す。日付をまたぐ長い実行でも
     判定・ファイル名・履歴が同じ「開始日」で揃うために 1 実行で同じ値を
     共有する。
@@ -504,16 +473,13 @@ def _require_folder(entry: ReportEntry) -> None:
     ここで概要の有無まで検査すると、保存のたびに人が概要フォルダを掘る必要が
     出て、運用上の意味がない）。
 
-    保存先フォルダは ``report_folder()`` が組み立てる
+    保存先フォルダは ``paths.base_folder()`` が組み立てる
     （管理表の「グループ」＋設定シートの「ベースURL」）。
     `entry.group` が設定シートに無い場合はここより先に
     `GroupNotRegisteredError` が上がる（フォルダの有無より先に、
     そもそも出力先を決められないという、より根本的なエラーとして扱う）。
     """
-    from src.paths import MASTER_PATH as _MASTER_PATH
-    from src.paths import _load_group_settings_cached, report_folder
-
-    base = report_folder(entry, _load_group_settings_cached(_MASTER_PATH))
+    base = paths.base_folder(entry)
     if not base.is_dir():
         raise ReportFolderNotFoundError(entry.key, base)
 
@@ -686,7 +652,7 @@ def _validate_filters_by_report(
     """実行時フィルタの管理番号がすべて管理表に存在することを確認する。"""
     for report_key in filters_by_report:
         if report_key not in entries:
-            raise ReportNotRegisteredError(report_key, list(entries), _paths().master_path)
+            raise ReportNotRegisteredError(report_key, list(entries), paths.MASTER_PATH)
 
 
 def _save(
@@ -702,11 +668,11 @@ def _save(
     ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
 
-    保存先は ``_paths().output_path()`` が返す単一のパス
+    保存先は ``paths.output_path()`` が返す単一のパス
     （``ベース/概要/{管理番号}_{スケジュール時刻}.csv``）。
     衝突回避は ``_reserve_unique_path()`` で常に（連番 ``_1`` / ``_2`` … を付けて）。
     同じパスへの上書きは想定しない — 取得済みキャッシュを読む側（`pathlib.Path.glob()`
-    で `_paths().output_path()` が組み立てたパスを探す運用）は、同じフォルダ内の連番を全部
+    で `paths.output_path()` が組み立てたパスを探す運用）は、同じフォルダ内の連番を全部
     候補に含めて新しい順で拾えるので、何度実行しても履歴と当日の最新状態は崩れない。
 
     **概要のフォルダは保存名の予約前にここで ``mkdir`` する。** ベースフォルダは
@@ -719,8 +685,8 @@ def _save(
     沿って、フォルダだけ作ると「書き込まないのにフォルダだけが残る」事故を防ぐ）。
 
     ``current`` は ``_download_scheduled_locked()`` で固定した ``clock_now()`` の値。
-    ``_paths().output_path(now=current)`` に渡すことで、23:59 に始まった実行が日付をまたいで
-    終わっても、出力ファイル名が開始日で揃う。``None`` のときは ``_paths().output_path()``
+    ``paths.output_path(now=current)`` に渡すことで、23:59 に始まった実行が日付をまたいで
+    終わっても、出力ファイル名が開始日で揃う。``None`` のときは ``paths.output_path()``
     側で ``clock_now()`` にフォールバックする（既存の単体テスト経路を残すため）。
 
     **失敗時の後始末について:** 書き込みが例外の原因になった場合は、既存の
@@ -728,7 +694,7 @@ def _save(
     を経由して ``ScheduledDownloadFailedError`` に変換される。書きかけのファイルも
     ``unlink(missing_ok=True)`` で後始末する。
     """
-    base = _paths().output_path(entry, schedule_run_time, now=current)
+    base = paths.output_path(entry, schedule_run_time, now=current)
     # **概要のフォルダは保存名の予約前に ``mkdir`` する。** ベースフォルダは
     # ``_require_folder()`` で先に検査済みなので ``parents=False`` で安全。
     # dry-run 中は作らない（保存もしない運用に合わせた防御）
@@ -828,14 +794,14 @@ def _matched_schedule_key(
     if not rules:
         # スケジュール行が無いレポート: ``downloaded_today()`` で 1 日 1 回までに
         # 制限する（後方互換）。戻り値のキーは空文字
-        history_path = _paths().history_path
+        history_path = _history_path()
         return not history.downloaded_today(history_path, entry.key, date=current.date()), ""
     due_rules = [
         rule
         for rule in rules
         if rule.is_due(current)
         and not history.schedule_succeeded_today(
-            _paths().history_path, rule.schedule_key, date=current.date()
+            _history_path(), rule.schedule_key, date=current.date()
         )
     ]
     if not due_rules:
@@ -872,7 +838,7 @@ def _select_targets(
     の3要素タプル。``ScheduleRule`` を一緒に運ぶのは、唯一の出力ファイル名に
     スケジュール時刻を埋め込むために ``start_time`` が必要だから。``ScheduleRule`` が
     ``None`` のときはスケジュール行が無いレポート（後方互換）で、その場合は
-    ``_paths().output_path()`` 側で現在時刻にフォールバックする。
+    ``paths.output_path()`` 側で現在時刻にフォールバックする。
 
     Returns:
         ``(targets, already_failed)``。``targets`` は実際に取得を試みる
@@ -888,7 +854,7 @@ def _select_targets(
         is_due, schedule_key = _matched_schedule_key(entry, rules_by_report, current)
         if not is_due:
             continue
-        if history.truncated_today(_paths().history_path, entry.key, current.date()):
+        if history.truncated_today(_history_path(), entry.key, current.date()):
             logger.info(
                 "本日は2000件超で失敗済みのため、この定期実行ではスキップします"
                 "（失敗としては記録します）: %s",
