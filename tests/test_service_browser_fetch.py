@@ -95,13 +95,27 @@ class TestFetchViaBrowser:
 
         site_instance.go_login.assert_called_once()
 
-    def test_does_not_call_wait_for_manual_login(self):
-        """定期実行(無人)から呼ばれる前提のため、人の入力を待つ呼び出しをしない。"""
+    def test_calls_wait_for_manual_login_after_go_login(self):
+        """ブラウザを新規に開くときは ``go_login()`` → ``wait_for_manual_login()`` の
+        順で 1 回ずつ呼ばれる（ログインが切れていれば Edge で人がログインするのを
+        最大10分待つ。ログイン済みならすぐ戻る）。
+        """
         site_class, site_instance = _fake_browser_site()
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
             _fetch_via_browser(ENTRY)
 
-        site_instance.wait_for_manual_login.assert_not_called()
+        site_instance.go_login.assert_called_once()
+        site_instance.wait_for_manual_login.assert_called_once()
+        # ``go_login()`` は ``wait_for_manual_login()`` より前に呼ばれる
+        go_login_index = next(
+            i for i, call in enumerate(site_instance.mock_calls) if call[0] == "go_login"
+        )
+        wait_index = next(
+            i
+            for i, call in enumerate(site_instance.mock_calls)
+            if call[0] == "wait_for_manual_login"
+        )
+        assert go_login_index < wait_index
 
 
 class TestSeleniumStaysLazy:
@@ -150,6 +164,9 @@ class TestBrowserSessionReuse:
         assert site_instance.__enter__.call_count == 1
         # ``go_login`` は「開いた直後の 1 回」だけ
         site_instance.go_login.assert_called_once()
+        # ``wait_for_manual_login`` も「開いた直後の 1 回」だけ
+        # （2 件目以降は使い回すので再実行しない）
+        site_instance.wait_for_manual_login.assert_called_once()
         # ``export_reports`` はレポートごとに毎回
         assert site_instance.export_reports.call_count == 3
         # まだ dict の中に 1 つだけ残っている（呼び出し側で閉じる）
@@ -331,6 +348,55 @@ class TestBrowserSessionReuse:
         assert site_instance.__enter__.call_count == 2
         # ``go_login`` は「新しく開いたとき」= 2 回
         assert site_instance.go_login.call_count == 2
+        # ``__exit__`` は失敗時 1 回 + 2 件目ではまだ生きている = 計 1 回
+        assert site_instance.__exit__.call_count == 1
+
+    def test_wait_for_manual_login_login_failed_closes_and_reopens_for_next_report(self):
+        """``wait_for_manual_login()`` が ``LoginFailedError``（無人で誰も
+        ログインしなかったときのタイムアウト）を出すと、そのブラウザは閉じられ
+        dict から外され、1 件目は ``LoginFailedError`` のまま呼び出し側へ抜ける
+        （``download_scheduled()`` 側で ``ComkenError`` として失敗扱い）。
+        2 件目では新しいブラウザが開かれ、``go_login`` /
+        ``wait_for_manual_login`` も再実行される。
+        """
+        from comken.exceptions import LoginFailedError
+
+        site_class, site_instance = _fake_browser_site()
+
+        wait_calls = {"n": 0}
+
+        def _flaky_wait():
+            wait_calls["n"] += 1
+            if wait_calls["n"] == 1:
+                raise LoginFailedError("10 分待ちましたがログインが確認できませんでした")
+
+        site_instance.wait_for_manual_login.side_effect = _flaky_wait
+        browser_sessions: dict = {}
+
+        from src.service import _fetch_via_browser
+
+        with patch(
+            "comken.toolbox.browser.sites.salesforce.site_for",
+            return_value=site_class,
+        ):
+            # 1 件目: ``LoginFailedError`` がそのまま呼び出し側へ抜ける
+            with pytest.raises(LoginFailedError, match="ログインが確認できませんでした"):
+                _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            # 失敗時に ``__exit__`` が 1 回呼ばれている（壊れたブラウザを閉じる）
+            assert site_instance.__exit__.call_count == 1
+            # dict からは外されている
+            assert browser_sessions == {}
+            # 2 件目: 新しいブラウザが開かれる（``wait_for_manual_login`` はもう例外を出さない）
+            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+
+        # サイトクラスは 2 回（1 件目で開いて閉じた後、2 件目で開き直し）
+        assert site_class.call_count == 2
+        # ``__enter__`` も 2 回
+        assert site_instance.__enter__.call_count == 2
+        # ``go_login`` は「新しく開いたとき」= 2 回
+        assert site_instance.go_login.call_count == 2
+        # ``wait_for_manual_login`` も「新しく開いたとき」= 2 回
+        assert site_instance.wait_for_manual_login.call_count == 2
         # ``__exit__`` は失敗時 1 回 + 2 件目ではまだ生きている = 計 1 回
         assert site_instance.__exit__.call_count == 1
 

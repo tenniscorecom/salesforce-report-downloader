@@ -50,8 +50,9 @@ WinActor からの呼び出しが前回実行と重なった場合（前回の�
 
 **API・ブラウザ経由・SOQLのどれで取るかは、管理表の列（「2000件超」「SOQL」）で決まる。**
 呼び出し側のコード（`src/run.py`）は意識しない。優先順位は「SOQL」列 →「2000件超」列 →
-通常のReport API。ブラウザ経由は事前に人が一度だけ手動ログインしておく必要がある
-（詳しくは `src/service.py` の `_fetch_via_browser()` を参照）。
+通常のReport API。ブラウザ経由はログインが切れていたら、表示中の Edge で
+人がログインするまで最大10分待つ（無人で誰もログインしなければ、そのレポートは
+失敗として記録される。`src/service.py` の `_fetch_via_browser()` を参照）。
 SOQL経由は同じ管理番号の `SoqlReport` が `src.soql_reports` に登録されている必要がある
 （詳しくは `_fetch_via_soql()` を参照）。
 

@@ -169,10 +169,12 @@ def download_scheduled(
 
     **API・ブラウザ経由・SOQLのどれで取るかは、呼び出し側のコードではなく管理表の
     「2000件超」「SOQL」列で決まる**（`_fetch()` を参照）。呼び出し側は管理番号を
-    意識せずに `download_scheduled()` を呼ぶだけでよい。ブラウザ経由のレポートは
-    事前に人が一度だけ手動ログインしておく必要がある（詳しくは `_fetch_via_browser()`
-    を参照）。SOQL経由のレポートは同じ管理番号の `SoqlReport` が
-    `src.soql_reports` に登録されている必要がある
+    意識せずに `download_scheduled()` を呼ぶだけでよい。ブラウザ経由のレポートは、
+    ブラウザを開いた直後に ``wait_for_manual_login()`` を呼び、ログインが切れて
+    いたら表示中の Edge で人がログインするまで最大10分待つ（無人で誰もログイン
+    しなければ ``LoginFailedError`` として失敗扱いになる。詳しくは
+    `_fetch_via_browser()` を参照）。SOQL経由のレポートは同じ管理番号の
+    `SoqlReport` が `src.soql_reports` に登録されている必要がある
     （詳しくは `_fetch_via_soql()` を参照）。
 
     **ブラウザの使い回し:** ブラウザ経由のレポートは、1 回の `download_scheduled()`
@@ -564,19 +566,23 @@ def _fetch_via_browser(
 ) -> Table:
     """ブラウザ経由で entry を取得し、`_fetch()` と同じ Table を返す。
 
-    定期実行（無人）から呼ばれる前提のため、ここではログインを行わない。
-    `OPTIONS.PROFILE_ROOT` に永続化された既存のログイン状態をそのまま使う
-    （事前に人が一度だけ ``go_login()`` + ``wait_for_manual_login()`` または
-    ``login_with_credentials()`` で手動ログインしておく）。ログイン状態が
-    切れている場合はエクスポートがHTMLを返し、`SalesforceError`
-    （`ComkenError` のサブクラス）になる。`download_scheduled()` は
-    既存の `ComkenError` 処理でそのまま次のレポートへ続行する。
+    **ログインの扱い:** ブラウザを新規に開くとき（使い回し中でないとき）は
+    ``go_login()`` の直後に ``wait_for_manual_login()`` を呼び、ログインが
+    切れていたら表示中の Edge で人がログインするまで最大10分待つ（ログイン済み
+    ならすぐ戻る。無人で誰もログインしなければ ``LoginFailedError`` を送出し、
+    そのレポートは失敗として記録される）。``wait_for_manual_login()`` が
+    例外を出した場合は ``go_login()`` と同じ ``except`` 節で拾い、壊れた
+    ブラウザを dict から外して閉じる（壊れた状態のブラウザを次のレポートへ
+    引き継がないため）。ブラウザを使い回す 2 件目以降では ``go_login()`` も
+    ``wait_for_manual_login()`` も再実行しない（既にログイン済みのブラウザを
+    そのまま使う）。
 
     **ブラウザの使い回し:** ``browser_sessions`` が渡されたときは、同じ組織
     （``site_for()`` が返すクラス）のブラウザを 1 回の実行の中で使い回す。
     まだ開いていなければ ``site_class()`` の ``__enter__()`` を直接呼んで開き、
-    ``go_login()`` を 1 回だけ実行して dict に登録する。次の同組織のレポートは
-    同じインスタンスを再利用する（``go_login()`` は再実行しない）。
+    ``go_login()`` → ``wait_for_manual_login()`` を 1 回だけ実行して dict に
+    登録する。次の同組織のレポートは同じインスタンスを再利用する
+    （``go_login()`` / ``wait_for_manual_login()`` は再実行しない）。
     取得中に例外が出たブラウザは dict から外して ``__exit__()`` を直接呼び、
     次は新しいブラウザを開き直す（壊れた状態のブラウザを次へ引き継がない）。
     ``browser_sessions`` が ``None`` のときは単体テスト・直接呼び出し経路として
@@ -593,6 +599,10 @@ def _fetch_via_browser(
         # 単体テスト・直接呼び出し経路。今まで通り「開いて閉じる」
         with site_class() as sf:
             sf.go_login()
+            # ログインが切れていたら表示中の Edge で人がログインするまで最大10分待つ
+            # （``go_login()`` と同じく、``wait_for_manual_login()`` が例外を出しても
+            # ``with`` を抜ける際に ``__exit__()`` が呼ばれる）
+            sf.wait_for_manual_login()
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
                 dict(sf.export_reports({entry.url: tmp_path}))
@@ -609,18 +619,24 @@ def _fetch_via_browser(
         # または ``_download_scheduled_locked()`` 最後の ``finally`` で呼ぶ
         sf = site_class()
         sf.__enter__()
-        # ``__enter__()`` が成功した時点で dict に登録する。``go_login()`` が
-        # 例外を出しても「失敗したら閉じて入れ物から外す」範囲（下の
-        # ``try/except``）に入るので、後続のレポートで「壊れたブラウザ」を
-        # 再利用しない。``__enter__()`` 自体が失敗した場合は何も開いていないので、
-        # dict にも入れず、閉じもしない（``__exit__`` も未呼び出し）
+        # ``__enter__()`` が成功した時点で dict に登録する。``go_login()`` /
+        # ``wait_for_manual_login()`` が例外を出しても「失敗したら閉じて
+        # 入れ物から外す」範囲（下の ``try/except``）に入るので、後続のレポートで
+        # 「壊れたブラウザ」を再利用しない。``__enter__()`` 自体が失敗した場合は
+        # 何も開いていないので、dict にも入れず、閉じもしない（``__exit__`` も未呼び出し）
         browser_sessions[site_class] = sf
         try:
             sf.go_login()
+            # ログインが切れていたら表示中の Edge で人がログインするまで最大10分待つ。
+            # ``go_login()`` と同じ ``except`` 節で拾い、失敗時は閉じて dict から外す
+            # （無人で誰もログインしなければ ``LoginFailedError`` で失敗扱いに）。
+            # ``ComkenError`` 系なので ``download_scheduled()`` 側の既存処理で
+            # 次のレポートへ続行する
+            sf.wait_for_manual_login()
         except Exception:
-            # ``go_login()`` 失敗時も「壊れたブラウザを dict に残したまま次へ
-            # 渡さない」ため、閉じて dict から外す。閉じるときに起きた例外は
-            # 元の失敗を隠すので、警告ログに留めて元例外を上げる
+            # ``go_login()`` / ``wait_for_manual_login()`` 失敗時も「壊れたブラウザを
+            # dict に残したまま次へ渡さない」ため、閉じて dict から外す。
+            # 閉じるときに起きた例外は元の失敗を隠すので、警告ログに留めて元例外を上げる
             browser_sessions.pop(site_class, None)
             try:
                 sf.__exit__(None, None, None)
