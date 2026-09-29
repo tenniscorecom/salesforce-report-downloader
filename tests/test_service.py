@@ -422,7 +422,7 @@ class TestDownloadScheduledRecord:
             download_scheduled()
 
         api_site_for.assert_not_called()
-        browser_site.return_value.go_login.assert_called_once()
+        browser_site.return_value.login_with_credentials.assert_called_once()
 
     def test_saves_file_with_csv_extension(self, paths, monkeypatch):
         """レポートは `.csv` で保存される。

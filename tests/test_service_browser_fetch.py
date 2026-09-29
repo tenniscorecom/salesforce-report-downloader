@@ -88,34 +88,24 @@ class TestFetchViaBrowser:
         assert table.columns == ["名前", "金額"]
         assert list(table) == [{"名前": "山田", "金額": "100"}]
 
-    def test_calls_go_login_before_export(self):
+    def test_calls_login_with_credentials_before_export(self):
         site_class, site_instance = _fake_browser_site()
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
             _fetch_via_browser(ENTRY)
 
-        site_instance.go_login.assert_called_once()
+        site_instance.login_with_credentials.assert_called_once()
 
-    def test_calls_wait_for_manual_login_after_go_login(self):
-        """ブラウザを新規に開くときは ``go_login()`` → ``wait_for_manual_login()`` の
-        順で 1 回ずつ呼ばれる（ログインが切れていれば Edge で人がログインするのを
-        最大10分待つ。ログイン済みならすぐ戻る）。
+    def test_calls_login_with_credentials_without_args(self):
+        """``login_with_credentials()`` は組織クラスの ``CREDENTIAL_PREFIX`` を
+        使うため、引数なしで 1 回だけ呼ばれる（プレフィックスを毎回渡さない
+        運用に対応）。
         """
         site_class, site_instance = _fake_browser_site()
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
             _fetch_via_browser(ENTRY)
 
-        site_instance.go_login.assert_called_once()
-        site_instance.wait_for_manual_login.assert_called_once()
-        # ``go_login()`` は ``wait_for_manual_login()`` より前に呼ばれる
-        go_login_index = next(
-            i for i, call in enumerate(site_instance.mock_calls) if call[0] == "go_login"
-        )
-        wait_index = next(
-            i
-            for i, call in enumerate(site_instance.mock_calls)
-            if call[0] == "wait_for_manual_login"
-        )
-        assert go_login_index < wait_index
+        # 引数なしで 1 回だけ
+        site_instance.login_with_credentials.assert_called_once_with()
 
 
 class TestSeleniumStaysLazy:
@@ -137,13 +127,13 @@ class TestBrowserSessionReuse:
     """``browser_sessions`` を渡したときの「同じ組織のブラウザを使い回す」動き。
 
     ブラウザはモック（``_fake_browser_site``）。``site_class()`` が返すインスタンス
-    は ``MagicMock`` なので ``__enter__`` / ``__exit__`` / ``go_login`` /
-    ``export_reports`` をすべて ``Mock`` 上でカウントできる。
+    は ``MagicMock`` なので ``__enter__`` / ``__exit__`` /
+    ``login_with_credentials`` / ``export_reports`` をすべて ``Mock`` 上でカウントできる。
     """
 
     def test_same_org_reuses_one_browser(self):
         """同じ組織の「2000件超」レポート 3 件を取ると、サイトクラスは 1 回だけ開かれ、
-        ``go_login`` も 1 回だけ呼ばれる。``export_reports`` だけが 3 回。
+        ``login_with_credentials`` も 1 回だけ呼ばれる。``export_reports`` だけが 3 回。
         """
         site_class, site_instance = _fake_browser_site()
         browser_sessions: dict = {}
@@ -162,11 +152,9 @@ class TestBrowserSessionReuse:
         assert site_class.call_count == 1
         # コンテキストマネージャへの進入 (``__enter__``) も 1 回
         assert site_instance.__enter__.call_count == 1
-        # ``go_login`` は「開いた直後の 1 回」だけ
-        site_instance.go_login.assert_called_once()
-        # ``wait_for_manual_login`` も「開いた直後の 1 回」だけ
+        # ``login_with_credentials`` は「開いた直後の 1 回」だけ
         # （2 件目以降は使い回すので再実行しない）
-        site_instance.wait_for_manual_login.assert_called_once()
+        site_instance.login_with_credentials.assert_called_once()
         # ``export_reports`` はレポートごとに毎回
         assert site_instance.export_reports.call_count == 3
         # まだ dict の中に 1 つだけ残っている（呼び出し側で閉じる）
@@ -204,9 +192,9 @@ class TestBrowserSessionReuse:
         assert site_class_b.call_count == 1
         assert instance_a.__enter__.call_count == 1
         assert instance_b.__enter__.call_count == 1
-        # ``go_login`` も組織ごとに 1 回
-        instance_a.go_login.assert_called_once()
-        instance_b.go_login.assert_called_once()
+        # ``login_with_credentials`` も組織ごとに 1 回
+        instance_a.login_with_credentials.assert_called_once()
+        instance_b.login_with_credentials.assert_called_once()
         # dict には 2 つの組織分のエントリ
         assert len(browser_sessions) == 2
 
@@ -250,8 +238,8 @@ class TestBrowserSessionReuse:
         assert site_class.call_count == 2
         # ``__enter__`` も 2 回（開き直し分）
         assert site_instance.__enter__.call_count == 2
-        # ``go_login`` は「新しく開いたとき」= 2 回
-        assert site_instance.go_login.call_count == 2
+        # ``login_with_credentials`` は「新しく開いたとき」= 2 回
+        assert site_instance.login_with_credentials.call_count == 2
         # ``__exit__`` は失敗時 1 回 + 2 件目ではまだ生きている = 計 1 回
         assert site_instance.__exit__.call_count == 1
 
@@ -309,22 +297,23 @@ class TestBrowserSessionReuse:
         assert site_class.call_count == 1
         site_instance.__exit__.assert_called_once_with(None, None, None)
 
-    def test_go_login_exception_closes_and_reopens_for_next_report(self):
-        """1 件目の ``go_login()`` が例外を出すと、そのブラウザは閉じられ
+    def test_login_with_credentials_exception_closes_and_reopens_for_next_report(self):
+        """1 件目の ``login_with_credentials()`` が例外を出すと、そのブラウザは閉じられ
         （``__exit__`` が 1 回呼ばれ、dict からも外され）、2 件目では
-        新しいブラウザが開かれる（``__enter__`` が 2 回、``go_login`` も 2 回）。
+        新しいブラウザが開かれる（``__enter__`` が 2 回、
+        ``login_with_credentials`` も 2 回）。
         1 件目は失敗としてそのまま呼び出し側へ抜ける。
         """
         site_class, site_instance = _fake_browser_site()
 
-        go_login_calls = {"n": 0}
+        login_calls = {"n": 0}
 
-        def _flaky_go_login():
-            go_login_calls["n"] += 1
-            if go_login_calls["n"] == 1:
-                raise RuntimeError("1 件目の go_login は失敗")
+        def _flaky_login_with_credentials():
+            login_calls["n"] += 1
+            if login_calls["n"] == 1:
+                raise RuntimeError("1 件目の login_with_credentials は失敗")
 
-        site_instance.go_login.side_effect = _flaky_go_login
+        site_instance.login_with_credentials.side_effect = _flaky_login_with_credentials
         browser_sessions: dict = {}
 
         from src.service import _fetch_via_browser
@@ -333,44 +322,44 @@ class TestBrowserSessionReuse:
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
         ):
-            with pytest.raises(RuntimeError, match="1 件目の go_login は失敗"):
+            with pytest.raises(RuntimeError, match="1 件目の login_with_credentials は失敗"):
                 _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
             # 失敗時に ``__exit__`` が 1 回呼ばれている（壊れたブラウザを閉じる）
             assert site_instance.__exit__.call_count == 1
             # dict からは外されている
             assert browser_sessions == {}
-            # 2 件目: 新しいブラウザが開かれる（``go_login`` はもう例外を出さない）
+            # 2 件目: 新しいブラウザが開かれる
+            # （``login_with_credentials`` はもう例外を出さない）
             _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
 
         # サイトクラスは 2 回（1 件目で開いて閉じた後、2 件目で開き直し）
         assert site_class.call_count == 2
         # ``__enter__`` も 2 回
         assert site_instance.__enter__.call_count == 2
-        # ``go_login`` は「新しく開いたとき」= 2 回
-        assert site_instance.go_login.call_count == 2
+        # ``login_with_credentials`` は「新しく開いたとき」= 2 回
+        assert site_instance.login_with_credentials.call_count == 2
         # ``__exit__`` は失敗時 1 回 + 2 件目ではまだ生きている = 計 1 回
         assert site_instance.__exit__.call_count == 1
 
-    def test_wait_for_manual_login_login_failed_closes_and_reopens_for_next_report(self):
-        """``wait_for_manual_login()`` が ``LoginFailedError``（無人で誰も
-        ログインしなかったときのタイムアウト）を出すと、そのブラウザは閉じられ
+    def test_login_with_credentials_login_failed_closes_and_reopens_for_next_report(self):
+        """``login_with_credentials()`` が ``LoginFailedError``（無人で MFA が
+        承認されなかったときのタイムアウト）を出すと、そのブラウザは閉じられ
         dict から外され、1 件目は ``LoginFailedError`` のまま呼び出し側へ抜ける
         （``download_scheduled()`` 側で ``ComkenError`` として失敗扱い）。
-        2 件目では新しいブラウザが開かれ、``go_login`` /
-        ``wait_for_manual_login`` も再実行される。
+        2 件目では新しいブラウザが開かれ、``login_with_credentials`` も再実行される。
         """
         from comken.exceptions import LoginFailedError
 
         site_class, site_instance = _fake_browser_site()
 
-        wait_calls = {"n": 0}
+        login_calls = {"n": 0}
 
-        def _flaky_wait():
-            wait_calls["n"] += 1
-            if wait_calls["n"] == 1:
+        def _flaky_login():
+            login_calls["n"] += 1
+            if login_calls["n"] == 1:
                 raise LoginFailedError("10 分待ちましたがログインが確認できませんでした")
 
-        site_instance.wait_for_manual_login.side_effect = _flaky_wait
+        site_instance.login_with_credentials.side_effect = _flaky_login
         browser_sessions: dict = {}
 
         from src.service import _fetch_via_browser
@@ -386,17 +375,16 @@ class TestBrowserSessionReuse:
             assert site_instance.__exit__.call_count == 1
             # dict からは外されている
             assert browser_sessions == {}
-            # 2 件目: 新しいブラウザが開かれる（``wait_for_manual_login`` はもう例外を出さない）
+            # 2 件目: 新しいブラウザが開かれる
+            # （``login_with_credentials`` はもう例外を出さない）
             _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
 
         # サイトクラスは 2 回（1 件目で開いて閉じた後、2 件目で開き直し）
         assert site_class.call_count == 2
         # ``__enter__`` も 2 回
         assert site_instance.__enter__.call_count == 2
-        # ``go_login`` は「新しく開いたとき」= 2 回
-        assert site_instance.go_login.call_count == 2
-        # ``wait_for_manual_login`` も「新しく開いたとき」= 2 回
-        assert site_instance.wait_for_manual_login.call_count == 2
+        # ``login_with_credentials`` は「新しく開いたとき」= 2 回
+        assert site_instance.login_with_credentials.call_count == 2
         # ``__exit__`` は失敗時 1 回 + 2 件目ではまだ生きている = 計 1 回
         assert site_instance.__exit__.call_count == 1
 
@@ -458,9 +446,9 @@ class TestBrowserSessionReuseBrokenByRemoval:
     """
 
     def test_breaks_when_reuse_is_removed(self, monkeypatch):
-        """「使い回しをやめた」壊れた実装の特徴: ``go_login`` が 3 回。
+        """「使い回しをやめた」壊れた実装の特徴: ``login_with_credentials`` が 3 回。
 
-        正しい実装なら同じ組織の 3 件でも ``go_login`` は 1 回。
+        正しい実装なら同じ組織の 3 件でも ``login_with_credentials`` は 1 回。
         """
         import src.service as service_module
 
@@ -471,7 +459,7 @@ class TestBrowserSessionReuseBrokenByRemoval:
             site_class = browser_site_for(entry.url)
             sf = site_class()
             sf.__enter__()
-            sf.go_login()
+            sf.login_with_credentials()
             sf.__exit__(None, None, None)
             return MagicMock()
 
@@ -484,8 +472,8 @@ class TestBrowserSessionReuseBrokenByRemoval:
             for _ in range(3):
                 _no_reuse(EXCEEDS_ENTRY)
 
-        # 壊れた実装の特徴: 毎回開くので ``go_login`` が 3 回
-        assert site_instance.go_login.call_count == 3
+        # 壊れた実装の特徴: 毎回開くので ``login_with_credentials`` が 3 回
+        assert site_instance.login_with_credentials.call_count == 3
 
     def test_breaks_when_failure_does_not_evict_browser(self, monkeypatch):
         """「失敗時に ``pop`` しない」壊れた実装の特徴: 1 件目失敗 → 2 件目で
@@ -503,7 +491,7 @@ class TestBrowserSessionReuseBrokenByRemoval:
             site_class = browser_site_for(entry.url)
             if browser_sessions is None:
                 with site_class() as sf:
-                    sf.go_login()
+                    sf.login_with_credentials()
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
                         Path(tmp_path).write_bytes(b"col,amt\nv,1\n")
@@ -516,7 +504,7 @@ class TestBrowserSessionReuseBrokenByRemoval:
             if sf is None:
                 sf = site_class()
                 sf.__enter__()
-                sf.go_login()
+                sf.login_with_credentials()
                 browser_sessions[site_class] = sf
             try:
                 with tempfile.TemporaryDirectory() as tmp_dir:

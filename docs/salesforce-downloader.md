@@ -112,6 +112,8 @@ python -m comken sf check
 ```
 （※ 認証情報の接続確認は comken 側のコマンド。手順の詳細は comken の docs を参照）
 
+ブラウザ経由のレポート（管理表の「2000件超」が `○`）を使う場合は、あわせて **ID/パスワード**も登録する。ブラウザ経由は ID/パスワードを DPAPI から自動入力し、MFA はスマホで承認する。登録は **`python -m comken cred gui`**（=`認証情報の登録.bat`）で、**サイト名（組織クラスの `CREDENTIAL_PREFIX`。例: Solution 組織なら `comken/toolbox/salesforce/sites/solution.py` の `CREDENTIAL_PREFIX` の値）** に `username` と `password` を登録する。**未登録だとブラウザ経由のレポートは失敗になる**（履歴の「原因区分」は `Salesforce`）。
+
 ### 2. 管理表の置き場所を決める
 
 **先に決める。** 場所は `src/paths.py` の

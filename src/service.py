@@ -143,12 +143,12 @@ def download_scheduled(
     **API・ブラウザ経由・SOQLのどれで取るかは、呼び出し側のコードではなく管理表の
     「2000件超」「SOQL」列で決まる**（`_fetch()` を参照）。呼び出し側は管理番号を
     意識せずに `download_scheduled()` を呼ぶだけでよい。ブラウザ経由のレポートは、
-    ブラウザを開いた直後に ``wait_for_manual_login()`` を呼び、ログインが切れて
-    いたら表示中の Edge で人がログインするまで最大10分待つ（無人で誰もログイン
-    しなければ ``LoginFailedError`` として失敗扱いになる。詳しくは
-    `_fetch_via_browser()` を参照）。SOQL経由のレポートは同じ管理番号の
-    `SoqlReport` が `src.soql_reports` に登録されている必要がある
-    （詳しくは `_fetch_via_soql()` を参照）。
+    ブラウザを開いた直後に ``login_with_credentials()`` を呼び、ID/パスワードを
+    DPAPI から自動入力したうえで MFA をスマホで承認する（無人で承認されなければ
+    ``LoginFailedError`` として失敗扱いになる。認証情報が未登録なら
+    ``CredentialNotFoundError`` が送出される。詳しくは `_fetch_via_browser()` を
+    参照）。SOQL経由のレポートは同じ管理番号の `SoqlReport` が `src.soql_reports`
+    に登録されている必要がある（詳しくは `_fetch_via_soql()` を参照）。
 
     **ブラウザの使い回し:** ブラウザ経由のレポートは、1 回の `download_scheduled()`
     の実行の中で組織ごとにブラウザを 1 つだけ開いて使い回す（毎回起動しない）。
@@ -553,24 +553,24 @@ def _fetch_via_browser(
     """ブラウザ経由で entry を取得し、`_fetch()` と同じ Table を返す。
 
     **ログインの扱い:** ブラウザを新規に開くとき（使い回し中でないとき）は
-    ``go_login()`` の直後に ``wait_for_manual_login()`` を呼び、ログインが
-    切れていたら表示中の Edge で人がログインするまで最大10分待つ（ログイン済み
-    ならすぐ戻る。無人で誰もログインしなければ ``LoginFailedError`` を送出し、
-    そのレポートは失敗として記録される）。``wait_for_manual_login()`` が
-    例外を出した場合は ``go_login()`` と同じ ``except`` 節で拾い、壊れた
-    ブラウザを dict から外して閉じる（壊れた状態のブラウザを次のレポートへ
-    引き継がないため）。ブラウザを使い回す 2 件目以降では ``go_login()`` も
-    ``wait_for_manual_login()`` も再実行しない（既にログイン済みのブラウザを
-    そのまま使う）。
+    ``login_with_credentials()`` を呼び、ID/パスワードを DPAPI から自動入力した
+    うえで MFA の承認をスマホで待つ（無人で承認され
+    なければ ``LoginFailedError`` を送出し、そのレポートは失敗として記録される。
+    認証情報が未登録なら ``CredentialNotFoundError``、復号できなければ
+    ``CredentialError`` が出る。いずれも ``ComkenError`` 系なので
+    ``download_scheduled()`` 側の既存処理で次のレポートへ続行される）。
+    ``login_with_credentials()`` が例外を出した場合は ``try/except`` で拾い、
+    壊れたブラウザを dict から外して閉じる（壊れた状態のブラウザを次のレポートへ
+    引き継がないため）。ブラウザを使い回す 2 件目以降では ``login_with_credentials()``
+    を再実行しない（既にログイン済みのブラウザをそのまま使う）。
 
     **ブラウザの使い回し:** ``browser_sessions`` が渡されたときは、同じ組織
     （``site_for()`` が返すクラス）のブラウザを 1 回の実行の中で使い回す。
     まだ開いていなければ ``site_class()`` の ``__enter__()`` を直接呼んで開き、
-    ``go_login()`` → ``wait_for_manual_login()`` を 1 回だけ実行して dict に
-    登録する。次の同組織のレポートは同じインスタンスを再利用する
-    （``go_login()`` / ``wait_for_manual_login()`` は再実行しない）。
-    取得中に例外が出たブラウザは dict から外して ``__exit__()`` を直接呼び、
-    次は新しいブラウザを開き直す（壊れた状態のブラウザを次へ引き継がない）。
+    ``login_with_credentials()`` を 1 回だけ実行して dict に登録する。次の同組織の
+    レポートは同じインスタンスを再利用する（``login_with_credentials()`` は
+    再実行しない）。取得中に例外が出たブラウザは dict から外して ``__exit__()``
+    を直接呼び、次は新しいブラウザを開き直す（壊れた状態のブラウザを次へ引き継がない）。
     ``browser_sessions`` が ``None`` のときは単体テスト・直接呼び出し経路として
     「開いて閉じる」従来動作に戻る（``with site_class() as sf:``）。
 
@@ -584,11 +584,10 @@ def _fetch_via_browser(
     if browser_sessions is None:
         # 単体テスト・直接呼び出し経路。今まで通り「開いて閉じる」
         with site_class() as sf:
-            sf.go_login()
-            # ログインが切れていたら表示中の Edge で人がログインするまで最大10分待つ
-            # （``go_login()`` と同じく、``wait_for_manual_login()`` が例外を出しても
-            # ``with`` を抜ける際に ``__exit__()`` が呼ばれる）
-            sf.wait_for_manual_login()
+            # ID/パスワードは DPAPI から自動入力、MFA はスマホで承認（無人で承認されなければ
+            # ``LoginFailedError``、認証情報が無ければ ``CredentialNotFoundError`` /
+            # ``CredentialError``。いずれも ``with`` を抜ける際に ``__exit__()`` が呼ばれる）
+            sf.login_with_credentials()
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
                 dict(sf.export_reports({entry.url: tmp_path}))
@@ -605,24 +604,22 @@ def _fetch_via_browser(
         # または ``_download_scheduled_locked()`` 最後の ``finally`` で呼ぶ
         sf = site_class()
         sf.__enter__()
-        # ``__enter__()`` が成功した時点で dict に登録する。``go_login()`` /
-        # ``wait_for_manual_login()`` が例外を出しても「失敗したら閉じて
-        # 入れ物から外す」範囲（下の ``try/except``）に入るので、後続のレポートで
-        # 「壊れたブラウザ」を再利用しない。``__enter__()`` 自体が失敗した場合は
-        # 何も開いていないので、dict にも入れず、閉じもしない（``__exit__`` も未呼び出し）
+        # ``__enter__()`` が成功した時点で dict に登録する。``login_with_credentials()``
+        # が例外を出しても「失敗したら閉じて入れ物から外す」範囲（下の ``try/except``）
+        # に入るので、後続のレポートで「壊れたブラウザ」を再利用しない。
+        # ``__enter__()`` 自体が失敗した場合は何も開いていないので、dict にも入れず、
+        # 閉じもしない（``__exit__`` も未呼び出し）
         browser_sessions[site_class] = sf
         try:
-            sf.go_login()
-            # ログインが切れていたら表示中の Edge で人がログインするまで最大10分待つ。
-            # ``go_login()`` と同じ ``except`` 節で拾い、失敗時は閉じて dict から外す
-            # （無人で誰もログインしなければ ``LoginFailedError`` で失敗扱いに）。
-            # ``ComkenError`` 系なので ``download_scheduled()`` 側の既存処理で
-            # 次のレポートへ続行する
-            sf.wait_for_manual_login()
+            # ID/パスワードを DPAPI から自動入力したうえで MFA の承認をスマホで待つ。
+            # 認証情報の例外（``CredentialNotFoundError`` / ``CredentialError``）も
+            # 下の ``except Exception`` で拾われ、閉じて dict から外したうえで元の例外を
+            # そのまま上げる（``download_scheduled()`` 側の既存処理で次のレポートへ続行）
+            sf.login_with_credentials()
         except Exception:
-            # ``go_login()`` / ``wait_for_manual_login()`` 失敗時も「壊れたブラウザを
-            # dict に残したまま次へ渡さない」ため、閉じて dict から外す。
-            # 閉じるときに起きた例外は元の失敗を隠すので、警告ログに留めて元例外を上げる
+            # ``login_with_credentials()`` 失敗時も「壊れたブラウザを dict に残したまま
+            # 次へ渡さない」ため、閉じて dict から外す。閉じるときに起きた例外は元の
+            # 失敗を隠すので、警告ログに留めて元例外を上げる
             browser_sessions.pop(site_class, None)
             try:
                 sf.__exit__(None, None, None)

@@ -50,16 +50,19 @@ WinActor からの呼び出しが前回実行と重なった場合（前回の�
 
 **API・ブラウザ経由・SOQLのどれで取るかは、管理表の列（「2000件超」「SOQL」）で決まる。**
 呼び出し側のコード（`src/run.py`）は意識しない。優先順位は「SOQL」列 →「2000件超」列 →
-通常のReport API。ブラウザ経由はログインが切れていたら、表示中の Edge で
-人がログインするまで最大10分待つ（無人で誰もログインしなければ、そのレポートは
-失敗として記録される。`src/service.py` の `_fetch_via_browser()` を参照）。
+通常のReport API。ブラウザ経由は **ID/パスワードを DPAPI から自動入力し、MFA はスマホで
+承認する**（無人で承認されなければ、そのレポートは失敗として記録される。
+認証情報が未登録ならブラウザ経由のレポートは失敗になる。認証情報の登録は
+`python -m comken cred gui`（=`認証情報の登録.bat`）で行い、サイト名（組織クラスの
+`CREDENTIAL_PREFIX`。例: Solution 組織）は `comken/toolbox/salesforce/sites/solution.py`
+の `CREDENTIAL_PREFIX` を使う）。
 SOQL経由は同じ管理番号の `SoqlReport` が `src.soql_reports` に登録されている必要がある
 （詳しくは `_fetch_via_soql()` を参照）。
 
 ## 使い方
 
 ```bat
-認証情報の登録.bat      :: 初回だけ。sandbox の client_id / client_secret を登録する
+認証情報の登録.bat      :: 初回だけ。API の client_id / client_secret と、ブラウザ経由の組織の username / password を登録する
 実行.bat                :: 定期取得。WinActor（社内RPA基盤）から高頻度（例: 1 時間おき）で呼ぶ
 ```
 
