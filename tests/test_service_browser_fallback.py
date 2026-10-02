@@ -39,6 +39,7 @@ from comken.toolbox.csv import CSV
 import src.paths as _paths_module
 from src import service as service_module
 from src.exceptions import (
+    BrowserFallbackFailedError,
     ScheduledDownloadFailedError,
 )
 from src.notification import write_notification
@@ -475,6 +476,136 @@ class TestBrowserReusedAcrossReports:
         # 通知: 自動切替 2 件分
         notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
         assert len(notif_files) == 2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ブラウザ取り直しが失敗したケース
+# ──────────────────────────────────────────────────────────────────────
+class TestBrowserFallbackFails:
+    """Report API で 2000件超 / 0 行のあと、ブラウザの取り直し自体が失敗したとき。
+
+    旧実装では ``SalesforceReportTruncatedError(report_id, row_limit)`` の
+    シグネチャに合わせて ``raise SalesforceReportTruncatedError("…")`` と
+    文字列 1 つで ``raise`` していたため ``TypeError`` になり、原因区分が
+    「プログラム」化けていた。新実装では ``BrowserFallbackFailedError``
+    （``DownloaderError`` 系）で表現するため、原因区分は「Salesforce」になり、
+    ``Box 通知ファイル（種類=失敗）`` が 1 件作られる。
+
+    0 件取り直し（``_download()`` の ``except EmptyReportError``）経路も同じ
+    ``BrowserFallbackFailedError`` で表現する（テスト1本で確認する）。
+    """
+
+    @staticmethod
+    def _make_browser_site_that_fails(message: str = "ブラウザでログイン失敗"):
+        """``login_with_credentials()`` が ``CredentialNotFoundError`` 風の
+        ``ComkenError`` を投げるブラウザ版サイトクラスを返す。"""
+        from comken.exceptions import CredentialNotFoundError
+
+        instance = MagicMock()
+        instance.__enter__.return_value = instance
+        instance.login_with_credentials.side_effect = CredentialNotFoundError("user", [])
+        return MagicMock(return_value=instance)
+
+    def test_truncated_then_browser_fails_raises_browser_fallback_error(
+        self, tmp_path, monkeypatch, home_dir
+    ):
+        """Report API が ``SalesforceReportTruncatedError`` → ブラウザ取り直しも失敗
+        → ``BrowserFallbackFailedError`` で「Salesforce」区分、通知 1 件（kind=失敗）。"""
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = _make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [["9501", "案件集計", URL_A, "営業本部", "山田", "○", "", "", ""]],
+            settings_rows=[["営業本部", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+
+        api_site = _fake_salesforce(
+            side_effect=SalesforceReportTruncatedError("00O5g00000ABCDE", 2000)
+        )
+        browser_site = self._make_browser_site_that_fails()
+        with (
+            patch("src.service.site_for", return_value=api_site),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
+            ),
+            pytest.raises(ScheduledDownloadFailedError) as caught,
+        ):
+            download_scheduled("案件集計")
+
+        # ``BrowserFallbackFailedError`` が ``ScheduledDownloadFailedError`` に変換されて外へ
+        # （個別レポートの失敗→``ScheduledDownloadFailedError``）。``__cause__`` に新しい例外
+        assert isinstance(caught.value.__cause__, BrowserFallbackFailedError)
+        # 元の ``CredentialNotFoundError`` が連鎖している
+        assert caught.value.__cause__.__cause__ is not None
+
+        # 履歴: 失敗・原因区分=「Salesforce」（=``ComkenError`` 系として分類される）
+        with CSV(history_path) as csv_file:
+            row = csv_file.read()[-1]
+            assert row["成否"] == "失敗"
+            assert row["エラーコード"] == "BrowserFallbackFailedError"
+            assert row["原因区分"] == "Salesforce"
+            # 取得経路は「ブラウザ（自動切替：2000件超）」（=ブラウザに切り替えたが失敗）
+            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
+
+        # 通知: 失敗で 1 ファイル
+        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
+        assert len(notif_files) == 1
+        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
+        assert payload["種類"] == "失敗"
+        assert payload["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
+        assert payload["原因区分"] == "Salesforce"
+
+    def test_empty_then_browser_fails_raises_browser_fallback_error(
+        self, tmp_path, monkeypatch, home_dir
+    ):
+        """Report API が 0 行 → ブラウザ取り直しも失敗 → 同じ ``BrowserFallbackFailedError``。"""
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = _make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [["9601", "空になる", URL_A, "営業本部", "山田", "○", "×", "", ""]],
+            settings_rows=[["営業本部", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+
+        api_site = _fake_salesforce([])  # Report API が 0 行
+        browser_site = self._make_browser_site_that_fails()
+        with (
+            patch("src.service.site_for", return_value=api_site),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
+            ),
+            pytest.raises(ScheduledDownloadFailedError) as caught,
+        ):
+            download_scheduled("案件集計")
+
+        assert isinstance(caught.value.__cause__, BrowserFallbackFailedError)
+
+        # 履歴: 失敗・原因区分=「Salesforce」
+        with CSV(history_path) as csv_file:
+            row = csv_file.read()[-1]
+            assert row["成否"] == "失敗"
+            assert row["エラーコード"] == "BrowserFallbackFailedError"
+            assert row["原因区分"] == "Salesforce"
+            # 取得経路は「ブラウザ（自動切替：0件）」（=ブラウザに切り替えたが失敗）
+            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
+
+        # 通知: 失敗で 1 ファイル
+        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
+        assert len(notif_files) == 1
+        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
+        assert payload["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
 
 
 # ──────────────────────────────────────────────────────────────────────

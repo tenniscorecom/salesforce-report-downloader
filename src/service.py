@@ -81,6 +81,7 @@ from comken.toolbox.salesforce.sites import site_for
 
 from src import paths
 from src.exceptions import (
+    BrowserFallbackFailedError,
     EmptyReportError,
     ReportFolderNotFoundError,
     ReportNotRegisteredError,
@@ -531,78 +532,116 @@ def _download(
     # ``HistoryRow.route`` の既定値に揃える）
     route = ""
     try:
-        _require_folder(entry)
-        route, table = _fetch_with_auto_fallback(
-            entry,
-            filters=filters,
-            browser_sessions=browser_sessions,
-        )
-        path = _save(entry, table, schedule_run_time=schedule_run_time, current=current)
-    except EmptyReportError as exc:
-        # 0 行 + ``allow_empty=False`` の「自動切替」が走る可能性がある唯一の場所。
-        # ブラウザに切り替えて 0 行以外が取れればクリア、取れなければ ``EmptyReportError``
-        # をそのまま上げる（=この場合は ``route`` は API のまま、ブラウザに切り替えて
-        # いないことが履歴で分かる）
-        if (
-            route == ROUTE_API
-            and not entry.allow_empty
-            and filters is None
-            and browser_sessions is not None
-            and _is_api_path(entry)
-        ):
-            logger.warning(
-                "Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます: "
-                "%s（%s）。管理表の「0件あり」を「○」にするか SOQL 化を検討してください",
-                entry.key,
-                entry.summary,
+        try:
+            _require_folder(entry)
+            route, table = _fetch_with_auto_fallback(
+                entry,
+                filters=filters,
+                browser_sessions=browser_sessions,
             )
-            browser_table = _fetch_via_browser(entry, browser_sessions=browser_sessions)
-            if browser_table:
-                # ブラウザで取れたので、保存し直して履歴は「成功・自動切替」で記録
-                # （``_Attempt`` の開始時刻はそのまま使い、route だけ書き換える）
-                path = _save(
-                    entry,
-                    browser_table,
-                    schedule_run_time=schedule_run_time,
+            path = _save(entry, table, schedule_run_time=schedule_run_time, current=current)
+        except EmptyReportError as exc:
+            # 0 行 + ``allow_empty=False`` の「自動切替」が走る可能性がある唯一の場所。
+            # ブラウザに切り替えて 0 行以外が取れればクリア、取れなければ ``EmptyReportError``
+            # をそのまま上げる（=この場合は ``route`` は API のまま、ブラウザに切り替えて
+            # いないことが履歴で分かる）。
+            if (
+                route == ROUTE_API
+                and not entry.allow_empty
+                and filters is None
+                and browser_sessions is not None
+                and _is_api_path(entry)
+            ):
+                logger.warning(
+                    "Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます: "
+                    "%s（%s）。管理表の「0件あり」を「○」にするか SOQL 化を検討してください",
+                    entry.key,
+                    entry.summary,
+                )
+                try:
+                    browser_table = _fetch_via_browser(entry, browser_sessions=browser_sessions)
+                except Exception as browser_exc:
+                    # 0 件取り直しのブラウザ取得自体が失敗 → 自動切替は成功しなかった扱いとし、
+                    # 2000 件超の取り直し失敗と同じ ``BrowserFallbackFailedError`` で表現する
+                    # （``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分に入る）
+                    raise BrowserFallbackFailedError(
+                        entry.key, entry.summary, "0件", ROUTE_BROWSER_FALLBACK_EMPTY
+                    ) from browser_exc
+                if browser_table:
+                    # ブラウザで取れたので、保存し直して履歴は「成功・自動切替」で記録
+                    # （``_Attempt`` の開始時刻はそのまま使い、route だけ書き換える）
+                    path = _save(
+                        entry,
+                        browser_table,
+                        schedule_run_time=schedule_run_time,
+                        current=current,
+                    )
+                    attempt.record_success_with_route(
+                        path,
+                        browser_table,
+                        route=ROUTE_BROWSER_FALLBACK_EMPTY,
+                        notify_fallback=True,
+                        fallback_kind="自動切替",
+                        cause="",
+                        error_code="",
+                        error_message="",
+                        executed_at=current,
+                    )
+                    return path
+                # ブラウザでも 0 行 → ブラウザ経路を閉じて取り直し
+                logger.warning(
+                    "ブラウザ経由でも 0 行でした。EmptyReportError で失敗します: %s（%s）",
+                    entry.key,
+                    entry.summary,
+                )
+            # 取り直さない or 取り直しても 0 行だった → 失敗として記録
+            try:
+                attempt.record_failure(exc, route=route)
+            except (
+                HistoryWriteError,
+                HistoryLockTimeoutError,
+                CSVError,
+            ) as history_exc:
+                raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
+            _write_failure_notification(
+                entry=entry,
+                project=project,
+                schedule_key=schedule_key,
+                route=route,
+                exc=exc,
+                current=current,
+            )
+            raise
+        except Exception as exc:
+            # ``BrowserFallbackFailedError`` は外側の ``except BrowserFallbackFailedError``
+            # 段で受け取る（同じ ``try`` の ``except`` 間で再評価されないため）。
+            # ここではその他の ``ComkenError`` / ``OSError`` を一括で処理する。
+            if not isinstance(exc, BrowserFallbackFailedError):
+                try:
+                    attempt.record_failure(exc, route=route)
+                except (
+                    HistoryWriteError,
+                    HistoryLockTimeoutError,
+                    CSVError,
+                ) as history_exc:
+                    raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
+                _write_failure_notification(
+                    entry=entry,
+                    project=project,
+                    schedule_key=schedule_key,
+                    route=route,
+                    exc=exc,
                     current=current,
                 )
-                attempt.record_success_with_route(
-                    path,
-                    browser_table,
-                    route=ROUTE_BROWSER_FALLBACK_EMPTY,
-                    notify_fallback=True,
-                    fallback_kind="自動切替",
-                    cause="",
-                    error_code="",
-                    error_message="",
-                    executed_at=current,
-                )
-                return path
-            # ブラウザでも 0 行 → ブラウザ経路を閉じて取り直し
-            logger.warning(
-                "ブラウザ経由でも 0 行でした。EmptyReportError で失敗します: %s（%s）",
-                entry.key,
-                entry.summary,
-            )
-        # 取り直さない or 取り直しても 0 行だった → 失敗として記録
-        try:
-            attempt.record_failure(exc, route=route)
-        except (
-            HistoryWriteError,
-            HistoryLockTimeoutError,
-            CSVError,
-        ) as history_exc:
-            raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
-        _write_failure_notification(
-            entry=entry,
-            project=project,
-            schedule_key=schedule_key,
-            route=route,
-            exc=exc,
-            current=current,
-        )
-        raise
-    except Exception as exc:
+            raise
+    except BrowserFallbackFailedError as exc:
+        # 0 件取り直しのブラウザ失敗は ``except EmptyReportError`` 内で ``raise`` される。
+        # ``except`` 内で ``raise`` した例外は同じ ``try`` の別の ``except`` には飛ばず
+        # 外側に素通りするため（Python 仕様）、外側の段で受けて ``record_failure`` /
+        # 通知 / 再 ``raise`` を行う。``_fetch_with_auto_fallback()`` が ``2000件超`` で
+        # 投げた ``BrowserFallbackFailedError`` もここで受けて ``route`` を揃える
+        if exc.route and route != exc.route:
+            route = exc.route
         try:
             attempt.record_failure(exc, route=route)
         except (
@@ -679,7 +718,7 @@ def _fetch_with_auto_fallback(
     try:
         table = _fetch(entry, filters, browser_sessions=browser_sessions)
         return ROUTE_API, table
-    except SalesforceReportTruncatedError as exc:
+    except SalesforceReportTruncatedError:
         if filters is not None:
             # 実行時フィルタ付きはブラウザに機能制限があり取り直し無意味。
             # そのまま呼び出し側へ例外を上げる（``_download()`` 側の ``except Exception``
@@ -698,12 +737,14 @@ def _fetch_with_auto_fallback(
         try:
             browser_table = _fetch_via_browser(entry, browser_sessions=browser_sessions)
         except Exception as browser_exc:
-            # ブラウザ取り直し自体に失敗 → 自動切替は成功しなかった扱いとし、元の
-            # ``SalesforceReportTruncatedError`` を ``__cause__`` に乗せて上げる
-            raise SalesforceReportTruncatedError(
-                f"Report API で2000件超（または0件）→ブラウザで取り直したが失敗: "
-                f"{entry.key}（{entry.summary}）\n"
-                f"元のエラー: {exc}",
+            # ブラウザ取り直し自体に失敗 → 自動切替は成功しなかった扱いとし、
+            # ``BrowserFallbackFailedError`` で「ブラウザ取り直し失敗」を表現する。
+            # ``SalesforceReportTruncatedError.__init__(self, report_id, row_limit)``
+            # のシグネチャに合わせようとすると ``TypeError`` になり、原因区分が
+            # 「プログラム」化けるため、ダウンローダー側で専用例外を新設する。
+            # ``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分に入る
+            raise BrowserFallbackFailedError(
+                entry.key, entry.summary, "2000件超", ROUTE_BROWSER_FALLBACK_TRUNCATED
             ) from browser_exc
         return ROUTE_BROWSER_FALLBACK_TRUNCATED, browser_table
 
