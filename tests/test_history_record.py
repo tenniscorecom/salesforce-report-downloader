@@ -62,6 +62,7 @@ def _expected_row_bytes(
         row_data["cause"],
         row_data["error_code"],
         row_data["error"].replace("\n", " "),
+        row_data["route"],
     ]
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -95,6 +96,7 @@ def _row_bytes_from_record(
             error_code=row_data["error_code"],
             error=row_data["error"],
             schedule_key=row_data["schedule_key"],
+            route=row_data.get("route", ""),
         ),
         executed_at=row_data["executed_at"],
     )
@@ -165,6 +167,7 @@ def test_record_writes_byte_identical_row_to_history_csv(
         "error_code": "",
         "error": "",
         "schedule_key": "S001",
+        "route": "",
         "executed_at": dt.datetime(2026, 9, 26, 10, 0, 0),  # noqa: DTZ001
         "folder_text": None,  # 下の try/except で上書き
     }

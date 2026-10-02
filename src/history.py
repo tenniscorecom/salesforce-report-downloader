@@ -93,6 +93,12 @@ def record(
         "原因区分": row.cause,
         "エラーコード": row.error_code,
         "エラー内容": row.error.replace("\n", " "),
+        # 取得経路（API / SOQL / ブラウザ / 自動切替2種）。``HistoryRow.route`` の
+        # 既定値は空文字なので、``record()`` 経由で書かれる経路が無い古い呼び出しも
+        # そのまま通る（``append_history()`` が ``COLUMNS`` に無いキーで
+        # ``InvalidTableInputError`` を出す関係で、後段の ``COLUMNS`` 並べ直しで
+        # 空文字に落ちる）
+        "取得経路": row.route,
     }
     # ``append_history()`` が ``COLUMNS`` に無いキーを ``InvalidTableInputError``
     # で止めるので、``COLUMNS`` 順の dict へ並べ直す（``実行日時`` は ``append_history``
