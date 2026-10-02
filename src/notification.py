@@ -111,7 +111,7 @@ def write_notification(
         )
         return None
 
-    folder = _notification_folder()
+    folder = _paths.NOTIFICATION_FOLDER
     try:
         parent = folder.parent
         if not parent.is_dir():
@@ -255,43 +255,6 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> Path:
         raise
     logger.debug("Box 通知ファイル書き出し: %s", path)
     return path
-
-
-def _notification_folder() -> Path:
-    """Box 通知フォルダを実行時に組み立てる。
-
-    ``src.paths.NOTIFICATION_FOLDER`` は ``Path.home()`` を import 時に
-    評価して 1 度だけバインドされる定数のため、テストで ``Path.home()`` を
-    ``monkeypatch`` しても古いパスを参照してしまう。実行時に
-    ``Path.home()`` から組み立て直すことで ``monkeypatch`` の差し替えに
-    追従できるようにする。**``src.paths.NOTIFICATION_FOLDER`` の文字列配置**
-    （``Box`` 以下のフォルダ名）は ``src.paths`` 側に残し（import 文の説明や
-    Power Automate 連携のドキュメントアンカーとして使う）、**値の組み立て**
-    だけをこの関数で行う。
-    """
-    home = Path.home()
-    # ``src.paths.NOTIFICATION_FOLDER`` の構造は ``<ホーム>/Box/<固定名>``。
-    # ホーム部分は捨てて ``Box/...`` 部分を実行時の ``home`` に繋ぎ直す。
-    # ``Box`` セグメントの位置は実行時に ``_paths.NOTIFICATION_FOLDER`` から
-    # 取り出す（ホームの深さが Windows と Unix で違うため ``parts`` の末尾から逆算）。
-    box_relative = _box_relative(_paths.NOTIFICATION_FOLDER)
-    return home / box_relative
-
-
-def _box_relative(folder: Path) -> Path:
-    """``Path.home() / Box / ...`` の ``Box`` 以下を取り出す。
-
-    Windows: ``C:/Users/foo/Box/Salesforce...`` → ``Box/Salesforce...``
-    Unix: ``/home/foo/Box/Salesforce...`` → ``Box/Salesforce...``
-    ホームの深さが違うので、``parts`` の末尾から ``Box`` を探して、
-    ``Box`` 以降のセグメントを ``Path`` にして返す。
-    """
-    parts = list(folder.parts)
-    if "Box" not in parts:
-        # ``Box`` が見つからないときは元のフォルダをそのまま返す（フォールバック）
-        return folder
-    box_index = len(parts) - 1 - parts[::-1].index("Box")
-    return Path(*parts[box_index:])
 
 
 __all__ = ["write_notification"]

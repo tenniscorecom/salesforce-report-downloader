@@ -12,8 +12,11 @@
 
 Box 通知ファイル（``src.notification``）も同時に検証する。
 1 件 1 ファイルで ``~/Box/Salesforceレポートダウンローダー通知`` に置かれ、
-失敗時と自動切替成功時に書かれる。``Path.home()`` はテストで ``tmp_path``
-を指すように差し替え、本物のホームには絶対に書かない。
+失敗時と自動切替成功時に書かれる。``src.paths.NOTIFICATION_FOLDER`` は
+テストで ``monkeypatch.setattr`` で ``tmp_path`` 配下に直接差し替え、
+本物のホームには絶対に書かない（``src.paths`` の「``paths.MASTER_PATH``
+を ``monkeypatch.setattr`` で ``tmp_path`` に差し替えて運用する」と同じ
+流儀に揃えた）。
 
 ``test_service.py`` 側は既存の挙動テスト、
 ``test_service_browser_fetch.py`` 側はブラウザ経由の単体テスト、
@@ -123,13 +126,21 @@ def _make_master(path: Path, master_rows, *, settings_rows) -> Path:
 
 @pytest.fixture
 def home_dir(tmp_path, monkeypatch):
-    """``Path.home()`` を ``tmp_path`` に差し替える。``src.paths.NOTIFICATION_FOLDER``
-    は ``Path.home() / "Box" / "..."`` で組み立てるため、テストが本物の
-    ホームに触れないようにするために必須。
+    """``src.paths.NOTIFICATION_FOLDER`` を ``tmp_path`` 配下に差し替える。
+
+    ``src.paths`` のコメント「テストでは ``paths.MASTER_PATH`` を
+    ``monkeypatch.setattr`` で ``tmp_path`` に差し替えて運用する」に揃えた
+    形。 ``NOTIFICATION_FOLDER`` の親（``~/Box``）相当も ``tmp_path`` 配下に
+    作っておく（``write_notification()`` が「親があるか」を検査する仕様のため）。
+    本物の ``C:\\Users\\oguri\\Box`` には絶対に書かない。
     """
     box_root = tmp_path / "Box"
     box_root.mkdir()
-    monkeypatch.setattr(_paths_module.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(
+        _paths_module,
+        "NOTIFICATION_FOLDER",
+        box_root / "Salesforceレポートダウンローダー通知",
+    )
     return box_root
 
 
@@ -612,13 +623,21 @@ class TestBrowserFallbackFails:
 # Box 通知ファイル
 # ──────────────────────────────────────────────────────────────────────
 class TestNotificationFolderMissing:
-    """``~/Box`` が無いとき、警告ログだけで取得は成功扱い。"""
+    """``NOTIFICATION_FOLDER`` の親フォルダが無いとき、警告ログだけで取得は成功扱い。"""
 
     def test_no_box_folder_warns_and_does_not_raise(self, tmp_path, monkeypatch, caplog):
-        """``Path.home() / 'Box'`` が無い状態で ``write_notification()`` を呼んでも、
-        例外を外へ出さず ``None`` を返す。"""
-        # ``~/Box`` を作らずに ``home_dir`` 相当の差し替えだけ行う
-        monkeypatch.setattr(_paths_module.Path, "home", classmethod(lambda cls: tmp_path))
+        """``NOTIFICATION_FOLDER`` の親（``~/Box`` 相当）が無い状態で
+        ``write_notification()`` を呼んでも、例外を外へ出さず ``None`` を返す。
+        ``src.paths`` の「``paths.NOTIFICATION_FOLDER`` を ``monkeypatch.setattr``
+        で ``tmp_path`` に差し替えて運用する」流儀に合わせ、親フォルダが **無い**
+        tmp 配下を指すように差し替える。"""
+        # ``tmp_path / Box`` は作らない（=NOTIFICATION_FOLDER の親フォルダが存在しない）。
+        # 親を ``tmp_path / 親不在`` にすることで「親が無い」状態を再現する
+        monkeypatch.setattr(
+            _paths_module,
+            "NOTIFICATION_FOLDER",
+            tmp_path / "親不在" / "Salesforceレポートダウンローダー通知",
+        )
         with caplog.at_level(logging.WARNING, logger="src.notification"):
             result = write_notification(
                 report_key="9999",
@@ -748,8 +767,16 @@ class TestNotificationOSErrorIsSwallowed:
     def test_oserror_is_swallowed(self, tmp_path, monkeypatch, caplog):
         """ファイル書込みを ``OSError`` で失敗させても ``write_notification()``
         は ``None`` を返して外へ例外を出さない。"""
-        monkeypatch.setattr(_paths_module.Path, "home", classmethod(lambda cls: tmp_path))
-        (tmp_path / "Box").mkdir()
+        # ``src.paths`` の「``paths.NOTIFICATION_FOLDER`` を ``monkeypatch.setattr``
+        # で ``tmp_path`` に差し替えて運用する」流儀に合わせて ``NOTIFICATION_FOLDER``
+        # を直接差し替える
+        box_root = tmp_path / "Box"
+        box_root.mkdir()
+        monkeypatch.setattr(
+            _paths_module,
+            "NOTIFICATION_FOLDER",
+            box_root / "Salesforceレポートダウンローダー通知",
+        )
         # ``tempfile.mkstemp`` を OSError で失敗させる
         import tempfile
 
@@ -778,8 +805,16 @@ class TestNotificationOSErrorIsSwallowed:
 
     def test_non_oserror_propagates(self, tmp_path, monkeypatch):
         """``TypeError``（バグ）は握りつぶさず外へ伝える。"""
-        monkeypatch.setattr(_paths_module.Path, "home", classmethod(lambda cls: tmp_path))
-        (tmp_path / "Box").mkdir()
+        # ``NOTIFICATION_FOLDER`` を ``tmp_path`` 配下に差し替える（``src.paths`` の
+        # 「``paths.NOTIFICATION_FOLDER`` を ``monkeypatch.setattr`` で ``tmp_path``
+        # に差し替えて運用する」流儀に揃える）
+        box_root = tmp_path / "Box"
+        box_root.mkdir()
+        monkeypatch.setattr(
+            _paths_module,
+            "NOTIFICATION_FOLDER",
+            box_root / "Salesforceレポートダウンローダー通知",
+        )
         import tempfile
 
         def _raise_typeerror(*a, **kw):
@@ -803,8 +838,8 @@ class TestNotificationOSErrorIsSwallowed:
 
 
 class TestNotificationFolderConstant:
-    """``src.paths.NOTIFICATION_FOLDER`` の構造と、実行時の ``Path.home()`` を
-    反映する ``_notification_folder()`` の挙動。"""
+    """``src.paths.NOTIFICATION_FOLDER`` の構造と、テストで ``monkeypatch`` した
+    値がそのまま書き出し先に反映されることの確認。"""
 
     def test_default_folder_layout(self):
         """``NOTIFICATION_FOLDER`` は ``~/Box/Salesforceレポートダウンローダー通知``
@@ -813,12 +848,11 @@ class TestNotificationFolderConstant:
         # ``Box`` の手前までが ``Path.home()`` と一致する（=ホーム配下にある）
         assert "Box" in _paths_module.NOTIFICATION_FOLDER.parts
 
-    def test_runtime_folder_reflects_monkeypatched_home(self, tmp_path, monkeypatch, home_dir):
-        """``write_notification()`` 内で ``_notification_folder()`` が
-        実行時に ``Path.home()`` を見直すため、``monkeypatch`` した
-        ``home`` の下が通知先になる。"""
-        # ``home_dir`` フィクスチャが ``monkeypatch`` 済みなので、そのまま
-        # ``write_notification()`` を呼ぶと ``tmp_path / Box / ...`` に書かれる
+    def test_runtime_folder_reflects_monkeypatched_constant(self, tmp_path, monkeypatch, home_dir):
+        """``write_notification()`` は呼ばれた時点の ``src.paths.NOTIFICATION_FOLDER``
+        をそのまま使うため、``home_dir`` フィクスチャで ``NOTIFICATION_FOLDER``
+        を ``tmp_path`` 配下に差し替えれば、書き出し先も ``tmp_path`` 配下に
+        なる（本物の ``C:\\Users\\oguri\\Box`` には絶対に触らない）。"""
         result = write_notification(
             report_key="9001",
             summary="home-relative",
@@ -832,8 +866,9 @@ class TestNotificationFolderConstant:
             executed_at=dt.datetime(2026, 9, 30, 10, 0),  # noqa: DTZ001
         )
         assert result is not None
-        # ホームが ``tmp_path`` に差し替わっているので、書き出し先も ``tmp_path``
-        # 配下になる（本物の ``C:\Users\oguri\Box`` には触らない）
+        # ``NOTIFICATION_FOLDER`` が ``tmp_path`` 配下に差し替わっているので、
+        # 書き出し先も ``tmp_path`` 配下になる（本物の ``C:\\Users\\oguri\\Box``
+        # には触らない）
         assert str(result).startswith(str(tmp_path))
 
 
