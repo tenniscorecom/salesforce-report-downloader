@@ -105,15 +105,17 @@ class EmptyReportError(DownloaderError):
     発生箇所: download_scheduled() の `_save()`
 
     対処:
-        Salesforce の画面で同じレポートを開き、本当に 0 件か確認する。
-        0 件が正常に起こるレポートなら、管理表の「0件あり」を「○」にする。
+        Salesforce の画面で同じレポートを開き、本当に 0 件か確認してください。
+        0 件が普通に起きるレポートなら、管理表の「0件あり」を「○」にしてください。
     """
 
     def __init__(self, report_key: str, summary: str, url: str) -> None:
         super().__init__(
             f"レポートの明細が 0 行でした: {report_key}（{summary}）\n"
             f"{url}\n"
-            "取得の失敗と区別できないため、ファイルは作りません。"
+            "取得の失敗と区別できないため、ファイルは作りません。\n"
+            "Salesforce の画面で同じレポートを開き、本当に 0 件か確認してください。\n"
+            "0 件が普通に起きるレポートなら、管理表の「0件あり」を「○」にしてください。"
         )
 
 
