@@ -63,6 +63,7 @@ EXAMPLES = [
         "group": "営業本部",
         "assignee": "山田太郎",
         "summary": "顧客一覧",
+        "has_personal_info": True,  # 氏名・電話・住所を含む例
         "url": f"{_DOMAIN}/00O5g00000ABCDE/view",
         "enabled": True,
         "allow_empty": False,  # 普段はデータがあるが、念のため「×」（既定）
@@ -74,6 +75,7 @@ EXAMPLES = [
         "group": "営業本部",
         "assignee": "佐藤花子",
         "summary": "売上実績",
+        "has_personal_info": False,  # 集計値のみで個人を特定する情報が無い例
         "url": f"{_DOMAIN}/00O5g00000FGHIJ/view",
         "enabled": True,
         "allow_empty": True,  # 「該当データ無し」が普通に起きるレポートの例
@@ -112,6 +114,24 @@ class ReportEntry(MasterRow):
     summary: str = column(
         "概要",
         help="人が読んで何のレポートか分かる説明。記録用。出力パスには使いません",
+    )
+    # **既定値 `True`（=「個人情報あり」）を持たせる。** 既定値が他の列と逆だが、
+    # この列は意味が反転しているのではなく「安全側」を取る列:
+    # - 「個人情報が含まれているか分からない」=「含まれているかもしれない」=「○」
+    # - 書き込み側（保存処理）は今この値を読まない（記録用のみ）。誤って `True` に
+    #   なっても挙動は変わらない（=安全側に倒れても無影響）
+    # - 既定値を持つ列は**見出しごと無くても読める**。列を足した瞬間に既存管理表
+    #   がすべて読めなくなり全プロジェクトの業務が止まる事故を防ぐ
+    # `choices` で `○` `×` 以外を弾く（既定の bool 変換は一覧に無い文字を黙って
+    # `False` として通すため危険）。bool 列の `choices` は1つ目を True、2つ目を
+    # False の表記として雛形へ書き出す
+    has_personal_info: bool = column(
+        "個人情報",
+        choices=("○", "×"),
+        default=True,
+        help="そのレポートに個人情報（氏名・電話番号・住所など）が含まれるなら「○」、"
+        "含まれないことを確認したら「×」。空欄は「○」とみなします"
+        "（分からないものは安全側として扱うため）",
     )
     url: str = column(
         "Salesforce URL",

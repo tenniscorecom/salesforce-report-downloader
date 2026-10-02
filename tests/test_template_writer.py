@@ -65,12 +65,14 @@ class TestCreateTemplateReportEntry:
         headers = [cell.value for cell in sheet[1]]
         # ReportEntry の宣言順。「グループ」「担当者」は ID の直後に置く
         # （参照時にすぐ辿れるよう）。「担当者」「概要」は記録用で出力パスに
-        # 使わないので宣言順はこのまま
+        # 使わないので宣言順はこのまま。「個人情報」は「概要」の直後に置く
+        # （=人が見て分かりやすい位置）
         assert headers == [
             "ID",
             "グループ",
             "担当者",
             "概要",
+            "個人情報",
             "Salesforce URL",
             "有効",
             "0件あり",
@@ -99,14 +101,16 @@ class TestCreateTemplateReportEntry:
         path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
         ws = load_workbook(path)["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
-        # ReportEntry の `choices` 列は「有効」「0件あり」「2000件超」「SOQL」の 4 つ。
-        # 宣言順は ID/概要/Salesforce URL/グループ/担当者/有効/0件あり/2000件超/SOQL の
-        # 9 列で、`choices` 付きは 6 列目以降なのでドロップダウンは F〜I 列に付く。
+        # ReportEntry の `choices` 列は「個人情報」「有効」「0件あり」「2000件超」
+        # 「SOQL」の 5 つ。宣言順は ID/グループ/担当者/概要/個人情報/Salesforce URL/
+        # 有効/0件あり/2000件超/SOQL の 10 列で、`choices` 付きは 5, 7〜10 列目なので
+        # ドロップダウンは E, G〜J 列に付く（Salesforce URL=6 列目には付かない）。
         # 最下行は _FIRST_DATA_ROW(2) + 例(2) - 1 + _DATA_VALIDATION_ROWS(1000) = 1003
-        assert "F2:F1003" in ranges  # 有効
-        assert "G2:G1003" in ranges  # 0件あり
-        assert "H2:H1003" in ranges  # 2000件超
-        assert "I2:I1003" in ranges  # SOQL
+        assert "E2:E1003" in ranges  # 個人情報
+        assert "G2:G1003" in ranges  # 有効
+        assert "H2:H1003" in ranges  # 0件あり
+        assert "I2:I1003" in ranges  # 2000件超
+        assert "J2:J1003" in ranges  # SOQL
 
     def test_template_font_is_noto_sans_jp(self, tmp_path):
         """雛形（表シート・記入方法シートとも）のフォントが Noto Sans JP。"""
@@ -363,13 +367,14 @@ class TestCreateCombinedWorkbook:
         wb = load_workbook(path)
         report_ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         report_ranges = sorted(str(v.sqref) for v in report_ws.data_validations.dataValidation)
-        # `choices` 列は「有効」「0件あり」「2000件超」「SOQL」の 4 つ。
-        # 列宣言順は ID/グループ/担当者/概要/Salesforce URL/有効/0件あり/2000件超/SOQL なので
-        # ドロップダウンは F〜I 列に付く
-        assert "F2:F1003" in report_ranges  # 有効
-        assert "G2:G1003" in report_ranges  # 0件あり
-        assert "H2:H1003" in report_ranges  # 2000件超
-        assert "I2:I1003" in report_ranges  # SOQL
+        # `choices` 列は「個人情報」「有効」「0件あり」「2000件超」「SOQL」の 5 つ。
+        # 列宣言順は ID/グループ/担当者/概要/個人情報/Salesforce URL/有効/0件あり/2000件超/SOQL
+        # なのでドロップダウンは E, G〜J 列に付く（Salesforce URL=6 列目には付かない）
+        assert "E2:E1003" in report_ranges  # 個人情報
+        assert "G2:G1003" in report_ranges  # 有効
+        assert "H2:H1003" in report_ranges  # 0件あり
+        assert "I2:I1003" in report_ranges  # 2000件超
+        assert "J2:J1003" in report_ranges  # SOQL
         schedule_ws = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
         schedule_ranges = sorted(str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
         # スケジュール: 列宣言順は スケジュールキー/レポートキー/取得頻度/取得開始時刻/
@@ -615,7 +620,9 @@ class TestMigrateTemplate:
         # 値が列名と対応付け直されている（最初の列=ID に "1001"）
         assert sheet.cell(row=2, column=1).value == "1001"
         assert sheet.cell(row=2, column=2).value == "営業"
-        assert sheet.cell(row=2, column=6).value == "○"
+        # 新列構成で 7 列目が「有効」
+        assert sheet.cell(row=2, column=6).value == "https://example/1001"
+        assert sheet.cell(row=2, column=7).value == "○"
 
     def test_dropdowns_and_guide_sheet_applied_after_migration(self, tmp_path):
         """マイグレーション後もドロップダウン・「記入方法」シートが正しく適用される。"""
@@ -646,17 +653,20 @@ class TestMigrateTemplate:
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in sheet.data_validations.dataValidation)
-        # 新しい宣言順（F列=有効, G列=0件あり, H列=2000件超, I列=SOQL）にドロップダウン
-        # マイグレーション行=2 なので最終行は 2 + 2 - 1 + 1000 = 1003
-        assert "F2:F1003" in ranges
-        assert "G2:G1003" in ranges
-        assert "H2:H1003" in ranges
-        assert "I2:I1003" in ranges
+        # 新しい宣言順（E列=個人情報, G列=有効, H列=0件あり, I列=2000件超, J列=SOQL）に
+        # ドロップダウン。マイグレーション行=2 なので最終行は 2 + 2 - 1 + 1000 = 1003
+        assert "E2:E1003" in ranges  # 個人情報
+        assert "G2:G1003" in ranges  # 有効
+        assert "H2:H1003" in ranges  # 0件あり
+        assert "I2:I1003" in ranges  # 2000件超
+        assert "J2:J1003" in ranges  # SOQL
         # 「記入方法」シートは新列構成で作り直されている
         assert "記入方法" in wb.sheetnames
         guide_text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
-        # 新列（allow_empty, exceeds_row_limit, use_soql の見出し）も記入方法シートに載る
+        # 新列（allow_empty, exceeds_row_limit, use_soql, has_personal_info の見出し）も
+        # 記入方法シートに載る
         assert "0件あり" in guide_text
+        assert "個人情報" in guide_text
         assert "2000件超" in guide_text
         assert "SOQL" in guide_text
 
