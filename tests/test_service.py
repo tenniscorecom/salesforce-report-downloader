@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from comken.core.table import Table
 from comken.exceptions import (
+    HistoryLockTimeoutError,
     HistoryWriteError,
     SalesforceReportIDNotFoundError,
 )
@@ -2414,6 +2415,60 @@ class TestRunLock:
             assert not history_path.exists() or _history_rows({"history_path": history_path}) == []
         finally:
             other_handle.__exit__(None, None, None)
+
+    def test_propagates_lock_timeout_from_download_body(self, tmp_path, monkeypatch):
+        """実行ロックは取得できるが、本体（``_download_scheduled_locked()`` 内の
+        ``history.downloaded_today()`` または ``history.schedule_succeeded_today()``）
+        で ``HistoryLockTimeoutError`` が出ると、``download_scheduled()`` は空リスト
+        を返さず**例外をそのまま送出する**。
+
+        旧実装ではロック取得と本体の両方をまとめて ``except`` していたため、
+        履歴CSV 用ロックの本当の障害が「他プロセスが進行中」として隠れて
+        しまっていた。修正後はロック取得部分だけを ``except`` するため、
+        本体側の ``HistoryLockTimeoutError`` はそのまま外へ伝播する。
+
+        このテストでは「スケジュール」シートを足さずに ``history.downloaded_today()``
+        を経由する経路を再現している（``history.downloaded_today`` /
+        ``history.schedule_succeeded_today`` のどちらを差し替えても守られる
+        振る舞いは同じなので、テスト用に使う関数は「現在も本体から呼ばれている
+        履歴関数」ならどちらでもよい）。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        def _raise_lock_timeout(*args, **kwargs):
+            # ``history.downloaded_today()`` の呼び出しすべてで擬似的に
+            # 履歴ロック取得失敗を発生させる（=履歴ロックの本当の障害）。
+            # 旧テストは ``history.truncated_today`` を monkeypatch していたが、
+            # 2026-10 の自動切替導入で ``_matched_schedule_key()`` から
+            # ``truncated_today`` を呼ぶ経路は無くなった。今も本体が呼ぶ
+            # ``downloaded_today`` / ``schedule_succeeded_today`` のどちらかに
+            # 差し替えれば同じ振る舞い（=履歴ロック障害が外へ出る）を守れる
+            raise HistoryLockTimeoutError(history_path, 10.0)
+
+        monkeypatch.setattr(service_module.history, "downloaded_today", _raise_lock_timeout)
+
+        with (
+            patch("src.service.site_for", return_value=fake_salesforce()),
+            pytest.raises(HistoryLockTimeoutError),
+        ):
+            download_scheduled()
 
 
 def make_master_with_schedule(
