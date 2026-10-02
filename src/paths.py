@@ -70,6 +70,15 @@ MASTER_FILENAME = "レポート管理表.xlsx"
 # を `monkeypatch.setattr` で tmp_path に差し替えて運用する。
 MASTER_PATH = SALESFORCE_DOWNLOADER_FOLDER / MASTER_FILENAME
 
+# ── Box 通知ファイルの置き場所 ─────────────────────────────────────
+# Box Drive が同期するローカルフォルダ。**Power Automate の Box コネクタ
+# （ファイル作成時トリガー）がこのフォルダを監視し、Teams チャンネルへ投稿する**
+# 契約になっている。Outlook は使えない・Power Automate のクラウドフローは UNC を
+# 監視できないため、ここに置いた JSON ファイルを介して間接的に Teams へ届ける。
+# フォルダ自体が無い／書き込めない場合は取得を止めない（``src.notification`` 側で
+# 警告ログだけ出して戻る）。配置時に運用環境のパスへ書き換える
+NOTIFICATION_FOLDER = Path.home() / "Box" / "Salesforceレポートダウンローダー通知"
+
 
 def _report_disabled_error(report_key: str, summary: str, master_path: Path) -> DownloaderError:
     """``DownloaderError`` の「管理表で『無効』になっているレポートを取ろうとした」文言。
