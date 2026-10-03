@@ -12,7 +12,7 @@ sfdl と comken の ``paths`` モジュールには、本番の置き場所を�
 - ``comken.services.salesforce_downloader.paths.HISTORY_DB_PATH``
   → ``C:\\SalesforceDownloader\\ダウンロード履歴.sqlite3`` （=履歴の正本）
 - ``comken.services.salesforce_downloader.paths.HISTORY_PATH``
-  → ``C:\\SalesforceDownloader\\ダウンロード履歴.csv`` （=人が見る CSV）
+  → ``\\server\\share\\tools\\salesforce\\ダウンロード履歴.csv`` （=人が見る CSV）
 
 過去の本タスクの前段で、これらの差し替えを **テスト本体側で 1 か所**
 忘れた結果、 ``comken.services.salesforce_downloader.paths.HISTORY_DB_PATH``

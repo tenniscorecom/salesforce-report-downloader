@@ -118,8 +118,15 @@ class TestAutouseCanBeOptedOut:
 
     @_TEST_NO_ISOLATE
     def test_opt_out_recovers_production_history_paths(self, tmp_path: Path) -> None:
-        """``no_isolate_production_paths`` を付ければ ``HISTORY_DB_PATH`` /
-        ``HISTORY_PATH`` は ``C:\\SalesforceDownloader`` 配下を指す。
+        """``no_isolate_production_paths`` を付ければ ``HISTORY_DB_PATH`` は
+        ``C:\\SalesforceDownloader`` 配下、 ``HISTORY_PATH`` は共有サーバー
+        配下を指す。
+
+        履歴の正本（SQLite）は取得を実行する PC のローカルに置くので
+        ``HISTORY_DB_FOLDER`` が ``C:\\SalesforceDownloader`` を指す。 人が見る
+        CSV は共有サーバー（ ``\\server\\share\\tools\\salesforce`` ）に置くので
+        ``SALESFORCE_DOWNLOADER_FOLDER`` が UNC を指す。 派生先である
+        ``HISTORY_DB_PATH`` / ``HISTORY_PATH`` はそれぞれ組み立て式と一致する。
 
         autouse が壊れて **常に tmp_path に倒し続ける** と、 opt-out を
         付けても ``HISTORY_DB_PATH`` が ``tmp_path`` 配下のままになり、
@@ -130,21 +137,24 @@ class TestAutouseCanBeOptedOut:
             f"（autouse fixture が壊れている）: {history_paths_module.HISTORY_DB_PATH!r}"
         )
         assert history_paths_module.HISTORY_DB_PATH == (
-            history_paths_module.SALESFORCE_DOWNLOADER_FOLDER
-            / history_paths_module.HISTORY_DB_FILENAME
+            history_paths_module.HISTORY_DB_FOLDER / history_paths_module.HISTORY_DB_FILENAME
         )
         assert history_paths_module.HISTORY_PATH == (
             history_paths_module.SALESFORCE_DOWNLOADER_FOLDER
             / history_paths_module.HISTORY_CSV_FILENAME
         )
-        # comken 側の派生元 SALESFORCE_DOWNLOADER_FOLDER は ``C:\\SalesforceDownloader``
-        # （v3 の仮置き）
-        assert str(history_paths_module.SALESFORCE_DOWNLOADER_FOLDER) == (
-            r"C:\SalesforceDownloader"
-        ), (
-            f"comken 側の SALESFORCE_DOWNLOADER_FOLDER が想定の"
+        # comken 側の ``HISTORY_DB_FOLDER`` は履歴の正本（SQLite）を入れる
+        # 取得実行 PC のローカル（ ``C:\\SalesforceDownloader`` ）を指す。
+        assert str(history_paths_module.HISTORY_DB_FOLDER) == (r"C:\SalesforceDownloader"), (
+            f"comken 側の HISTORY_DB_FOLDER が想定の"
             f" C:\\SalesforceDownloader ではない: "
-            f"{history_paths_module.SALESFORCE_DOWNLOADER_FOLDER!r}"
+            f"{history_paths_module.HISTORY_DB_FOLDER!r}"
+        )
+        # comken 側の ``SALESFORCE_DOWNLOADER_FOLDER`` は人が見る CSV を置く
+        # 共有サーバー（ ``\\server\\share\\tools\\salesforce`` ）を指す。
+        salesforce_folder = str(history_paths_module.SALESFORCE_DOWNLOADER_FOLDER)
+        assert salesforce_folder.startswith("\\\\") or salesforce_folder.startswith("//"), (
+            f"comken 側の SALESFORCE_DOWNLOADER_FOLDER が UNC ではない: {salesforce_folder!r}"
         )
 
     @_TEST_NO_ISOLATE

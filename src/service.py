@@ -56,7 +56,6 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import logging
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -139,8 +138,8 @@ def _history_path() -> Path:
 
     履歴の正本は取得を実行する PC のローカルに置いた SQLite
     （``comken.services.salesforce_downloader.paths.HISTORY_DB_PATH``）。
-    人が見るための CSV は同じ場所・同じファイル名で
-    ``HISTORY_PATH`` に残してあり、 ``download_scheduled()`` がロックの内側で
+    人が見る CSV は共有サーバー（``SALESFORCE_DOWNLOADER_FOLDER`` 配下）に
+    ``HISTORY_PATH`` として置いてあり、 ``download_scheduled()`` がロックの内側で
     ``export_history()`` を呼んで SQLite から書き出す。
 
     テストでは ``monkeypatch.setattr`` で comken 側のモジュール属性を
@@ -251,40 +250,34 @@ def download_scheduled(
             # WinActor / RPA 基盤から見て誤報になるため、空リスト + 正常終了
             logger.warning("別の実行が進行中のため今回はスキップします: %s", run_lock_path)
             return []
+        result: list[Path] = []
         try:
-            return _download_scheduled_locked(project, filters_by_report=filters_by_report)
-        finally:
-            # ロックの内側で **1 回だけ** 人が見る CSV を SQLite から書き出す。
-            # 正常終了・例外終了のどちらでも、対象選定〜履歴追記まで済んだ
-            # タイミングで 1 回だけ書き出せばよい。ロックを取得できなかった
+            result = _download_scheduled_locked(project, filters_by_report=filters_by_report)
+        except BaseException:
+            # 本体（ ``_download_scheduled_locked()`` ）が例外で終わった。
+            # ``finally`` の代わりに ``except`` ブロックにするのは、書き出しの
+            # 想定外例外を「本体側の例外が居るかどうかで握るか変える」判定が、
+            # ``finally`` + ``sys.exc_info()`` では呼び出し側の ``except`` 節の
+            # 中から呼ばれたときに誤動作するため（呼び出し側の例外を「本体側の
+            # 例外」と誤認して、正常終了時の想定外例外まで握りつぶして隠して
+            # しまう）。 ``except`` ブロックの構造なら「本体が例外中か」は
+            # Python が確実に判定する。 ロックの内側で **1 回だけ** 人が見る
+            # CSV を SQLite から書き出す点は同じ。ロックを取得できなかった
             # スキップ（上の ``except``）では通らないので、スキップ時に
             # 既存 CSV を意図せず上書きする事故も起きない。
-            # ``HistoryExportError`` は ``logger.warning`` だけにして握る
-            # （人が Excel で開いている等で書き出しできなくても、 取得自体は
-            # 止めない。 正本は SQLite 側にあるので書き出し失敗は取得失敗に
-            # ならない）。
             #
-            # **想定外の例外が ``_export_history_warn_only()`` から出た場合は、
-            # ``finally`` で上書きされると本体の例外（ ``ScheduledDownloadFailedError``
-            # など）が隠れる。** なので、 ``sys.exc_info()`` を見て
-            # 「本体が既に例外中」なら ``logger.exception`` だけで握り、
-            # 本体の例外をそのまま伝播させる。 本体が正常終了したときの
-            # 想定外の例外は今どおり送出する。
-            body_exc_info = sys.exc_info()
-            try:
-                _export_history_warn_only()
-            except HistoryExportError:
-                # ``_export_history_warn_only()`` 自身が握る想定だが、
-                # 将来 ``except`` を広げ忘れた場合のため、ここでも握る
-                pass
-            except Exception:
-                if body_exc_info[1] is not None:
-                    logger.exception(
-                        "履歴の閲覧用 CSV 書き出しで想定外の例外が出ましたが、"
-                        "本体側の例外を優先するため握りつぶします"
-                    )
-                else:
-                    raise
+            # 想定外の例外は ``_export_after_failure()`` の中で
+            # ``logger.exception`` で記録して握る。 ``HistoryExportError``
+            # も含めて全て握り、本体側の例外（ ``ScheduledDownloadFailedError``
+            # など）を必ずそのまま外へ返す。
+            _export_after_failure()
+            raise
+        # 本体が正常終了したときは想定外の例外をそのまま送出する
+        # （ ``HistoryExportError`` だけ ``_export_history_warn_only()`` が
+        # ``logger.warning`` で握る）。正本は SQLite 側にあるので書き出し
+        # 失敗は取得失敗にしない。
+        _export_history_warn_only()
+        return result
 
 
 def _download_scheduled_locked(
@@ -397,8 +390,8 @@ def _download_scheduled_locked(
 def _export_history_warn_only() -> None:
     """``export_history()`` を ``logger.warning`` だけで握る形で呼ぶ。
 
-    ロックの内側・本体の ``_download_scheduled_locked()`` が正常終了しても
-    例外で終わっても、最後に 1 回だけ ``export_history()`` を呼ぶ。
+    ロックの内側・本体の ``_download_scheduled_locked()`` が正常終了した
+    ときに、最後に 1 回だけ ``export_history()`` を呼ぶ。
     ``HistoryExportError`` だけ握り、 それ以外の例外はそのまま伝播させる
     （``HistoryExportError`` 以外の失敗は想定外なので、隠さず呼び出し側へ返す）。
     """
@@ -411,6 +404,28 @@ def _export_history_warn_only() -> None:
             "履歴の閲覧用 CSV を書き出せませんでした: %s（%s）。取得結果は SQLite 側に"
             "記録済みです。書き出し先が他のプロセスで開かれていないか確認してください",
             csv_path,
+            exc,
+        )
+
+
+def _export_after_failure() -> None:
+    """``_download_scheduled_locked()`` が例外で終わったあとに ``export_history()`` を呼ぶ。
+
+    ``_export_history_warn_only()`` と異なり、 ``HistoryExportError`` 以外の想定外例外も
+    含めて全ての例外を ``logger.exception`` で握る。 ``download_scheduled()`` の
+    ``except BaseException`` ブロックから呼ばれる想定で、 本体側の例外を
+    必ずそのまま外へ通すことが目的のため、書き出し側の例外が本体側の例外を
+    隠すことを絶対に避けたい。 正本は SQLite 側にあるので、 書き出し失敗は
+    取得失敗にはならない（取得結果は失われない）。
+    """
+    db_path = _history_path()
+    csv_path = _history_csv_path()
+    try:
+        export_history(db_path, csv_path)
+    except Exception as exc:
+        logger.exception(
+            "履歴の閲覧用 CSV 書き出しで例外が発生しましたが、本体側の例外を優先するため"
+            "握りつぶします: %s",
             exc,
         )
 

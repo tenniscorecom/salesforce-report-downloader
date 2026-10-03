@@ -2115,15 +2115,15 @@ class TestRequiredHistory:
 
 
 class TestHistoryExportFinallyErrorSuppression:
-    """``download_scheduled()`` の ``finally`` で ``_export_history_warn_only()`` が
-    想定外の例外（ ``HistoryExportError`` 以外）を出したとき、
-    **本体側の例外を隠さない** ことの確認。
+    """``download_scheduled()`` の本体後の CSV 書き出しが想定外の例外
+    （ ``HistoryExportError`` 以外）を出したとき、 **本体側の例外を隠さない** ことの確認。
 
-    旧実装では ``finally`` の例外がそのまま送出されていたため、
-    本体が ``ScheduledDownloadFailedError`` で終わった書き出しが ``RuntimeError`` で
-    失敗すると、 呼び出し側には ``RuntimeError`` だけが伝わって元の
-    ``ScheduledDownloadFailedError`` が消えていた。 修正後は ``sys.exc_info()``
-    を見て 「本体が既に例外中」 なら ``logger.exception`` だけで握り、
+    本体が ``ScheduledDownloadFailedError`` で終わった書き出しが ``RuntimeError``
+    で失敗すると、 旧実装では ``finally`` の例外がそのまま送出されていたため、
+    呼び出し側には ``RuntimeError`` だけが伝わって元の
+    ``ScheduledDownloadFailedError`` が消えていた。 修正後は ``except BaseException``
+    ブロックで「本体が例外中か」を Python に判定させ、 例外中なら
+    ``_export_after_failure()`` の中で ``logger.exception`` だけで握って、
     本体の例外をそのまま伝播させる。 本体が正常終了したときの想定外の
     例外は今どおり送出する。
     """
@@ -2187,6 +2187,53 @@ class TestHistoryExportFinallyErrorSuppression:
             pytest.raises(RuntimeError, match="想定外の書き出し失敗"),
         ):
             download_scheduled("案件集計")
+
+    def test_export_failure_propagates_when_called_inside_caller_except_block(
+        self, paths, monkeypatch
+    ):
+        """呼び出し側が ``except`` 節の中から ``download_scheduled()`` を呼んでも、
+        本体が正常終了して書き出しが ``RuntimeError`` を出す場合は ``RuntimeError``
+        がそのまま外へ伝わる。
+
+        旧実装は ``finally`` の中で ``sys.exc_info()`` を見て「本体が既に例外中か」
+        を判定していたが、 ``download_scheduled()`` が呼び出し側の ``except`` 節の中
+        から呼ばれた場合、本体が正常終了しても ``sys.exc_info()`` は呼び出し側の例外
+        （このテストでは ``ValueError``）を返す。 そのままだと「本体が例外中」と
+        誤判定されて正常終了時の ``RuntimeError`` が握りつぶされ、 呼び出し側の
+        ``ValueError`` も消えて、 結果としてテストが落ちない/落ちるがどちらでも
+        期待する ``RuntimeError`` が上がってこない事故になる。 ``except`` ブロック
+        構造の判定なら呼び出し側の ``except`` 状態に左右されない。
+
+        検証手順:
+
+        - 呼び出し側の ``except ValueError`` の中で ``download_scheduled()`` を呼ぶ
+        - 本体は空リストを返す（=正常終了）
+        - ``export_history`` を ``RuntimeError`` で失敗させる
+        - 期待: ``download_scheduled()`` から ``RuntimeError`` がそのまま上がる
+          （= ``with pytest.raises(RuntimeError, ...)`` ブロックの中で受け止められる。
+          呼び出し側の ``ValueError`` は ``except ValueError`` の中で受け止め済みなので
+          外へ出ない）
+        """
+
+        def _raise_runtime(*_args, **_kwargs):
+            raise RuntimeError("想定外の書き出し失敗")
+
+        with (
+            patch(
+                "src.service.site_for",
+                return_value=fake_salesforce(),
+            ),
+            patch("src.service.export_history", side_effect=_raise_runtime),
+            pytest.raises(RuntimeError, match="想定外の書き出し失敗"),
+        ):
+            try:
+                raise ValueError("呼び出し側の例外")
+            except ValueError:
+                # ここで ``download_scheduled()`` を呼ぶ。 旧実装では
+                # ``sys.exc_info()`` がこの ``ValueError`` を返すため、
+                # 本体が正常終了しても書き出しの ``RuntimeError`` が握りつぶされ、
+                # 期待する ``RuntimeError`` が上がってこない
+                download_scheduled("案件集計")
 
 
 # ── 0件あり / 0 行の扱い ─────────────────────────────────────────────
