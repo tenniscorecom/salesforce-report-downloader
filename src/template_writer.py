@@ -965,16 +965,14 @@ def _auto_width(sheet: Worksheet, *, max_width: int | None = None) -> None:
 def _add_excel_table(sheet: Worksheet, headers: list[str], row_count: int, row_cls: type) -> None:
     """``PY_T_<クラス名>`` という名前で Excel テーブルを追加する。
 
-    ``row_count`` が 0 のときは Excel のテーブルを作れない（見出し行が必要）ので、
-    スキップして ``PY_T_`` 名前テストは ``EXAMPLES`` 付き呼び出しで守られる。
+    ``row_count`` が 0 のときは、見出しと空の 1 行でテーブルを作る（Excel の
+    テーブルはデータ行が 1 行以上要るため）。
     """
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.table import Table, TableStyleInfo
 
-    if row_count == 0:
-        return
     last_column_letter = get_column_letter(len(headers))
-    last_data_row = row_count + _FIRST_DATA_ROW - 1
+    last_data_row = max(row_count, 1) + _FIRST_DATA_ROW - 1
     # 範囲は見出し行（データ行の 1 つ上）から始める
     table_ref = f"A{_FIRST_DATA_ROW - 1}:{last_column_letter}{last_data_row}"
     table = Table(displayName=f"PY_T_{row_cls.__name__}", ref=table_ref)

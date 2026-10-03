@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from comken.exceptions import SheetNotFoundError
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 import src.paths as _paths_module
 from src.report_master import MasterRow, column
@@ -334,6 +335,13 @@ class TestCreateCombinedWorkbook:
             sheet = wb[f"PY_{row_cls.SHEET_NAME}"]
             table = sheet.tables[f"PY_T_{row_cls.__name__}"]
             assert table.ref.startswith("A1:")
+
+    def test_empty_template_still_has_table(self, tmp_path):
+        """記入例が 0 行でも、見出しと空の 1 行で Excel テーブルを作る。"""
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, examples=[])
+        sheet = load_workbook(path)[f"PY_{ReportEntry.SHEET_NAME}"]
+        table = sheet.tables["PY_T_ReportEntry"]
+        assert table.ref == f"A1:{get_column_letter(len(ReportEntry.headers()))}2"
 
     def test_load_master_reads_report_entries(self, paths):
         master_path, _ = paths
