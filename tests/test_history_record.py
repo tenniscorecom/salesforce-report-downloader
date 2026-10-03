@@ -1,12 +1,17 @@
-"""``src.history.record()`` が履歴に書き込む 1 行のバイト列が、
+"""``src.history.record()`` が履歴に書き込む 1 行の値が、
 comken 側に移す前と同じ形式・順序・空欄の扱いになることを確かめる。
 
 履歴の列構成・順序・空欄の扱いは ``comken.services.salesforce_downloader.history``
-の ``COLUMNS`` が正。``record()`` は ``COLUMNS`` の各列をキーにした ``Mapping``
+の ``HistoryColumns.names()`` が正。``record()`` は同名の列をキーにした ``Mapping``
 を組み立てて ``append_history()`` に渡す薄いラッパーなので、
 **このテストが落ちたときは出力に互換性のない変更が混じっている**（例:
-列順の入れ替え、空欄を空文字列以外の値に丸める、UTF-8 BOM 以外の
-エンコーディングで書く、など）。
+列順の入れ替え、空欄を空文字列以外の値に丸める、``取得件数`` を ``12.0`` のような
+小数化けさせる、``処理秒数`` の小数桁を変える、など）。
+
+履歴の正本は SQLite（``HISTORY_DB_PATH``）になり、人が見る CSV は
+``export_history()`` が書き出す形になったので、 ``record()`` のあとに
+``export_history()`` を 1 回呼んで CSV 化し、 その CSV を旧実装と同じ手順で
+書いたバイト列と突き合わせる。
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from comken.services.salesforce_downloader.history import (
     SUCCESS,
     HistoryColumns,
     HistoryRow,
+    export_history,
 )
 
 from src.history import record
@@ -79,15 +85,21 @@ def _expected_row_bytes(
 
 
 def _row_bytes_from_record(
-    history_path: Path,
+    history_db_path: Path,
+    history_csv_path: Path,
     *,
     entry: ReportEntry,
     row_data: Mapping[str, Any],
 ) -> bytes:
-    """``record()`` を呼んだあとの履歴ファイルの生バイトを返す。"""
-    history_path.parent.mkdir(parents=True, exist_ok=True)
+    """``record()`` を呼んだあと ``export_history()`` した CSV の生バイトを返す。
+
+    履歴の正本は SQLite（``history_db_path``）になり、 人が見る CSV は
+    ``export_history()`` が同じ手順で書き出すので、 ``record()`` のあとに
+    ``export_history()`` を 1 回呼んでバイト列を得る。
+    """
+    history_db_path.parent.mkdir(parents=True, exist_ok=True)
     record(
-        history_path,
+        history_db_path,
         entry=entry,
         project="案件集計",
         row=HistoryRow(
@@ -105,7 +117,8 @@ def _row_bytes_from_record(
         ),
         executed_at=row_data["executed_at"],
     )
-    return history_path.read_bytes()
+    export_history(history_db_path, history_csv_path)
+    return history_csv_path.read_bytes()
 
 
 @pytest.fixture
@@ -148,11 +161,15 @@ def test_record_writes_byte_identical_row_to_history_csv(
         master_path, sheet_name="PY_設定", index=False
     )
     monkeypatch.setattr(paths_module, "MASTER_PATH", master_path)
+    history_db_path = tmp_path / "履歴.sqlite3"
+    history_csv_path = tmp_path / "履歴.csv"
     monkeypatch.setattr(
-        "comken.services.salesforce_downloader.paths.HISTORY_PATH", tmp_path / "履歴.csv"
+        "comken.services.salesforce_downloader.paths.HISTORY_DB_PATH", history_db_path
+    )
+    monkeypatch.setattr(
+        "comken.services.salesforce_downloader.paths.HISTORY_PATH", history_csv_path
     )
 
-    history_path = tmp_path / "履歴.csv"
     # ``_resolved_folder()`` が生成する文字列を、``output_path()`` を呼んで
     # 実際の ``GroupNotRegisteredError`` メッセージから組み立てる。
     # 期待値はその文字列を含めてから組み立てる（先に作らないと、
@@ -186,7 +203,9 @@ def test_record_writes_byte_identical_row_to_history_csv(
     # 期待値を見出し + データ行のバイト列として組み立てる
     expected = _expected_row_bytes(entry=entry, row_data=row_data)
     # ``record()`` を呼んで実際の出力を得る
-    actual = _row_bytes_from_record(history_path, entry=entry, row_data=row_data)
+    actual = _row_bytes_from_record(
+        history_db_path, history_csv_path, entry=entry, row_data=row_data
+    )
 
     assert actual == expected
 
@@ -209,17 +228,21 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
         master_path, sheet_name="PY_設定", index=False
     )
     monkeypatch.setattr(paths_module, "MASTER_PATH", master_path)
+    history_db_path = tmp_path / "履歴.sqlite3"
+    history_csv_path = tmp_path / "履歴.csv"
     monkeypatch.setattr(
-        "comken.services.salesforce_downloader.paths.HISTORY_PATH", tmp_path / "履歴.csv"
+        "comken.services.salesforce_downloader.paths.HISTORY_DB_PATH", history_db_path
+    )
+    monkeypatch.setattr(
+        "comken.services.salesforce_downloader.paths.HISTORY_PATH", history_csv_path
     )
     # キャッシュを破棄（前テストで作られたキャッシュが影響しないように）
     paths_module._reset_cached_master()
 
-    history_path = tmp_path / "履歴.csv"
     # 失敗（保存先フォルダ無し）のケース: Salesforce取得結果=空、保存結果=空、
     # 原因区分=「設定」、エラーコード=ReportFolderNotFoundError
     record(
-        history_path,
+        history_db_path,
         entry=entry,
         project="案件集計",
         row=HistoryRow(
@@ -234,9 +257,12 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
         executed_at=dt.datetime(2026, 9, 26, 11, 0, 0),  # noqa: DTZ001
     )
 
+    # 履歴は SQLite に書いただけなので、CSV に書き出して検証する
+    export_history(history_db_path, history_csv_path)
+
     # 書き出された CSV を ``csv.reader`` で読み、列順が ``HistoryColumns.names()``
     # と一致し、各列の値が期待どおりであることを確認する
-    with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+    with history_csv_path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
         rows = list(reader)

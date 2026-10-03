@@ -87,7 +87,8 @@ def make_master(path: Path, rows: list[list], settings_rows: list[list] | None =
 def paths(tmp_path, monkeypatch):
     """管理表・履歴・保存先をまとめて用意し、共有定数へ注入する。
 
-    `src.paths.MASTER_PATH` / `src.paths.HISTORY_PATH` を tmp_path 配下の値へ
+    `src.paths.MASTER_PATH` と、comken 側の ``HISTORY_DB_PATH``（正本の
+    SQLite）／ ``HISTORY_PATH``（人が見る CSV）を tmp_path 配下の値へ
     差し替える。``output_path`` / ``_Paths`` ラッパーは呼び出し時点の
     ``src.paths`` モジュール変数を読むので、1 か所の patch ですべての参照経路
     に反映される。
@@ -133,11 +134,16 @@ def paths(tmp_path, monkeypatch):
             ["営業本部", str(base_path)],
         ],
     )
+    history_db_path = tmp_path / "ダウンロード履歴.sqlite3"
     history_path = tmp_path / "ダウンロード履歴.csv"
     monkeypatch.setattr(paths_module, "MASTER_PATH", master)
+    monkeypatch.setattr(
+        "comken.services.salesforce_downloader.paths.HISTORY_DB_PATH", history_db_path
+    )
     monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history_path)
     return {
         "master_path": master,
+        "history_db_path": history_db_path,
         "history_path": history_path,
         "base_path": base_path,
         # 概要のフォルダ名（``summary_folder_name()`` で安全化した後の値）。

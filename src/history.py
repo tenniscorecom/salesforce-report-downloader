@@ -1,12 +1,14 @@
-"""src/history.py — 履歴CSVへの書き込み（``record()``）。
+"""src/history.py — 履歴 SQLite への書き込み（``record()``）。
 
 **履歴の形式・読み取り・ロック・置き場所は comken 側にある。** ダウンローダーは
 「管理表の行から履歴に書く値を組み立てる」部分だけを持ち、書き込み自体は
 ``comken.services.salesforce_downloader.history.append_history()`` に委譲する。
+履歴の正本は SQLite で、人が見る CSV は ``download_scheduled()`` が
+``export_history()`` で書き出す（ このファイルでは扱わない ）。
 
 境界を履歴にした理由: 履歴の形式が変わるたびに、書く側（ダウンローダー）と
 読む側（comken を import して履歴を読む別プロジェクト）が食い違う事故を防ぐため、
-両者が `comken.services.salesforce_downloader.history` の ``COLUMNS`` /
+両者が `comken.services.salesforce_downloader.history` の ``HistoryColumns`` /
 ``HistoryRow`` / ``append_history()`` / ``HistoryFileLock`` を共通で使う。
 """
 
@@ -37,16 +39,17 @@ def record(
     executed_at: dt.datetime | None = None,
     folder: str | Path | None = None,
 ) -> None:
-    """履歴を1行追記する。ファイルが無ければ見出し行から作る。
+    """履歴 SQLite に1行追記する。
 
     履歴の本体（ロック・列検証・書き換え）は comken 側の ``append_history()`` に
     委譲する。**書き込まれる値（各列の中身・順番・空欄の扱い）は comken 側に
     移す前の ``record()`` と 1 文字も変えない**（管理番号・概要・レポートID・URL
     ・保存先・ファイル名・件数・秒数・原因区分・エラーコード・エラー内容の各列と
-    その順序）。
+    その順序）。人が見る CSV への書き出しは ``download_scheduled()`` 側で
+    ``export_history()`` を呼んで行うので、 ``record()`` は DB に書くだけ。
 
     Args:
-        path: 履歴 CSV のパス。
+        path: 履歴 SQLite のパス。親フォルダは ``append_history()`` が無ければ作成する。
         entry: 管理表1行。管理番号・概要・レポートID・URLはこの中身を履歴に出す。
             保存先は ``folder`` が指定されていればその値を、指定が無ければ
             ``output_path()`` で組み立て直した値を出す（`_resolved_folder()`）。

@@ -824,10 +824,16 @@ class LargeSalesReport(SoqlReport):
 
 - 管理表: `src/paths.py` の `SALESFORCE_DOWNLOADER_FOLDER` / `MASTER_FILENAME` / `MASTER_PATH`
 - 履歴: comken 側 `comken/services/salesforce_downloader/paths.py` の
-  `SALESFORCE_DOWNLOADER_FOLDER` / `HISTORY_FILENAME` / `HISTORY_PATH`
+  `SALESFORCE_DOWNLOADER_FOLDER` / `HISTORY_DB_FILENAME`（正本の SQLite） /
+  `HISTORY_CSV_FILENAME`（人が見る CSV）。直系の置き場所定数は `HISTORY_DB_PATH` /
+  `HISTORY_PATH` の 2 つ。
 
-履歴の置き場も `SALESFORCE_DOWNLOADER_FOLDER` を使うので、共有フォルダの
-パスを変えるときは **両方のファイル**を書き換える。
+履歴の SQLite 正本は**取得を実行する PC のローカル**に置く（共有サーバー /
+SMB 上に置かない。SQLite のロックがネットワーク越しに信頼できず、電源断・
+接続断で壊れるため）。`download_scheduled()` がロックの内側で
+`export_history()` を呼んで SQLite から人が見る CSV を書き出すので、
+閲覧用 CSV も `SALESFORCE_DOWNLOADER_FOLDER` 配下に置ける（読み書きが
+ローカルに閉じるので配置は自由に決めてよい）。
 
 ```python
 # src/paths.py
@@ -838,9 +844,11 @@ MASTER_PATH = SALESFORCE_DOWNLOADER_FOLDER / MASTER_FILENAME
 
 ```python
 # comken/services/salesforce_downloader/paths.py
-SALESFORCE_DOWNLOADER_FOLDER = Path(r"\\実際のサーバー\share\tools\salesforce")
-HISTORY_FILENAME = "ダウンロード履歴.csv"
-HISTORY_PATH = SALESFORCE_DOWNLOADER_FOLDER / HISTORY_FILENAME
+SALESFORCE_DOWNLOADER_FOLDER = Path(r"C:\comken\salesforce")  # 各 PC のローカル
+HISTORY_DB_FILENAME = "ダウンロード履歴.sqlite3"
+HISTORY_CSV_FILENAME = "ダウンロード履歴.csv"
+HISTORY_DB_PATH = SALESFORCE_DOWNLOADER_FOLDER / HISTORY_DB_FILENAME
+HISTORY_PATH = SALESFORCE_DOWNLOADER_FOLDER / HISTORY_CSV_FILENAME
 ```
 
 **設定ファイルへ集約せず、使う場所に書く。** 理由と、共有サーバーで書き換えを守る方法は
@@ -865,12 +873,13 @@ comken 側のドキュメントを参照。
 | 取ったCSVを加工する・DBへ入れる・通知する | 利用プロジェクト |
 | Salesforce への問い合わせ・保存・履歴書き込みの実行を変える | Salesforceレポートダウンローダー（`service.py`） |
 | ファイル名の付け方を変える | `src/paths.py` の `output_path()` ← **全プロジェクトに効く** |
-| 履歴の列・読み取り方を変える | `comken.services.salesforce_downloader.history` の `COLUMNS` / `read_history()` ← **全プロジェクトに効く** |
+| 履歴の列・読み取り方を変える | `comken.services.salesforce_downloader.history` の `HistoryColumns` / `read_history()` / `export_history()` ← **全プロジェクトに効く** |
 | 管理表に列を足す | `master.py` の `ReportEntry` |
 | 設定シートに列を足す | `group_settings.py` の `GroupSetting` |
 | スケジュールシートに列を足す | `schedule.py` の `ScheduleRule` |
 | 管理表の置き場所を変える | `src/paths.py` の `MASTER_PATH` |
-| 履歴の置き場所を変える | `comken/services/salesforce_downloader/paths.py` の `HISTORY_PATH` |
+| 履歴の正本（SQLite）の置き場所を変える | `comken/services/salesforce_downloader/paths.py` の `HISTORY_DB_PATH` |
+| 履歴の閲覧用 CSV の置き場所を変える | `comken/services/salesforce_downloader/paths.py` の `HISTORY_PATH` |
 | Salesforce の認証・API の叩き方を変える | `comken/toolbox/salesforce/`（Downloader ではない） |
 | 接続先の組織を足す | `comken/toolbox/salesforce/sites/` |
 | 2000件超のレポートをSOQLで取る | `soql_reports/reports/`（1レポート=1ファイルを置くだけ）＋管理表の「SOQL」列を`○` |

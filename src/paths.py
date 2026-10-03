@@ -13,7 +13,7 @@
 あるが、出力パスには使わない。``summary`` はフォルダ階層の 1 段目にだけ使う
 （人が業務ごとに探しやすくするため。ファイル名には混ぜない）。
 
-**履歴CSVの置き場所は `comken.services.salesforce_downloader.paths.HISTORY_PATH`
+**履歴の正本は `comken.services.salesforce_downloader.paths.HISTORY_DB_PATH`
 に移した（境界は履歴）— このファイルは管理表だけを管理する。** 履歴の形式や
 ロック・読み取り関数も同じく comken 側にあるので、ダウンローダーは自分で持たず
 comken の `append_history()` へ委譲する。
@@ -56,9 +56,10 @@ logger = logging.getLogger(__name__)
 # 配置時にエンジニアが決める値なので、コードに置く（config.ini には非エンジニアが
 # 変える値だけを置く方針）。
 #
-# **履歴（CSV）の置き場はここには無い。** 境界は履歴にしたので、
-# comken 側の `comken.services.salesforce_downloader.paths.HISTORY_PATH` を
-# 使う（書き換えるのは comken 側 1 か所だけ）。
+# **履歴（SQLite と閲覧用 CSV）の置き場はここには無い。** 境界は履歴にしたので、
+# comken 側の `comken.services.salesforce_downloader.paths` の
+# `HISTORY_DB_PATH`（正本の SQLite）と `HISTORY_PATH`（人が見る CSV の置き場所）
+# を使う（書き換えるのは comken 側 1 か所だけ）。
 #
 # フォルダを変えたい／ファイル名だけ変えたいときのため、フォルダ定数とファイル名
 # 定数を分けて、下のパス定数で組み立てる。

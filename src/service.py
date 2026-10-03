@@ -12,11 +12,17 @@ r"""src/service.py — 取得の本体。
 戻り値は `list[Path]` で、定期取得の呼び出し側が中身を読まず「取らせる」
 のが目的なので、`DataFrame` を返さない（役割の違いが戻り値の型に出ている）。
 
-**境界は履歴（ダウンロード履歴.csv）。** 履歴の形式・読み取り・ロック・置き場所は
+**境界は履歴（ダウンロード履歴.csv）。** 履歴の正本は SQLite（取得を実行する
+PC のローカル）で、人が見る CSV は SQLite から ``export_history()`` で
+書き出す形になった。履歴の形式・読み取り・ロック・置き場所は
 ``comken.services.salesforce_downloader.history`` / ``history_file_lock`` /
 ``paths`` 側に集約され、ダウンローダーは自分で持たない。``record()``
 （``src.history``）だけがダウンローダーに残った「管理表の行から履歴に書く値を
 組み立てる」部分で、実際の書き込みは comken の ``append_history()`` へ委譲する。
+CSV 書き出しの呼び出しも ``download_scheduled()`` の中で 1 か所だけ
+（ロックの内側・例外の有無に関わらず最後に 1 回） ``export_history()`` を
+呼ぶ形に統一し、書き出し失敗は ``HistoryExportError`` を ``logger.warning``
+だけにして握る。
 
 **急いでその場の最新値が必要なときは、`download_scheduled()` をスケジュール外に
 直接実行する。** それ専用のAPIは用意していない。実行タイミングを分ける必要が
@@ -29,13 +35,15 @@ r"""src/service.py — 取得の本体。
 このファイルが持つもの:
 - 1件を取得して保存し履歴に残す流れ
 - Salesforce への問い合わせ
+- 取得後に「人が見る CSV」を SQLite から書き出す呼び出し（`export_history`）
 
 ここに書かないもの:
 - 「このプロジェクトのときは」という分岐 → main.py / src/run.py
 - 管理表にどんな列があるか → src.sheets.master
 - 履歴の形式・読み取り関数 → comken.services.salesforce_downloader.history
 - 履歴のロック → comken.services.salesforce_downloader.history_file_lock
-- 履歴の置き場所（`HISTORY_PATH`）→ comken.services.salesforce_downloader.paths
+- 履歴の正本（`HISTORY_DB_PATH`）と閲覧用 CSV（`HISTORY_PATH`）の置き場所 →
+  comken.services.salesforce_downloader.paths
 - 履歴への値の組み立て（`record()`）→ src.history
 - Salesforce の認証・API の叩き方 → comken/toolbox/salesforce/
 - 取得済みファイルの取り出し（`output_path`）→ src.paths
@@ -60,6 +68,7 @@ from comken.core.timer import measure
 from comken.exceptions import (
     ComkenError,
     CSVError,
+    HistoryExportError,
     HistoryLockTimeoutError,
     HistoryWriteError,
     SalesforceReportTruncatedError,
@@ -74,6 +83,7 @@ from comken.services.salesforce_downloader.history import (
     ROUTE_BROWSER_FALLBACK_TRUNCATED,
     ROUTE_SOQL,
     HistoryRow,
+    export_history,
 )
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
 from comken.toolbox.office.csv import read_csv, write_csv
@@ -124,12 +134,26 @@ RESERVE_PATH_LIMIT = 1000
 
 
 def _history_path() -> Path:
-    """呼び出し時点の履歴CSVのパスを ``Path`` で返す。
+    """呼び出し時点の履歴 SQLite のパスを ``Path`` で返す。
 
-    履歴CSVの置き場は ``comken.services.salesforce_downloader.paths.HISTORY_PATH``
-    で、テストでは ``monkeypatch.setattr`` で comken 側のモジュール属性を
-    差し替える運用なので、呼び出し時点で ``history_paths.HISTORY_PATH`` を読む
-    （``from ... import HISTORY_PATH`` で名前を固定すると差し替えが効かない）。
+    履歴の正本は取得を実行する PC のローカルに置いた SQLite
+    （``comken.services.salesforce_downloader.paths.HISTORY_DB_PATH``）。
+    人が見るための CSV は同じ場所・同じファイル名で
+    ``HISTORY_PATH`` に残してあり、 ``download_scheduled()`` がロックの内側で
+    ``export_history()`` を呼んで SQLite から書き出す。
+
+    テストでは ``monkeypatch.setattr`` で comken 側のモジュール属性を
+    差し替える運用なので、呼び出し時点で ``history_paths.HISTORY_DB_PATH`` を読む
+    （``from ... import HISTORY_DB_PATH`` で名前を固定すると差し替えが効かない）。
+    """
+    return Path(history_paths.HISTORY_DB_PATH)
+
+
+def _history_csv_path() -> Path:
+    """人が見るための履歴 CSV のパスを ``Path`` で返す。
+
+    ``comken.services.salesforce_downloader.paths.HISTORY_PATH`` を呼び出し時点で読む
+    （テストで ``monkeypatch.setattr`` するため）。
     """
     return Path(history_paths.HISTORY_PATH)
 
@@ -202,19 +226,21 @@ def download_scheduled(
             保存したうえで**送出する。ログだけに出して正常終了すると、スケジューラや
             RPA 基盤から見て成功と区別が付かない。
     """
-    # **同時起動防止:** 履歴CSVとは別のロックファイル
-    # （``{history_path}.run.lock``）で、対象選定〜履歴追記をひとまとまりに
+    # **同時起動防止:** 履歴 SQLite とは別のロックファイル
+    # （``{history_db_path}.run``）で、対象選定〜履歴追記をひとまとまりに
     # プロセス間排他する。ロックが取れないときは別プロセスが進行中なので、
     # 例外にせず警告ログだけ出して ``[]`` を返す。
     # ``HistoryFileLock`` は名前のとおり履歴用ロックの部品だが、Windows の
-    # msvcrt ロックはファイル単位なので、``history_path`` とは違うファイルを
-    # 渡せば履歴読み書き（``{history_path}.lock``）と衝突しない。
+    # msvcrt ロックはファイル単位なので、``history_db_path`` とは違うファイルを
+    # 渡せば履歴読み書き（``{history_db_path}.lock``）と衝突しない。
+    # DB は取得を実行する PC のローカルに置くので、ロックも同じ PC の
+    # プロセス間排他として機能する（SMB 越しに置いてはいけない）。
     # ``ExitStack`` を使い、ロック取得**だけ**を try/except で囲う。本体側で
     # ``HistoryLockTimeoutError`` が上がっても、それは履歴読み書きの障害なので
     # そのまま伝播させる（``[]`` で握りつぶすと「履歴の障害」が別の実行に紛れて
     # 隠れる）。
-    history_path = _history_path()
-    run_lock_path = Path(f"{history_path}.run")
+    history_db_path = _history_path()
+    run_lock_path = Path(f"{history_db_path}.run")
     with contextlib.ExitStack() as stack:
         try:
             stack.enter_context(HistoryFileLock(run_lock_path, timeout=0))
@@ -223,7 +249,19 @@ def download_scheduled(
             # WinActor / RPA 基盤から見て誤報になるため、空リスト + 正常終了
             logger.warning("別の実行が進行中のため今回はスキップします: %s", run_lock_path)
             return []
-        return _download_scheduled_locked(project, filters_by_report=filters_by_report)
+        try:
+            return _download_scheduled_locked(project, filters_by_report=filters_by_report)
+        finally:
+            # ロックの内側で **1 回だけ** 人が見る CSV を SQLite から書き出す。
+            # 正常終了・例外終了のどちらでも、対象選定〜履歴追記まで済んだ
+            # タイミングで 1 回だけ書き出せばよい。ロックを取得できなかった
+            # スキップ（上の ``except``）では通らないので、スキップ時に
+            # 既存 CSV を意図せず上書きする事故も起きない。
+            # ``HistoryExportError`` は ``logger.warning`` だけにして握る
+            # （人が Excel で開いている等で書き出しできなくても、 取得自体は
+            # 止めない。 正本は SQLite 側にあるので書き出し失敗は取得失敗に
+            # ならない）。
+            _export_history_warn_only()
 
 
 def _download_scheduled_locked(
@@ -326,9 +364,32 @@ def _download_scheduled_locked(
     if failed:
         # 続けたぶん、最後に必ず知らせる（終了コードで落ちたことが分かるように）。
         # 直近の失敗を ``__cause__`` に乗せて送出する（呼び出し側が
-        # ``raise X from original`` 相当の診断情報を得られるようにする）
-        raise ScheduledDownloadFailedError(failed, _history_path()) from last_exception
+        # ``raise X from original`` 相当の履歴情報を得られるようにする）
+        # **人に見せるパスは「人が見る CSV」**（ ``HISTORY_PATH`` ）を渡し、
+        # 内部の SQLite パスはメッセージに混ぜない。
+        raise ScheduledDownloadFailedError(failed, _history_csv_path()) from last_exception
     return saved
+
+
+def _export_history_warn_only() -> None:
+    """``export_history()`` を ``logger.warning`` だけで握る形で呼ぶ。
+
+    ロックの内側・本体の ``_download_scheduled_locked()`` が正常終了しても
+    例外で終わっても、最後に 1 回だけ ``export_history()`` を呼ぶ。
+    ``HistoryExportError`` だけ握り、 それ以外の例外はそのまま伝播させる
+    （``HistoryExportError`` 以外の失敗は想定外なので、隠さず呼び出し側へ返す）。
+    """
+    db_path = _history_path()
+    csv_path = _history_csv_path()
+    try:
+        export_history(db_path, csv_path)
+    except HistoryExportError as exc:
+        logger.warning(
+            "履歴の閲覧用 CSV を書き出せませんでした: %s（%s）。取得結果は SQLite 側に"
+            "記録済みです。書き出し先が他のプロセスで開かれていないか確認してください",
+            csv_path,
+            exc,
+        )
 
 
 class _Attempt:

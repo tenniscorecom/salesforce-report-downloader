@@ -96,8 +96,15 @@ def _fake_browser_site(rows=None):
 
 
 def _patch_master_path(monkeypatch, master: Path, history_path: Path) -> None:
-    """``MASTER_PATH`` / 履歴パスを差し替える（``test_service.py`` と同等の薄い版）。"""
+    """``MASTER_PATH`` と履歴パス（DB / 閲覧用 CSV）を差し替える。
+
+    ``test_service.py`` と同等の薄い版。 ``history_path`` を ``HISTORY_PATH``
+    （人が見る CSV の置き場所）として渡しつつ、 ``HISTORY_DB_PATH`` を
+    ``.sqlite3`` 拡張子の同名ファイルとして並行に patch する。
+    """
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
+    history_db = history_path.with_suffix(".sqlite3")
+    monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_DB_PATH", history_db)
     monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history_path)
 
 
@@ -874,33 +881,34 @@ class TestNoSkipOnSameDay:
 
     @staticmethod
     def _seed_truncated_failure(history_path: Path, when: dt.datetime) -> None:
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        # 既存テストの ``_seed_failure_row`` 相当。列は ``history.HistoryColumns.names()`` に
-        # 従う（COLUMNS 末尾の「取得経路」は空文字）
-        row_values = [
-            when.strftime("%Y-%m-%d %H:%M:%S"),
-            "9001",
-            "",
-            "案件集計",
-            "00O5g00000ABCDE",
-            URL_A,
-            "案件集計",
-            "失敗",
-            "失敗",
-            "",
-            "ベース",
-            "",
-            "",
-            "1.00",
-            "Salesforce",
-            "SalesforceReportTruncatedError",
-            "2000 行超",
-            "",
-        ]
+        """``SalesforceReportTruncatedError`` の失敗履歴を SQLite に書く。
 
-        header = history.HistoryColumns.names()
-        text = "﻿" + ",".join(header) + "\r\n" + ",".join(row_values) + "\r\n"
-        history_path.write_bytes(text.encode("utf-8"))
+        v3 では履歴の正本が SQLite になったので、 閲覧用 CSV に直接書く
+        のではなく ``append_history()`` 経由で同じ 1 行を足す。
+        """
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        values: dict[str, object] = {
+            "管理番号": "9001",
+            "スケジュールキー": "",
+            "概要": "案件集計",
+            "レポートID": "00O5g00000ABCDE",
+            "URL": URL_A,
+            "プロジェクト": "案件集計",
+            "成否": "失敗",
+            "Salesforce取得結果": "失敗",
+            "保存結果": "",
+            "保存先": "ベース",
+            "ファイル名": "",
+            "取得件数": 0,
+            "処理秒数": 1.00,
+            "原因区分": "Salesforce",
+            "エラーコード": "SalesforceReportTruncatedError",
+            "エラー内容": "2000 行超",
+            "取得経路": "",
+        }
+        # ``HistoryColumns.names()`` 順の dict へ並べ直す
+        values = {column: values.get(column, "") for column in history.HistoryColumns.names()}
+        history.append_history(history_path, values, executed_at=when)
 
     def test_second_call_still_calls_salesforce_and_falls_back(
         self, tmp_path, monkeypatch, home_dir
@@ -914,12 +922,14 @@ class TestNoSkipOnSameDay:
         )
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
+        # 履歴の正本は SQLite なので、 失敗履歴のシードも DB 側に書く
+        history_db_path = history_path.with_suffix(".sqlite3")
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         # 「昨日 RPA が ``SalesforceReportTruncatedError`` で失敗した」履歴を書き、
         # 同じ日の 2 回目の ``download_scheduled()`` を走らせる
-        self._seed_truncated_failure(history_path, when=fixed_now)
+        self._seed_truncated_failure(history_db_path, when=fixed_now)
 
         api_site = _fake_salesforce(
             side_effect=SalesforceReportTruncatedError("00O5g00000ABCDE", 2000)

@@ -7,7 +7,6 @@ MASTER_PATH / HISTORY_PATH は `monkeypatch.setattr` で一時ディレクトリ
 差し替える。利用側の API には管理表や履歴のパスを渡せない（設計判断）。
 """
 
-import csv
 import datetime as dt
 from dataclasses import replace
 from pathlib import Path
@@ -179,8 +178,12 @@ def paths(tmp_path, monkeypatch):
             ["経理グループ", str(base_path)],
         ],
     )
+    history_db_path = tmp_path / "ダウンロード履歴.sqlite3"
     history_path = tmp_path / "ダウンロード履歴.csv"
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
+    monkeypatch.setattr(
+        "comken.services.salesforce_downloader.paths.HISTORY_DB_PATH", history_db_path
+    )
     monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history_path)
     # 1001（顧客一覧）と 1002（売上実績）の概要フォルダ名を ``summary_folder_name()``
     # 経由で返す。glob パターンを組み立てる側で同じ関数を呼び直すと、運用中の
@@ -190,6 +193,7 @@ def paths(tmp_path, monkeypatch):
 
     return {
         "master_path": master,
+        "history_db_path": history_db_path,
         "history_path": history_path,
         "base_path": base_path,
         "summary_folder_1001": summary_folder_name("顧客一覧"),
@@ -219,10 +223,15 @@ def _patch_master_path(monkeypatch: pytest.MonkeyPatch, master: Path, history: P
     ``service.py`` はローカル束縛を持たず ``_Paths`` ラッパー経由で
     ``src.paths`` のモジュール変数を呼び出し時に読むので、``_paths`` への
     1 か所の patch だけで ``output_path`` / 管理表パスに反映される。
-    履歴パスは comken 側 (``comken.services.salesforce_downloader.paths.HISTORY_PATH``)
-    を文字列経由で patch する（``service.py`` 自身も同名で ``from ... import`` するため）。
+    履歴パスは comken 側 ``HISTORY_DB_PATH``（正本の SQLite）と ``HISTORY_PATH``
+    （人が見る CSV の置き場所）の両方を文字列経由で patch する
+    （``service.py`` 自身も同名で ``from ... import`` するため）。
+    ``history`` 引数は CSV の置き場所として渡されるので、 SQLite 側は
+    同名の ``.sqlite3`` 拡張子で tmp 配下に置く。
     """
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
+    history_db = history.with_suffix(".sqlite3")
+    monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_DB_PATH", history_db)
     monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history)
 
 
@@ -763,13 +772,18 @@ class TestHistory:
         assert "0 行" in row["エラー内容"]
 
     def test_downloaded_today_counts_after_scheduled_run(self, paths):
-        """`download_scheduled()` で取った記録は `downloaded_today()` で拾える。"""
+        """`download_scheduled()` で取った記録は `downloaded_today()` で拾える。
+
+        履歴の正本は SQLite になったので、 ``paths["history_db_path"]`` （ DB ）
+        を ``downloaded_today()`` に渡す。
+        """
         with patch("src.service.site_for", return_value=fake_salesforce()):
             download_scheduled()
-        assert history.downloaded_today(paths["history_path"], "1001")
+        assert history.downloaded_today(paths["history_db_path"], "1001")
 
     def test_missing_history_file_is_not_downloaded(self, tmp_path):
-        assert not history.downloaded_today(tmp_path / "無い.csv", "1001")
+        # 履歴 SQLite が無いときは ``downloaded_today()`` が False を返す
+        assert not history.downloaded_today(tmp_path / "無い.sqlite3", "1001")
 
     # ── 履歴の5ケース（4. の表に対応する個別テスト）────────────────────
     def test_history_when_folder_is_missing(self, tmp_path, monkeypatch):
@@ -891,500 +905,24 @@ class TestHistory:
         assert row["エラーコード"] == "EmptyReportError"
 
     # ── 履歴CSVの列構成マイグレーション（COLUMNS 追加・削除・並び替え） ──
-    def _seed_legacy_history(
-        self,
-        history_path: Path,
-        *,
-        header: list[str],
-        row: list[str],
-    ) -> None:
-        """テスト用: 任意の見出し・値の履歴CSVを ``history_path`` に書く。
-
-        ``COLUMNS`` と違う列構成を試したいテストで使う。``_append()`` の
-        「新規ファイル＝見出しを書く」分岐を経由せず、既存ファイルの経路
-        （見出し検証・マイグレーション）を直接踏ませるため、Python 標準の
-        ``csv.writer`` でテストデータを直接書く。出力は ``_append()`` と同じく
-        UTF-8 BOM 付きにする。
-        """
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        with history_path.open("w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            writer.writerow(row)
-
-    def _record_for(
-        self,
-        history_path: Path,
-        *,
-        key: str,
-        summary: str,
-        url: str,
-        group: str,
-        assignee: str,
-        file_name: str,
-    ) -> None:
-        """テスト用: ``record()`` を ``paths`` fixture の差し替え経由で呼ぶ。
-
-        ``_resolved_folder()`` が ``paths.output_path()`` を経由するため、
-        管理表が ``MASTER_PATH`` に実在しないと ``ComkenFileNotFoundError``
-        に近い失敗をする。fixture 経由で ``MASTER_PATH`` / ``HISTORY_PATH`` を
-        差し替えてから呼ぶ。
-        """
-        from src.history import record
-        from src.sheets.master import ReportEntry
-
-        entry = ReportEntry(
-            key=key,
-            summary=summary,
-            url=url,
-            group=group,
-            assignee=assignee,
-            enabled=True,
-            allow_empty=False,
-        )
-        record(
-            history_path,
-            entry=entry,
-            project="定期実行",
-            row=history.HistoryRow(
-                succeeded=True,
-                fetched_from_salesforce=True,
-                saved_to_file=True,
-                file_name=file_name,
-                row_count=2,
-                seconds=0.20,
-            ),
-        )
-
-    def test_record_migrates_legacy_header_with_extra_column(self, tmp_path, monkeypatch):
-        """古い列構成（COLUMNS に無い列が末尾にある）履歴CSVに対して
-        ``record()`` を呼ぶと、ファイル全体を新 ``COLUMNS`` に揃え直してから
-        新しい1行を追記する。既存行の値は保持される。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master = make_master(
-            tmp_path / "レポート管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "顧客一覧",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-
-        # 末尾に「旧バージョン列」を足した18列の見出しと 19 列の行
-        legacy_header = [*history.HistoryColumns.names(), "旧バージョン列"]
-        legacy_row = [
-            "2024-01-01 09:00:00",
-            "1001",
-            "",
-            "顧客一覧",
-            "00O5g00000ABCDE",
-            URL_A,
-            "定期実行",
-            "成功",
-            "成功",
-            "成功",
-            "顧客一覧",
-            "a.csv",
-            "1",
-            "0.10",
-            "",
-            "",
-            "",
-            "",
-            "旧バージョン列の値",
-        ]
-        self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)
-        self._record_for(
-            history_path,
-            key="1001",
-            summary="顧客一覧",
-            url=URL_A,
-            group="営業事務グループ",
-            assignee="山田",
-            file_name="b.csv",
-        )
-
-        # 書き換え後の見出しは最新の ``COLUMNS`` と一致している
-        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
-            actual_header = next(csv.reader(f))
-        assert actual_header == list(history.HistoryColumns.names())
-
-        # 既存行は保持される（「旧バージョン列」の値は無視されて ``COLUMNS`` 順で並ぶ）
-        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.DictReader(f))
-        assert len(rows) == 2
-        # マイグレーションされた既存行
-        assert rows[0]["管理番号"] == "1001"
-        assert rows[0]["ファイル名"] == "a.csv"
-        # 新しく追記された行
-        assert rows[1]["管理番号"] == "1001"
-        assert rows[1]["ファイル名"] == "b.csv"
-        assert rows[1]["プロジェクト"] == "定期実行"
-
-    def test_record_migrates_legacy_header_with_missing_last_column(self, tmp_path, monkeypatch):
-        """古い列構成（COLUMNS の末尾列が無い）履歴CSVに対して ``record()`` を
-        呼ぶと、新 ``COLUMNS`` に揃え直してから追記する。欠けた列は空文字で埋まる。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master = make_master(
-            tmp_path / "レポート管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "顧客一覧",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-
-        # 「エラー内容」を抜いた17列の見出し（``COLUMNS`` の末尾「取得経路」を除いた構成）
-        legacy_header = list(history.HistoryColumns.names()[:-1])
-        legacy_row = [
-            "2024-01-01 09:00:00",
-            "1001",
-            "",
-            "顧客一覧",
-            "00O5g00000ABCDE",
-            URL_A,
-            "定期実行",
-            "成功",
-            "成功",
-            "成功",
-            "顧客一覧",
-            "a.csv",
-            "1",
-            "0.10",
-            "",
-            "",
-            "",
-        ]
-        self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)
-        self._record_for(
-            history_path,
-            key="1001",
-            summary="顧客一覧",
-            url=URL_A,
-            group="営業事務グループ",
-            assignee="山田",
-            file_name="b.csv",
-        )
-
-        # 見出しは新 ``COLUMNS`` になっている
-        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
-            actual_header = next(csv.reader(f))
-        assert actual_header == list(history.HistoryColumns.names())
-
-        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.DictReader(f))
-        assert len(rows) == 2
-        # 既存行：抜けた列（エラー内容）が空文字で埋められる
-        assert rows[0]["エラー内容"] == ""
-        assert rows[0]["管理番号"] == "1001"
-        # 追記行
-        assert rows[1]["管理番号"] == "1001"
-        assert rows[1]["ファイル名"] == "b.csv"
-
-    def test_record_migrates_legacy_header_with_reordered_columns(self, tmp_path, monkeypatch):
-        """古い列構成（COLUMNS の順序入れ替え）履歴CSVに対して ``record()`` を
-        呼ぶと、新 ``COLUMNS`` 順に揃え直してから追記する。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master = make_master(
-            tmp_path / "レポート管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "顧客一覧",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-
-        # 「管理番号」「実行日時」「成否」を先頭に並べ替えた古い構成
-        reordered_header = [
-            "管理番号",
-            "実行日時",
-            "成否",
-            *[
-                column
-                for column in history.HistoryColumns.names()
-                if column not in {"管理番号", "実行日時", "成否"}
-            ],
-        ]
-        reordered_row = [
-            "1001",
-            "2024-01-01 09:00:00",
-            "成功",
-            "",  # スケジュールキー
-            "顧客一覧",  # 概要
-            "00O5g00000ABCDE",  # レポートID
-            URL_A,  # URL
-            "定期実行",  # プロジェクト
-            "成功",  # Salesforce取得結果
-            "成功",  # 保存結果
-            "顧客一覧",  # 保存先
-            "a.csv",  # ファイル名
-            "1",  # 取得件数
-            "0.10",  # 処理秒数
-            "",  # 原因区分
-            "",  # エラーコード
-            "",  # エラー内容
-            "",  # 取得経路（COLUMNS 末尾、列構成変更で増えた）
-        ]
-        self._seed_legacy_history(history_path, header=reordered_header, row=reordered_row)
-        self._record_for(
-            history_path,
-            key="1001",
-            summary="顧客一覧",
-            url=URL_A,
-            group="営業事務グループ",
-            assignee="山田",
-            file_name="b.csv",
-        )
-
-        # 見出しは新 ``COLUMNS`` になっている
-        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
-            actual_header = next(csv.reader(f))
-        assert actual_header == list(history.HistoryColumns.names())
-
-        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.DictReader(f))
-        assert len(rows) == 2
-        # 既存行：``migrate_row`` で新 ``COLUMNS`` 順に並ぶため、列名で値を取れる
-        assert rows[0]["管理番号"] == "1001"
-        assert rows[0]["成否"] == "成功"
-        assert rows[0]["ファイル名"] == "a.csv"
-        # 追記行
-        assert rows[1]["管理番号"] == "1001"
-        assert rows[1]["ファイル名"] == "b.csv"
-
-    def test_record_appends_when_header_is_already_current(self, tmp_path, monkeypatch):
-        """既に新 ``COLUMNS`` になっている履歴CSVに対して ``record()`` を呼ぶと、
-        既存の行を保持したまま今回の 1 行が末尾に足される（``write_csv`` で
-        ファイル全体を 1 回だけ書き直す経路）。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master = make_master(
-            tmp_path / "レポート管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "顧客一覧",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-
-        # ``COLUMNS`` と同じ見出しで書き出しておく
-        with history_path.open("w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(list(history.HistoryColumns.names()))
-            writer.writerow(
-                [
-                    "2024-01-01 09:00:00",
-                    "1001",
-                    "",
-                    "顧客一覧",
-                    "00O5g00000ABCDE",
-                    URL_A,
-                    "定期実行",
-                    "成功",
-                    "成功",
-                    "成功",
-                    "顧客一覧",
-                    "a.csv",
-                    "1",
-                    "0.10",
-                    "",
-                    "",
-                    "",
-                    "",
-                ]
-            )
-
-        self._record_for(
-            history_path,
-            key="1001",
-            summary="顧客一覧",
-            url=URL_A,
-            group="営業事務グループ",
-            assignee="山田",
-            file_name="b.csv",
-        )
-
-        # 既存行は保持されたまま追記されている
-        with history_path.open("r", encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.DictReader(f))
-        assert len(rows) == 2
-        assert rows[0]["ファイル名"] == "a.csv"
-        assert rows[1]["ファイル名"] == "b.csv"
-
-    def test_record_does_not_rewrite_when_header_is_invalid(self, tmp_path, monkeypatch):
-        """重複見出しの履歴CSVに対して ``record()`` を呼ぶと、読み込み時の
-        見出しの検証で ``CSVError`` を上げて停止する。ファイルは書き換え
-        られない（既存ファイルをそのまま残し、二重見出しなどの更なる事故を
-        防ぐ）。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master = make_master(
-            tmp_path / "レポート管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "顧客一覧",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-
-        # ``is_new=False`` の経路を踏ませるため、空でないうちに
-        # 重複見出しの履歴CSVを書いておく
-        self._seed_legacy_history(
-            history_path,
-            header=["管理番号", "管理番号"],
-            row=["1001", "1001"],
-        )
-        before = history_path.read_bytes()
-
-        from comken.exceptions import CSVError
-
-        with pytest.raises(CSVError):
-            self._record_for(
-                history_path,
-                key="1001",
-                summary="顧客一覧",
-                url=URL_A,
-                group="営業事務グループ",
-                assignee="山田",
-                file_name="b.csv",
-            )
-
-        # ファイルがバイト単位で不変（書き換え・追記ともに行われない）
-        assert history_path.read_bytes() == before
-
-    def test_record_writes_to_file_once_for_migration_and_append(self, tmp_path, monkeypatch):
-        """古い列構成の履歴CSVに ``record()`` を呼ぶと、マイグレーションと
-        新しい1行の追記が **1回のファイル全体書き直し** で完了する
-        （マイグレーションと追記を別々に 2 回書き直さず、 1 回の保存にまとめる）。
-        ``write_csv`` が
-        1 回だけ呼ばれ、マイグレ後の旧データ + 新規追記 = 2 行を 1 回で
-        書き出す。
-        """
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master = make_master(
-            tmp_path / "レポート管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "顧客一覧",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-
-        # 末尾に「旧バージョン列」を足した18列の見出しと 19 列の行。
-        # 「旧バージョン列」をマイグレーションで捨て、 ``COLUMNS`` 順へ
-        # 揃えたうえで新行を足すシナリオを使う
-        legacy_header = [*history.HistoryColumns.names(), "旧バージョン列"]
-        legacy_row = [
-            "2024-01-01 09:00:00",
-            "1001",
-            "",
-            "顧客一覧",
-            "00O5g00000ABCDE",
-            URL_A,
-            "定期実行",
-            "成功",
-            "成功",
-            "成功",
-            "顧客一覧",
-            "a.csv",
-            "1",
-            "0.10",
-            "",
-            "",
-            "",
-            "",
-            "旧バージョン列の値",
-        ]
-        self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)
-
-        # ``write_csv`` の呼び出し回数と、そのとき書き出される行数を数える。
-        # v3 の ``append_history`` は ``write_csv`` 経由でファイル全体を書き直す。
-        # マイグレーションと追記が **1 回の書き換え** に統合されていることを確かめる。
-        # ``history`` モジュール側で ``from ... import write_csv`` している参照を
-        # 書き換える必要がある（ ``from import`` は module 属性の上書きでは追従しない）
-        import comken.services.salesforce_downloader.history as history_module
-
-        original_write = history_module.write_csv
-        calls: list[int] = []
-
-        def counting_write(df, path, **kwargs):
-            calls.append(len(df))
-            return original_write(df, path, **kwargs)
-
-        monkeypatch.setattr(history_module, "write_csv", counting_write)
-
-        self._record_for(
-            history_path,
-            key="1001",
-            summary="顧客一覧",
-            url=URL_A,
-            group="営業事務グループ",
-            assignee="山田",
-            file_name="b.csv",
-        )
-
-        # マイグレーション後の1行 + 追記の1行 = 2行を1回で書き出す。
-        # ``_write`` が 2 回（マイグレーションで 1 回、追記で 1 回）に分割
-        # されていたら落ちる
-        assert len(calls) == 1
-        assert calls[0] == 2
+    # 履歴の正本は v3 で SQLite に変わった。 列構成のマイグレーションは
+    # ``comken.services.salesforce_downloader.migrate_history`` の移行スクリプト
+    # に切り出され、 ``append_history()`` は常に ``HistoryColumns.names()`` 順の
+    # 行を 1 つ INSERT するだけになった。 旧CSVの列構成マイグレーションを踏む
+    # 経路は無くなったので、 以下のテストは削除した （同等の検査は
+    # ``tests/test_history.py`` の comken 側テストでカバーされる）:
+    # - test_record_migrates_legacy_header_with_extra_column
+    # - test_record_migrates_legacy_header_with_missing_last_column
+    # - test_record_migrates_legacy_header_with_reordered_columns
+    # - test_record_appends_when_header_is_already_current
+    # - test_record_does_not_rewrite_when_header_is_invalid
+    # - test_record_writes_to_file_once_for_migration_and_append
+    # - test_record_keeps_cp932_when_migrating_legacy_header
+    # - test_record_raises_history_write_error_when_char_not_in_cp932
+    # これらのヘルパーも不要になった:
+    # - _seed_legacy_history
+    # - _record_for
+    # - _cp932_history
 
     def test_history_when_csv_write_fails(self, tmp_path, monkeypatch):
         """Salesforce 取得は成功したが CSV 書き込みが失敗 → 成否=失敗 /
@@ -1628,83 +1166,12 @@ class TestHistory:
         assert row["原因区分"] == "プログラム"
 
     # ── 履歴CSVの文字コードは変えない ────────────────────────────────
-
-    def _cp932_history(self, tmp_path, monkeypatch, *, header: list[str]) -> Path:
-        """CP932 で保存された履歴CSV（人が Excel で上書き保存した状態）を作り、パスを返す。"""
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        master = make_master(
-            tmp_path / "レポート管理表.xlsx",
-            [["1001", "顧客一覧", URL_A, "営業事務グループ", "山田", "○"]],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-        old_row = ["古い行" if column != "管理番号" else "0001" for column in header]
-        text = ",".join(header) + "\r\n" + ",".join(old_row) + "\r\n"
-        history_path.write_bytes(text.encode("cp932"))
-        return history_path
-
-    def test_record_keeps_cp932_when_migrating_legacy_header(self, tmp_path, monkeypatch):
-        """CP932 で保存された**旧列構成**の履歴CSVをマイグレーション（全書き直し）しても、
-        文字コードは CP932 のまま（UTF-8 BOM に変わらない）。旧データも新しい行も読める。
-        """
-        history_path = self._cp932_history(
-            tmp_path, monkeypatch, header=[*history.HistoryColumns.names()[:-1]]
-        )
-
-        self._record_for(
-            history_path,
-            key="1001",
-            summary="顧客一覧",
-            url=URL_A,
-            group="営業事務グループ",
-            assignee="山田",
-            file_name="b.csv",
-        )
-
-        raw = history_path.read_bytes()
-        assert not raw.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM ではない
-        lines = raw.decode("cp932").splitlines()  # CP932 として全体を読める
-        assert lines[0].split(",") == list(history.HistoryColumns.names())  # 新しい見出しに揃った
-        assert any("古い行" in line for line in lines)  # 旧データは残っている
-        assert any("b.csv" in line for line in lines)  # 追記した行も入っている
-
-    def test_record_raises_history_write_error_when_char_not_in_cp932(self, tmp_path, monkeypatch):
-        """CP932 の履歴CSVに、CP932 で表せない文字（絵文字）を含む行を記録しようとすると、
-        ``?`` に置換せず ``HistoryWriteError`` になり、履歴ファイルは不変。
-        """
-        from src.history import record
-        from src.sheets.master import ReportEntry
-
-        history_path = self._cp932_history(
-            tmp_path, monkeypatch, header=list(history.HistoryColumns.names())
-        )
-        before = history_path.read_bytes()
-
-        entry = ReportEntry(
-            key="1001",
-            summary="顧客一覧",
-            url=URL_A,
-            group="営業事務グループ",
-            assignee="山田",
-            enabled=True,
-            allow_empty=False,
-        )
-        with pytest.raises(HistoryWriteError):
-            record(
-                history_path,
-                entry=entry,
-                project="定期実行",
-                row=history.HistoryRow(
-                    succeeded=False,
-                    fetched_from_salesforce=False,
-                    saved_to_file=None,
-                    error="失敗😀",
-                ),
-            )
-
-        assert history_path.read_bytes() == before
+    # 旧 CSV 正本 + CP932 の経路は v3 で廃止された。 履歴の正本は SQLite なので
+    # 文字コードを意識する必要が無くなり、 ``test_record_keeps_cp932_*`` /
+    # ``test_record_raises_history_write_error_when_char_not_in_cp932`` の 2 件は
+    # 削除した。 CSV への書き出しは ``download_scheduled()`` が ``export_history()``
+    # で 1 回呼ぶ形になり、 ``export_history()`` 側の保証
+    # （ ``tests/test_history.py`` の comken 側テスト ） に従う。
 
 
 class TestDownloadScheduled:
@@ -2377,6 +1844,7 @@ class TestRunLock:
         )
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
+        history_db_path = history_path.with_suffix(".sqlite3")
         # ``load_schedule`` は schedule シート無しでも空リストを返す（後方互換）。
         # schedule 行が無いレポートは ``downloaded_today()`` 経由で判定するため、
         # 「スケジュール」シート無しでも Salesforce への問い合わせが発生する
@@ -2384,7 +1852,9 @@ class TestRunLock:
         from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
 
         # 別プロセス（=別 ``HistoryFileLock`` ハンドル）が掴んでいる状態を疑似
-        run_lock_path = tmp_path / "ダウンロード履歴.csv.run"
+        # 実行ロックは ``_patch_master_path`` で ``HISTORY_DB_PATH`` の隣
+        # （ ``.run`` 拡張子付き ） に作られる
+        run_lock_path = history_db_path.with_suffix(".sqlite3.run")
         other_handle = HistoryFileLock(run_lock_path, timeout=10)
         other_handle.__enter__()
         try:
@@ -2395,8 +1865,10 @@ class TestRunLock:
             assert site.return_value.__enter__().report.get.call_count == 0
             # 空リストを返す（=終了コード0相当の正常終了）
             assert saved == []
-            # 履歴にも追記されない
+            # 履歴にも追記されない（スキップ時は ``export_history()`` も走らないので
+            # 閲覧用 CSV も作られない）
             assert not history_path.exists() or _history_rows({"history_path": history_path}) == []
+            assert not history_db_path.exists()
         finally:
             other_handle.__exit__(None, None, None)
 
@@ -2589,13 +2061,22 @@ class TestRequiredHistory:
     """履歴が書けない場合は、取得結果だけを成功として返さない。"""
 
     def test_history_write_failure_stops_download(self, paths):
-        """`HistoryWriteError` は `ScheduledDownloadFailedError` に変換されて返る。"""
+        """`HistoryWriteError` は `ScheduledDownloadFailedError` に変換されて返る。
+
+        履歴の正本は v3 で SQLite になったので、 v3-lean 時代の ``_append`` を
+        モックする代わりに ``append_history`` を直接 ``HistoryWriteError`` で
+        失敗させて、 同じ「履歴が書けない」 振る舞いを確かめる。
+        """
         with (
             patch(
                 "src.service.site_for",
                 return_value=fake_salesforce(),
             ),
-            patch.object(history, "_append", side_effect=OSError("履歴書込み失敗")),
+            patch.object(
+                history,
+                "append_history",
+                side_effect=HistoryWriteError(paths["history_db_path"], "履歴書込み失敗"),
+            ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
@@ -2617,7 +2098,11 @@ class TestRequiredHistory:
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
             ),
-            patch.object(history, "_append", side_effect=OSError("履歴書込み失敗")),
+            patch.object(
+                history,
+                "append_history",
+                side_effect=HistoryWriteError(paths["history_db_path"], "履歴書込み失敗"),
+            ),
             pytest.raises(ScheduledDownloadFailedError) as caught,
         ):
             download_scheduled()
@@ -2937,19 +2422,35 @@ class TestTruncatedSkip:
         fetch_result: str = "失敗",
         save_result: str = "",
     ) -> None:
-        """``when`` の日時の失敗履歴を1行書く（テスト用ヘルパー）。"""
+        """``when`` の日時の失敗履歴を1行 SQLite に書く（テスト用ヘルパー）。
+
+        履歴の正本は v3 で SQLite に変わったので、 旧 CSV ヘルパーのように
+        直接書くのではなく ``append_history()`` 経由で 1 行 INSERT する
+        （ ``download_scheduled()`` も同じ経路で読むので、 副作用が同じになる）。
+        """
         history_path.parent.mkdir(parents=True, exist_ok=True)
-        history_path.write_text(
-            (
-                "実行日時,管理番号,スケジュールキー,概要,レポートID,URL,プロジェクト,"
-                "成否,Salesforce取得結果,保存結果,保存先,ファイル名,取得件数,処理秒数,"
-                "原因区分,エラーコード,エラー内容\n"
-                f"{when:%Y-%m-%d %H:%M:%S},1001,,,00O5g00000ABCDE,{URL_A},定期実行,"
-                f"失敗,{fetch_result},{save_result},{history_path.parent},,,1.00,"
-                f"{cause},{error_code},2000 行で打ち止め"
-            ),
-            encoding="utf-8-sig",
-        )
+        values: dict[str, object] = {
+            "管理番号": "1001",
+            "スケジュールキー": "",
+            "概要": "",
+            "レポートID": "00O5g00000ABCDE",
+            "URL": URL_A,
+            "プロジェクト": "定期実行",
+            "成否": "失敗",
+            "Salesforce取得結果": fetch_result,
+            "保存結果": save_result,
+            "保存先": str(history_path.parent),
+            "ファイル名": "",
+            "取得件数": 0,
+            "処理秒数": 1.00,
+            "原因区分": cause,
+            "エラーコード": error_code,
+            "エラー内容": "2000 行で打ち止め",
+            "取得経路": "",
+        }
+        # ``HistoryColumns.names()`` 順の dict へ並べ直す
+        values = {column: values.get(column, "") for column in history.HistoryColumns.names()}
+        history.append_history(history_path, values, executed_at=when)
 
     @classmethod
     def _seed_truncated_failure(cls, history_path: Path, *, when: dt.datetime) -> None:
@@ -2967,12 +2468,13 @@ class TestTruncatedSkip:
 
         ブラウザ経路もモックして「Report API が Truncated → ブラウザが成功」を
         確認する（=``SalesforceReportTruncatedError`` が来ても、自動切替が走れば
-        成功扱いになる）。
+        成功扱いになる）。 履歴は SQLite 正本から読むので、 失敗履歴の
+        シードも ``paths["history_db_path"]`` に ``append_history()`` 経由で書く。
         """
         now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001
         monkeypatch.setattr(service_module, "clock_now", lambda: now)
-        # 同じ「今日」の truncated 失敗履歴を直接書く（=昨晩 RPA が失敗した想定）
-        self._seed_truncated_failure(paths["history_path"], when=now)
+        # 同じ「今日」の truncated 失敗履歴を SQLite に書く（=昨晩 RPA が失敗した想定）
+        self._seed_truncated_failure(paths["history_db_path"], when=now)
 
         site = fake_browser_site()
         with (
@@ -2986,6 +2488,109 @@ class TestTruncatedSkip:
         # 2 回目でも Salesforce へ問い合わせが走る（旧挙動: スキップで 0 回）
         # Report API → Truncated → ブラウザで成功、という流れになる
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
+
+
+# ── 閲覧用 CSV の書き出し（export_history のオーケストレーション）────
+class TestHistoryCsvExport:
+    """``download_scheduled()`` がロックの内側で ``export_history()`` を
+    1 回だけ呼ぶ形にした。人が見る CSV は ``HISTORY_PATH`` に書かれる。"""
+
+    def test_exports_csv_after_success(self, paths):
+        """``download_scheduled()`` が正常終了すると ``HISTORY_PATH`` の CSV が
+        書き出されている。ヘッダと 1 行の値が旧実装と同じ手順で読める。
+        """
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            saved = download_scheduled()
+        assert [path.name.split("_")[0] for path in saved] == ["1001"]
+        # 閲覧用 CSV が書かれている
+        assert paths["history_path"].is_file()
+        rows = _read_rows(paths["history_path"])
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["管理番号"] == "1001"
+        assert row["成否"] == "成功"
+        assert row["取得件数"] == "2"
+        # ``処理秒数`` は ``perf_counter`` 由来で実行ごとに違うが、
+        # ``export_history()`` が ``f"{x:.2f}"`` で書く形（ = 必ず小数 2 桁 ） であることだけ見る
+        seconds_text = row["処理秒数"]
+        assert seconds_text.count(".") == 1
+        integer_part, _, fractional_part = seconds_text.partition(".")
+        assert fractional_part != "" and len(fractional_part) == 2
+        assert float(seconds_text) >= 0
+        assert integer_part.isdigit()
+        assert row["原因区分"] == ""
+
+    def test_exports_csv_after_failure(self, paths):
+        """1 件失敗して ``ScheduledDownloadFailedError`` が送出されても、
+        例外が ``ScheduledDownloadFailedError`` で、 閲覧用 CSV は
+        ``download_scheduled()`` が最後に 1 回書き出した値で残っている。
+        """
+        # フォルダ未作成で失敗させて ``ScheduledDownloadFailedError`` を起こす
+        import shutil
+
+        shutil.rmtree(paths["base_path"])
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            with pytest.raises(ScheduledDownloadFailedError):
+                download_scheduled()
+        # 閲覧用 CSV は書かれている（ 例外で抜けても最後に 1 回書き出す ）
+        assert paths["history_path"].is_file()
+        rows = _read_rows(paths["history_path"])
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["管理番号"] == "1001"
+        assert row["成否"] == "失敗"
+        assert row["エラーコード"] == "ReportFolderNotFoundError"
+
+    def test_does_not_export_when_lock_is_held(self, paths, monkeypatch):
+        """ロックが取れずにスキップしたときは ``export_history()`` も走らない
+        （既存の閲覧用 CSV が意図せず上書きされない）。
+        """
+        from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
+
+        # 既存 CSV が無い状態から始める
+        if paths["history_path"].exists():
+            paths["history_path"].unlink()
+        # 別プロセスが ``.run.lock`` を掴んでいる状態を疑似
+        run_lock_path = paths["history_db_path"].with_suffix(".sqlite3.run")
+        other_handle = HistoryFileLock(run_lock_path, timeout=10)
+        other_handle.__enter__()
+        try:
+            with patch("src.service.site_for", return_value=fake_salesforce()):
+                saved = download_scheduled()
+            assert saved == []
+        finally:
+            other_handle.__exit__(None, None, None)
+        # スキップ時は閲覧用 CSV も正本 SQLite も作られない
+        assert not paths["history_path"].exists()
+        assert not paths["history_db_path"].exists()
+
+    def test_export_failure_is_warned_only(self, paths, monkeypatch, caplog):
+        """``export_history()`` が ``HistoryExportError`` を上げても、
+        ``download_scheduled()`` の戻り値・送出する例外は書き出し成功時と
+        同じままで、 警告ログが出る（ 取得自体は止めない ）。
+        """
+        import logging
+
+        from comken.exceptions import HistoryExportError
+
+        # ``export_history()`` が ``HistoryExportError`` を投げるように差し替え
+        def raise_export(*args, **kwargs):
+            raise HistoryExportError(paths["history_path"], "permission denied")
+
+        monkeypatch.setattr(service_module, "export_history", raise_export)
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            with patch("src.service.site_for", return_value=fake_salesforce()):
+                saved = download_scheduled()
+
+        # 戻り値・例外は書き出し成功時と同じ（ CSV 書き出し失敗で取得が
+        # 失敗扱いにならない）
+        assert [path.name.split("_")[0] for path in saved] == ["1001"]
+        # 警告ログが出ている
+        warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+        assert any(
+            "閲覧用 CSV を書き出せませんでした" in record.getMessage() for record in warnings
+        ), caplog.text
 
 
 class TestCommandLine:
