@@ -51,9 +51,7 @@ from src.service import download_scheduled
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
     """CSV を読み、全セルを文字列（空欄は ""）にした行のリストを返す。"""
-    return read_csv(path, columns=None, dtype=str, keep_default_na=False).to_dict(
-        orient="records"
-    )
+    return read_csv(path, columns=None, dtype=str, keep_default_na=False).to_dict(orient="records")
 
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"

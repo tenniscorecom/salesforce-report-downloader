@@ -232,8 +232,8 @@ def _write_csv(path: Path, table: pd.DataFrame) -> None:
     ``service._write_csv()`` と同じ組み立て方。複数のプロジェクトが同時に呼ぶので、
     直接書くと**読んでいる最中のファイルが半端な状態**になりうる。
 
-    ``comken.toolbox.office.csv.write_csv`` が ``utf-8-sig`` を既定で書き出すため、
-    ``CSV`` クラスの既定と互換。``NaN`` は空文字で書き出される。
+    文字コードは ``write_csv`` の既定（新規ファイルは UTF-8 BOM 付き）。
+    ``None`` / ``NaN`` は空文字として書き出される。
     """
     with atomic_write(path) as tmp:
         write_csv(table, tmp)

@@ -10,7 +10,7 @@ r"""src/service.py — 取得の本体。
 `download_scheduled()` は「**今この瞬間にまとめて取りに行く**」。管理表で
 `有効` になっているレポートを全て対象に、定期実行のプロジェクトから呼ばれる。
 戻り値は `list[Path]` で、定期取得の呼び出し側が中身を読まず「取らせる」
-のが目的なので、`Table` を返さない（役割の違いが戻り値の型に出ている）。
+のが目的なので、`DataFrame` を返さない（役割の違いが戻り値の型に出ている）。
 
 **境界は履歴（ダウンロード履歴.csv）。** 履歴の形式・読み取り・ロック・置き場所は
 ``comken.services.salesforce_downloader.history`` / ``history_file_lock`` /
@@ -701,7 +701,7 @@ def _fetch_with_auto_fallback(
 
     - ``route``: 最終的に使った取得経路（``ROUTE_API`` / ``ROUTE_SOQL`` /
       ``ROUTE_BROWSER`` / 自動切替2種）
-    - ``table``: 取得できた Table
+    - ``table``: 取得できた DataFrame
 
     Report API 経路以外（SOQL・最初からブラウザ）のときは自動切替せず、``_fetch()`` の
     戻り値をそのまま ``route=ROUTE_SOQL`` / ``route=ROUTE_BROWSER`` で返す。
@@ -849,7 +849,7 @@ def _fetch(
 
 
 def _fetch_via_soql(entry: ReportEntry) -> pd.DataFrame:
-    """SOQL経由で entry を取得し、`_fetch()` と同じ Table を返す。
+    """SOQL経由で entry を取得し、`_fetch()` と同じ DataFrame を返す。
 
     ``entry.key`` と同じ ``KEY`` を持つ ``SoqlReport`` を comken の
     ``soql_report_for()`` で探す。管理表の「SOQL」列が「○」なのに登録が無い
@@ -889,7 +889,7 @@ def _fetch_via_browser(
     *,
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
 ) -> pd.DataFrame:
-    """ブラウザ経由で entry を取得し、`_fetch()` と同じ Table を返す。
+    """ブラウザ経由で entry を取得し、`_fetch()` と同じ DataFrame を返す。
 
     **ログインの扱い:** ブラウザを新規に開くとき（使い回し中でないとき）は
     ``login_with_credentials()`` を呼び、ID/パスワードを DPAPI から自動入力した
@@ -1003,7 +1003,7 @@ def _save(
     """行数と `allow_empty` に応じて保存先へ書き込み、書き終わったパスを返す。
 
     0 行・`allow_empty` × → `EmptyReportError`（=失敗）／○ → 空 CSV を置く。
-    ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
+    ``report.get()`` が返す DataFrame の列名を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
 
     保存先は ``paths.output_path()`` が返す単一のパス
@@ -1079,10 +1079,8 @@ def _write_csv(path: Path, table: pd.DataFrame) -> None:
     複数のプロジェクトが同時に呼ぶので、直接書くと**読んでいる最中のファイルが
     半端な状態**になりうる。同じフォルダ内の置き換えは一度に入れ替わる。
 
-    ``comken.toolbox.office.csv.write_csv`` が ``utf-8-sig`` を既定で書き出すため、
-    ``CSV`` クラスの既定と互換（v2 の ``CSV.write_csv`` も ``utf-8-sig``）。
-    ``NaN`` は空文字として書き出されるので、 ``empty=''`` 相当の挙動を保てる
-    （v2 では ``Table.replace`` が空セルを空文字で書き出す仕様だった）。
+    文字コードは ``write_csv`` の既定（新規ファイルは UTF-8 BOM 付き）。
+    ``None`` / ``NaN`` は空文字として書き出される。
     """
     with atomic_write(path) as tmp:
         write_csv(table, tmp)

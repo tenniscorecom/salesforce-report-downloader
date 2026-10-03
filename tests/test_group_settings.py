@@ -1,8 +1,7 @@
 """``src.sheets.group_settings`` の動作を検証する。
 
 Excel を作って ``GroupSetting.load()`` を直接呼ぶ経路と、``load_group_settings()``
-（キャッシュ経由）の経路を両方確かめる。``tests/test_master.py`` /
-``tests/test_schedule.py`` の「``Excel`` クラスで ``Table`` を作る」パターンを踏襲。
+（キャッシュ経由）の経路を両方確かめる。
 """
 
 from pathlib import Path

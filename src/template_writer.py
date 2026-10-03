@@ -47,16 +47,15 @@ _TEMPLATE_FONT_NAME = "Noto Sans JP"
 # 想定行数より十分大きく取っておく（テンプレから1000行以上増える運用は基本無い）
 _DATA_VALIDATION_ROWS = 1000
 
-# 記入例の行に付ける背景色。本物のデータと見分けが付くよう、薄い灰色系で
-# 記入例の行に付ける背景色（薄い灰色系）。 v2 の ``Color.LIGHT_GRAY`` 相当。
-# 本物のデータと見分けが付く程度の濃さに留め、 強く出すと「エラー行」に見えるため
+# 記入例の行に付ける背景色（薄い灰色）。本物のデータと見分けが付く程度の濃さに
+# 留める（強く出すと「エラー行」に見えるため）
 _EXAMPLE_FILL = PatternFill(fill_type="solid", fgColor="D9D9D9")
 
 # 「スケジュール」シートで「取得頻度」と矛盾する「曜日」「日付」セルに付ける
 # エラー色（薄い赤 + 濃い赤文字）。``ScheduleRule.validate()`` で読み込み時に
 # エラー化されるので、ここでの色付けは **書き間違いを編集時点で気づかせる**
 # 補助。``choices`` のセルの塗りつぶし色（=エラー）として Excel の表示に
-# 馴染むよう、``Color.PINK`` 相当の薄い赤 + 濃い赤文字を使う
+# 馴染むよう、薄い赤 + 濃い赤文字を使う
 _ERROR_FILL = PatternFill(fill_type="solid", fgColor="FFC7CE")  # 薄い赤
 _ERROR_FONT = Font(color="9C0006")  # 濃い赤
 
@@ -381,8 +380,8 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
             "パスが正しいか、ファイルが存在するかを確認してください。",
         )
     book = load_workbook(source)
-    # `comken.toolbox.excel.Excel.create_data_sheet()` は `PY_` プレフィックスを
-    # 自動付与するため、シート探索も `PY_` 付きで行う。プレフィックス無しの
+    # 雛形のデータシートは `PY_` プレフィックス付きで作るため、
+    # シート探索も `PY_` 付きで行う。プレフィックス無しの
     # 旧シート名もフォールバックとして受け付ける（手作業で「スケジュール」と
     # 付けた既存ブックへの後付けを想定）
     prefixed_sheet_name = f"PY_{SCHEDULE_SHEET_NAME}"
@@ -966,7 +965,6 @@ def _auto_width(sheet: Worksheet, *, max_width: int | None = None) -> None:
 def _add_excel_table(sheet: Worksheet, headers: list[str], row_count: int, row_cls: type) -> None:
     """``PY_T_<クラス名>`` という名前で Excel テーブルを追加する。
 
-    v2 の ``Excel.create_data_sheet(...).create_table(name, table)`` と同じ結果。
     ``row_count`` が 0 のときは Excel のテーブルを作れない（見出し行が必要）ので、
     スキップして ``PY_T_`` 名前テストは ``EXAMPLES`` 付き呼び出しで守られる。
     """
@@ -980,8 +978,7 @@ def _add_excel_table(sheet: Worksheet, headers: list[str], row_count: int, row_c
     # 範囲は見出し行（データ行の 1 つ上）から始める
     table_ref = f"A{_FIRST_DATA_ROW - 1}:{last_column_letter}{last_data_row}"
     table = Table(displayName=f"PY_T_{row_cls.__name__}", ref=table_ref)
-    # 既定のテーブル書式（罫線・縞模様）を有効にする。 v2 の ``create_table`` も
-    # 暗黙にスタイルを付けていたため、 同じ見た目になる
+    # 既定のテーブル書式（罫線・縞模様）を付ける
     table.tableStyleInfo = TableStyleInfo(
         name="TableStyleMedium2",
         showFirstColumn=False,

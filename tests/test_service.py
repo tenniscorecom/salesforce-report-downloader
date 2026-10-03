@@ -39,9 +39,7 @@ from src.sheets.master import load_master, shared_report_ids
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
     """CSV を読み、全セルを文字列（空欄は ""）にした行のリストを返す。"""
-    return read_csv(path, columns=None, dtype=str, keep_default_na=False).to_dict(
-        orient="records"
-    )
+    return read_csv(path, columns=None, dtype=str, keep_default_na=False).to_dict(orient="records")
 
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
@@ -117,9 +115,7 @@ def make_master(
     ``0件あり`` / ``2000件超`` / ``SOQL`` は空文字で埋めても読み込み側で
     ``False`` 既定として扱われる）。
     """
-    table_rows = [
-        _reorder_master_row_to_new_order(_row(*row)) for row in rows
-    ]
+    table_rows = [_reorder_master_row_to_new_order(_row(*row)) for row in rows]
     df_master = pd.DataFrame(table_rows, columns=HEADERS)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df_master.to_excel(writer, sheet_name="PY_管理表", index=False)
@@ -1188,8 +1184,8 @@ class TestHistory:
 
     def test_record_appends_when_header_is_already_current(self, tmp_path, monkeypatch):
         """既に新 ``COLUMNS`` になっている履歴CSVに対して ``record()`` を呼ぶと、
-        既存の行を保持したまま今回の 1 行が末尾に足される（ ``CSV`` クラスの
-        ``replace()`` でファイル全体を 1 回だけ書き直す経路）。
+        既存の行を保持したまま今回の 1 行が末尾に足される（``write_csv`` で
+        ファイル全体を 1 回だけ書き直す経路）。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -1255,7 +1251,7 @@ class TestHistory:
         assert rows[1]["ファイル名"] == "b.csv"
 
     def test_record_does_not_rewrite_when_header_is_invalid(self, tmp_path, monkeypatch):
-        """重複見出しの履歴CSVに対して ``record()`` を呼ぶと、``CSV`` クラスが
+        """重複見出しの履歴CSVに対して ``record()`` を呼ぶと、読み込み時の
         見出しの検証で ``CSVError`` を上げて停止する。ファイルは書き換え
         られない（既存ファイルをそのまま残し、二重見出しなどの更なる事故を
         防ぐ）。
@@ -1308,7 +1304,7 @@ class TestHistory:
         """古い列構成の履歴CSVに ``record()`` を呼ぶと、マイグレーションと
         新しい1行の追記が **1回のファイル全体書き直し** で完了する
         （マイグレーションと追記を別々に 2 回書き直さず、 1 回の保存にまとめる）。
-        ``CSV`` クラスの ``with`` ブロックを抜けるときの ``CSV._write`` が
+        ``write_csv`` が
         1 回だけ呼ばれ、マイグレ後の旧データ + 新規追記 = 2 行を 1 回で
         書き出す。
         """
@@ -1394,9 +1390,8 @@ class TestHistory:
         """Salesforce 取得は成功したが CSV 書き込みが失敗 → 成否=失敗 /
         Salesforce取得結果=成功 / 保存結果=失敗 / エラーコード=送出された例外クラス名。
 
-        2026-09 に履歴CSV書き込みも ``comken.toolbox.csv.CSV`` クラスを使うよう
-        なったため、``src.service.CSV._write`` を直接モックすると履歴CSV書き込み
-        経路でも同じモックが発火してしまう。保存先CSV書き込みだけを失敗させる
+        履歴CSV書き込みも同じ ``write_csv`` を使うため、``write_csv`` を直接
+        モックすると履歴CSV書き込み経路でも同じモックが発火してしまう。保存先CSV書き込みだけを失敗させる
         ために ``service._write_csv()`` 関数を直接モックする。
         """
         base_path = tmp_path / "ベース"
@@ -1555,9 +1550,8 @@ class TestHistory:
     def test_cause_is_file_when_csv_write_fails(self, tmp_path, monkeypatch):
         """CSV 書き込みが OSError で失敗 → 「ファイル」（共有サーバー・権限）。
 
-        2026-09 に履歴CSV書き込みも ``comken.toolbox.csv.CSV`` クラスを使うよう
-        なったため、``CSV._write`` を直接モックすると履歴CSV書き込み経路でも
-        同じモックが発火してしまう。保存先CSV書き込みだけを失敗させるために
+        履歴CSV書き込みも同じ ``write_csv`` を使うため、``write_csv`` を直接
+        モックすると履歴CSV書き込み経路でも同じモックが発火してしまう。保存先CSV書き込みだけを失敗させるために
         ``service._write_csv()`` 関数を直接モックする。
         """
         base_path = tmp_path / "ベース"

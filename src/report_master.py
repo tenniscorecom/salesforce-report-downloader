@@ -425,11 +425,7 @@ def read_raw_rows(source: Path, sheet_name: str) -> list[dict[str, Any]]:
             calc_row = next(calc_rows_iter, [None] * len(raw_row))
             # 数式セル（ ``raw`` 側が ``=`` 始まりで ``calc`` 側が ``None`` ）を検出
             for raw_cell, calc_cell in zip(raw_row, calc_row, strict=True):
-                if (
-                    isinstance(raw_cell, str)
-                    and raw_cell.startswith("=")
-                    and calc_cell is None
-                ):
+                if isinstance(raw_cell, str) and raw_cell.startswith("=") and calc_cell is None:
                     logger.debug(
                         "管理表に未計算の数式を検出: path=%s, sheet=%s",
                         source,
@@ -450,13 +446,11 @@ def read_raw_rows(source: Path, sheet_name: str) -> list[dict[str, Any]]:
     finally:
         raw_book.close()
         calc_book.close()
-    # 空セルは ``NaN`` で返ってくるが、 v2 では ``None`` / ``""`` を想定していた
-    # ため、空欄判定・既定値適用が壊れないよう空文字に揃える
+    # 空セルは ``NaN`` で返ってくる。空欄判定・既定値適用は ``""`` を前提に
+    # しているので、空文字に揃える
     out_records: list[dict[str, Any]] = []
     for row in df.to_dict(orient="records"):
-        out_records.append(
-            {key: ("" if pd.isna(value) else value) for key, value in row.items()}
-        )
+        out_records.append({key: ("" if pd.isna(value) else value) for key, value in row.items()})
     if any(
         isinstance(value, str) and value.startswith("=")
         for raw_row in out_records

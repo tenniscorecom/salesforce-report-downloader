@@ -105,9 +105,7 @@ def record(
     # へ並べ直す（``実行日時`` は ``append_history`` 側で ``timestamp`` から組み立てる
     # ため、ここでは含めない）
     values = {
-        column: values.get(column, "")
-        for column in HistoryColumns.names()
-        if column != "実行日時"
+        column: values.get(column, "") for column in HistoryColumns.names() if column != "実行日時"
     }
     append_history(path, values, executed_at=timestamp)
     logger.debug("履歴追記完了: path=%s", path)

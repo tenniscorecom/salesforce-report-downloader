@@ -1,7 +1,7 @@
 """SOQL レポート取得の基盤（``download_soql_reports()``）を、Salesforce をモックして検証する。
 
 実際のレポート（サブクラス）は作らず、テスト内でダミーの ``SoqlReport`` サブクラスを
-定義して使う。``SalesforceBase.query()`` をモックして Table を返す。
+定義して使う。``SalesforceBase.query()`` をモックして DataFrame を返す。
 """
 
 from __future__ import annotations
@@ -151,7 +151,7 @@ class TestDownloadSoqlReports:
     """``download_soql_reports()`` のメインシナリオ。"""
 
     def test_saves_csv_in_folder(self, folder):
-        """取得した Table が ``FOLDER / 概要 /`` 配下へ CSV として保存される。
+        """取得した DataFrame が ``FOLDER / 概要 /`` 配下へ CSV として保存される。
 
         2026-09 に定期取得と SOQL レポートを「ベース / 概要」の 2 階層に揃えたので、
         ファイルは ``FOLDER`` 直下ではなく ``FOLDER / 概要 /`` 配下に作られる

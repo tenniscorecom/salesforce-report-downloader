@@ -90,7 +90,7 @@ class TestFetchRoutesToSoql:
 
 
 class TestFetchViaSoql:
-    """_fetch_via_soql() — SOQL経由で取得し、_fetch() と同じ Table を返す。"""
+    """_fetch_via_soql() — SOQL経由で取得し、_fetch() と同じ DataFrame を返す。"""
 
     def test_returns_table_from_query(self):
         table = MagicMock()

@@ -73,7 +73,7 @@ def _expected_row_bytes(
     writer = csv.writer(buffer)
     writer.writerow(list(HistoryColumns.names()))
     writer.writerow(values)
-    # ``record()`` 側の実装は UTF-8 BOM 付きで書く（``CSV`` クラスの既定）ので、
+    # ``record()`` 側の実装は新規ファイルを UTF-8 BOM 付きで書く（``write_csv`` の既定）ので、
     # 期待側もそれを再現する
     return ("﻿" + buffer.getvalue()).encode("utf-8")
 

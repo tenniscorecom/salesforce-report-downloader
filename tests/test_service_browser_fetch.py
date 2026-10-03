@@ -79,7 +79,7 @@ class TestFetchRoutesToBrowser:
 
 
 class TestFetchViaBrowser:
-    """_fetch_via_browser() — ブラウザ経由で取得し、_fetch() と同じ Table を返す。"""
+    """_fetch_via_browser() — ブラウザ経由で取得し、_fetch() と同じ DataFrame を返す。"""
 
     def test_returns_table_parsed_from_exported_csv(self):
         site_class, _site_instance = _fake_browser_site()
