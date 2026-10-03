@@ -155,8 +155,8 @@ def create_template(
         len(headers),
     )
 
-    # 同名シートが残っていると ``create_data_sheet()`` が ``SheetAlreadyExistsError``
-    # を投げるため、書き込み前に既存シートを削除する。ファイルが無ければ何もしない
+    # 同名シートが残っていると二重に作られるため、書き込み前に既存シートを削除する。
+    # ファイルが無ければ何もしない
     _delete_existing_template_sheets(path, [row_cls.SHEET_NAME])
 
     # ``read_excel`` 側と整合させるため、 ``PY_`` プレフィックス付きのシート名で
@@ -499,10 +499,9 @@ def _existing_rows_or_none(
 def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) -> None:
     """既存ファイルから対象のデータシートと「記入方法」シートを削除する。
 
-    ``create_template()`` / ``create_combined_workbook()`` が、同じ名前のシートが
-    既に存在する場合に ``SheetAlreadyExistsError`` で止まるのを避けるための準備。
-    書き込み直前に呼び出して、シートを消した状態で ``Excel.create_data_sheet()``
-    に進む。
+    ``create_template()`` / ``create_combined_workbook()`` が、同じ名前のシートを
+    二重に作らないための準備。書き込み直前に呼び出して、シートを消した状態で
+    ``_write_data_sheet()`` に進む。
 
     ``PY_T_<クラス名>`` の Excel テーブル定義（ ``definedNames`` ）も一緒に消す。
     残しておくと次に ``create_template`` で同名テーブルを追加しようとしたときに
@@ -529,9 +528,8 @@ def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) ->
             del book[full_name]
             deleted = True
             logger.debug("既存データシートを削除: path=%s, sheet=%s", path, full_name)
-    # テーブル定義（ ``PY_T_<クラス名>`` ）もまとめて削除。 v2 は ``Excel`` が
-    # ``create_data_sheet`` 時にテーブルを作り直していたため不要だったが、
-    # openpyxl 直書きでは前の定義が残ると ``ValueError`` になるため
+    # テーブル定義（ ``PY_T_<クラス名>`` ）もまとめて削除する。前の定義が残ると
+    # openpyxl が同名テーブルの追加で ``ValueError`` を上げるため
     defined_names = book.defined_names
     if defined_names is not None:
         for table_name in list(defined_names):
@@ -609,7 +607,7 @@ def _finalize_sheet(
     mark_as_example: bool = True,
     row_cls: type[MasterRow] | None = None,
 ) -> None:
-    """`create_data_sheet` で書き出したシートに雛形用の装飾を後付けする。
+    """`_write_data_sheet` で書き出したシートに雛形用の装飾を後付けする。
 
     ``mark_as_example=False`` のときは記入例用の薄い背景色を付けない
     （マイグレーションされた実データは白背景のままにする）。

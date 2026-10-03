@@ -53,12 +53,11 @@ for item in Item.load():        # 読む（型変換・検証込み）
 | `item.note` | 「備考」列（既定値ありの列は **見出しごと無くても読める**） |
 
 **`SHEET_NAME` に書く名前には `PY_` を付けない。** 上の例なら `SHEET_NAME = "一覧"`
-だが、実際に Excel 上へ作られる／読みに行くシート名は `comken.toolbox.excel.Excel`
-の規約で `PY_一覧` になる（`create_data_sheet()` / `data_sheet()` が自動で補う）。
+だが、実際に Excel 上へ作られる／読みに行くシート名は `PY_一覧` になる（雛形を作る
+`src.template_writer` が付け、読み込む `src.report_master` は `PY_` 付きを優先して探す）。
 テーブル名も同様に `PY_T_` が前置される。**Python 側のコードや `SHEET_NAME` の
 宣言、このドキュメントの記述はすべて生の名前（プレフィックス無し）で書けばよく、
-プレフィックスの付け外しはライブラリ側が両方向で自動的に行う**（詳細は
-[Excel（excel）](excel.md) を参照）。
+プレフィックスの付け外しはこの 2 つが自動的に行う**。
 
 ---
 

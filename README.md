@@ -160,10 +160,9 @@ saved = sorted(folder.glob(f"{CUSTOMER_LIST}_*.csv"))
 
 ## comken への依存
 
-このバッチは comken を**外部ライブラリとして**利用する。v3 の comken は
-`pandas.DataFrame` が基本形になったため、 `Table` / `CSV` / `Excel` クラスは
-存在しない。代わりに `from comken.toolbox.office import read_csv, write_csv,
-read_excel, write_excel` の関数で読み書きし、 `site_for` / `SalesforceBase` /
+このバッチは comken を**外部ライブラリとして**利用する。表は `pandas.DataFrame` で
+扱い、`from comken.toolbox.office import read_csv, write_csv, read_excel,
+write_excel` の関数で読み書きする。 `site_for` / `SalesforceBase` /
 `ComkenError` / `core.discovery` など、 Salesforce レポート取得の共通機能は
 引き続き comken から import する。
 

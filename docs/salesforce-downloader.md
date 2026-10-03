@@ -4,8 +4,8 @@
 Salesforce レポート集約取得のパッケージを置く。**ここに書いているのは
 このリポジトリに置かれている実装と利用方法**（`src.cli check` /
 `src.service.download_scheduled()` / `src.soql_reports` /
-`src.paths.output_path()`）。comken 側は引き続き `Table` / `CSV` / `Excel` /
-`site_for` / `SalesforceBase` / `ComkenError` / `core.discovery` など、
+`src.paths.output_path()`）。comken 側は CSV / Excel の読み書き関数（`read_csv` /
+`write_csv` など）、`site_for` / `SalesforceBase` / `ComkenError` / `core.discovery` など、
 Salesforce レポート取得以外の共通基盤を置いている。
 
 各プロジェクトが個別に Salesforce からレポートを落としていると、**どのプロジェクトが
@@ -54,9 +54,7 @@ saved = sorted(folder.glob(f"{CUSTOMER_LIST}_*.csv"))
 **プロジェクトのコードに Salesforce の URL もレポート ID も書かない。** 書くのは管理番号だけ。
 参照先の Salesforce レポートを差し替えても、`CUSTOMER_LIST = "1001"` はそのままでよい。
 
-戻り値は `Table`（`comken.core.table.model.Table`）。`index()` / `filter()` /
-`replace()` / `append()` など、`Table` の API がそのまま使える。CSV / Excel の
-読み込みは中で吸収するので、利用側は中身の形式を意識しなくてよい。
+見つけた CSV は `comken.toolbox.office.read_csv()` で `pandas.DataFrame` として読む。
 ファイルパスだけ欲しいときは `output_path()` で組み立てたパスを `pathlib.Path.glob()` で拾う形になります。
 
 `output_path()` + `glob()` を使う側が自動的に取りに行かない理由は
@@ -374,8 +372,8 @@ Excel の数式 (VLOOKUP 等) で組み立てる案も検討したが、openpyxl
 修正が必要（毎月・毎日上書き前提の固定名 → タイムスタンプ付きの連番ファイルへ）。
 
 - **0 行のときは、`0件あり` 列の指定で動きが変わる。** `×` のときは何も作らず失敗
-  （`EmptyReportError`）。`○` のときは空ファイルを作る。Downloader が返す `Table` は
-  列なしの空 Table として返るので、利用側は 0 件をそのまま扱える
+  （`EmptyReportError`）。`○` のときは見出し行だけのファイルを作る。読むと 0 行の
+  DataFrame になるので、利用側は 0 件をそのまま扱える
   （[「0 件の扱い」](#0-件の扱い) 参照）
 - **保存先のフォルダが無ければ作らない。** 書き間違いのことが多く、勝手に作ると
   誰も読まない場所へ置き続けることになる
@@ -397,7 +395,7 @@ Excel の数式 (VLOOKUP 等) で組み立てる案も検討したが、openpyxl
 | `0件あり` | 0 行のときの動き | 履歴の `成否` | 履歴の `原因区分` |
 |---|---|---|---|
 | `×`（既定） | `EmptyReportError` を送出。ファイルは作らない | 失敗 | `データなし` |
-| `○` | 空ファイルを作る。利用側は `read() == []` を受け取る | 成功 | （空） |
+| `○` | 見出し行だけのファイルを作る。利用側は 0 行の DataFrame を受け取る | 成功 | （空） |
 
 **既定値は `×`**（厳しい側に倒れる）。書き忘れると従来どおり 0 件で失敗する
 ＝**誤報が出るだけでデータは失われない**。`○` にするか `×` のままかは、運用する人が
@@ -406,9 +404,8 @@ Excel の数式 (VLOOKUP 等) で組み立てる案も検討したが、openpyxl
 - 普段はデータがあるが、たまたま 0 件の日もある → `○`
 - 普段は必ずデータがある（無いならレポートか管理表が間違っている）→ `×` のまま
 
-ヘッダー行は敢えて入れない（Salesforce のメタデータからしか取れず、
-`report.get()` は `list[dict]` 形式で返すため）。0 バイトのファイルでも `Table` は
-例外を出さず空 Table を返すので、利用側は「0 件ならループが 0 回」を自然に書ける。
+見出し行は Salesforce のメタデータから取った列名を書く。読むと 0 行の DataFrame に
+なるので、利用側は「0 件ならループが 0 回」を自然に書ける。
 
 ---
 

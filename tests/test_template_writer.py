@@ -204,7 +204,7 @@ def _make_schedule_book(path: Path, rows: list[list]) -> Path:
 
 
 class TestApplyScheduleDropdowns:
-    # `create_data_sheet()` が `PY_` プレフィックスを付けるので、
+    # 雛形はシート名に `PY_` プレフィックスを付けるので、
     # ヘルパーで作ったシートも `PY_` 付きで load する
     _PY_SCHEDULE = f"PY_{SCHEDULE_SHEET_NAME}"
 

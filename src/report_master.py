@@ -377,8 +377,8 @@ def read_raw_rows(source: Path, sheet_name: str) -> list[dict[str, Any]]:
     **業務担当者が画面で見ても原因が分かるよう、ファイル不在は
     ``ComkenFileNotFoundError`` がそのまま上がる経路にする。**
 
-    ``sheet_name`` は ``PY_`` プレフィックス付きのシート名（``comken.toolbox.office.excel``
-    の ``create_data_sheet`` 由来）を優先し、無ければプレフィックス無しでも探す
+    ``sheet_name`` は ``PY_`` プレフィックス付きのシート名（``src.template_writer`` の
+    雛形が付ける）を優先し、無ければプレフィックス無しでも探す
     （手作業で「管理表」と付けた既存ブックへの後付けを想定）。
     見出し行の `="..."` 形式の未計算数式を検出して ``ExcelApplicationNotAvailableError``
     に変換する点は従来どおり。
@@ -474,8 +474,8 @@ def read_raw_rows(source: Path, sheet_name: str) -> list[dict[str, Any]]:
 def _resolve_sheet_name(source: Path, sheet_name: str) -> str:
     """``PY_`` プレフィックス付きのシート名があればそれを、なければ元の名前を返す。
 
-    ``comken.toolbox.office.excel.create_data_sheet()`` は ``PY_`` プレフィックスを
-    自動付与するため、雛形生成済みのブックでは ``PY_管理表`` が存在する。手作業で
+    ``src.template_writer`` の雛形はシート名に ``PY_`` プレフィックスを付けるため、
+    雛形生成済みのブックでは ``PY_管理表`` が存在する。手作業で
     「管理表」と付けた既存ブックはプレフィックス無しのシート名なので、両方を受け付ける
     ことで後方互換を保つ。
 
