@@ -69,13 +69,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
-from comken.core.table.model import Table as CoreTable
+import pandas as pd
 from comken.core.text import is_true_word
 from comken.core.timer import measure
 from comken.exceptions import (
     ExcelApplicationNotAvailableError,
 )
-from comken.toolbox.excel import Excel
 
 from src.exceptions import (
     MasterDuplicateValueError,
@@ -364,9 +363,8 @@ def _is_blank(raw: dict[str, Any]) -> bool:
     return all(value in (None, "") for value in raw.values())
 
 
-def read_raw_rows(source: Path, sheet_name: str) -> CoreTable:
-    """指定シートを「Excel の生 dict のリスト」として読む（実体は `Table`、dict の
-    イテレータとして使える）。
+def read_raw_rows(source: Path, sheet_name: str) -> list[dict[str, Any]]:
+    """指定シートを「Excel の生 dict のリスト」として読む。
 
     ``MasterRow`` に紐付かない共通の下読みとして使う。``MasterRow.load()`` も
     ``schedule.load_schedule()`` も、Excel の開き方・未計算の数式判定をここで揃えて
@@ -379,16 +377,89 @@ def read_raw_rows(source: Path, sheet_name: str) -> CoreTable:
     **業務担当者が画面で見ても原因が分かるよう、ファイル不在は
     ``ComkenFileNotFoundError`` がそのまま上がる経路にする。**
 
+    ``sheet_name`` は ``PY_`` プレフィックス付きのシート名（``comken.toolbox.office.excel``
+    の ``create_data_sheet`` 由来）を優先し、無ければプレフィックス無しでも探す
+    （手作業で「管理表」と付けた既存ブックへの後付けを想定）。
+    見出し行の `="..."` 形式の未計算数式を検出して ``ExcelApplicationNotAvailableError``
+    に変換する点は従来どおり。
+
     Raises:
         ComkenFileNotFoundError: ``source`` が存在しない場合。
         SheetNotFoundError: ``sheet_name`` がブックに無い場合。
         ExcelApplicationNotAvailableError: 未計算の数式セルが含まれていた場合。
     """
-    with Excel(source, read_only=True) as excel:
-        raw_rows = excel.data_sheet(sheet_name).table().read()
+    # ファイル不在はここで ``ComkenFileNotFoundError`` に統一する。
+    # 後段の ``_resolve_sheet_name`` (openpyxl) / ``read_excel`` (pandas) は
+    # それぞれ ``FileNotFoundError`` / ``ExcelError`` を上げるため、
+    # ここで業務例外に変換しないと呼び出し側の ``except ComkenFileNotFoundError``
+    # が拾えない
+    from comken.exceptions import ComkenFileNotFoundError
+
+    if not source.exists():
+        raise ComkenFileNotFoundError("Excel ファイル", source)
+    actual_sheet_name = _resolve_sheet_name(source, sheet_name)
+    # v3 は ``pd.read_excel`` だけだと未計算の数式が ``"=CONCATENATE(...)"`` のような
+    # 文字列として返り、 値として通ってしまう。 そこで openpyxl で
+    # ``data_only=False`` 読みをして数式が書かれたセルを検出し、
+    # ``ExcelApplicationNotAvailableError`` に変換する。
+    # ``data_only=True`` 読みでも「解決済みなら値、未解決なら ``None``」が返るので、
+    # 値側で読む。 ``data_only=False`` 側の値が ``"=..."`` の文字列で、
+    # ``data_only=True`` 側の値が ``None`` のセルが「未計算の数式」とみなせる。
+    from openpyxl import load_workbook
+
+    raw_book = load_workbook(source, read_only=True, data_only=False)
+    calc_book = load_workbook(source, read_only=True, data_only=True)
+    try:
+        raw_ws = raw_book[actual_sheet_name]
+        calc_ws = calc_book[actual_sheet_name]
+        raw_rows_iter = raw_ws.iter_rows(values_only=True)
+        calc_rows_iter = calc_ws.iter_rows(values_only=True)
+        try:
+            raw_header = next(raw_rows_iter)
+            next(calc_rows_iter)  # 計算側はヘッダだけ捨てて同期
+        except StopIteration:
+            raw_header = []
+        headers: list[str] = [str(cell) if cell is not None else "" for cell in raw_header]
+        records: list[list[Any]] = []
+        for raw_row in raw_rows_iter:
+            calc_row = next(calc_rows_iter, [None] * len(raw_row))
+            # 数式セル（ ``raw`` 側が ``=`` 始まりで ``calc`` 側が ``None`` ）を検出
+            for raw_cell, calc_cell in zip(raw_row, calc_row, strict=True):
+                if (
+                    isinstance(raw_cell, str)
+                    and raw_cell.startswith("=")
+                    and calc_cell is None
+                ):
+                    logger.debug(
+                        "管理表に未計算の数式を検出: path=%s, sheet=%s",
+                        source,
+                        sheet_name,
+                    )
+                    raise ExcelApplicationNotAvailableError(
+                        source,
+                        RuntimeError("管理表に未計算の数式があります"),
+                    )
+            # ``data_only=True`` 側の値で ``records`` を作る
+            records.append(
+                [
+                    ("" if (calc_cell is None or pd.isna(calc_cell)) else calc_cell)
+                    for calc_cell in calc_row
+                ]
+            )
+        df = pd.DataFrame(records, columns=pd.Index(headers, dtype=str))
+    finally:
+        raw_book.close()
+        calc_book.close()
+    # 空セルは ``NaN`` で返ってくるが、 v2 では ``None`` / ``""`` を想定していた
+    # ため、空欄判定・既定値適用が壊れないよう空文字に揃える
+    out_records: list[dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
+        out_records.append(
+            {key: ("" if pd.isna(value) else value) for key, value in row.items()}
+        )
     if any(
         isinstance(value, str) and value.startswith("=")
-        for raw_row in raw_rows
+        for raw_row in out_records
         for value in raw_row.values()
     ):
         logger.debug("管理表に未計算の数式を検出: path=%s, sheet=%s", source, sheet_name)
@@ -396,10 +467,42 @@ def read_raw_rows(source: Path, sheet_name: str) -> CoreTable:
             source,
             RuntimeError("管理表に未計算の数式があります"),
         )
+    records = out_records
     logger.debug(
-        "管理表の生行読込完了: path=%s, sheet=%s, 生行数=%d", source, sheet_name, len(raw_rows)
+        "管理表の生行読込完了: path=%s, sheet=%s, 生行数=%d",
+        source,
+        sheet_name,
+        len(records),
     )
-    return raw_rows
+    return records
+
+
+def _resolve_sheet_name(source: Path, sheet_name: str) -> str:
+    """``PY_`` プレフィックス付きのシート名があればそれを、なければ元の名前を返す。
+
+    ``comken.toolbox.office.excel.create_data_sheet()`` は ``PY_`` プレフィックスを
+    自動付与するため、雛形生成済みのブックでは ``PY_管理表`` が存在する。手作業で
+    「管理表」と付けた既存ブックはプレフィックス無しのシート名なので、両方を受け付ける
+    ことで後方互換を保つ。
+
+    どちらのシート名もブックに無い場合は ``SheetNotFoundError`` を上げる（呼び出し元
+    が「該当シート無し」を ``load_schedule()`` のように ``空リスト`` で受け取る／
+    ``MasterRow.load()`` のように ``MasterTableError`` で止める、のどちらに分岐するか
+    を決められるよう、 ここで型を ``SheetNotFoundError`` に揃える）。
+    """
+    from comken.exceptions import SheetNotFoundError
+    from openpyxl import load_workbook
+
+    book = load_workbook(source, read_only=True)
+    try:
+        prefixed = f"PY_{sheet_name}"
+        if prefixed in book.sheetnames:
+            return prefixed
+        if sheet_name in book.sheetnames:
+            return sheet_name
+        raise SheetNotFoundError(sheet_name, list(book.sheetnames))
+    finally:
+        book.close()
 
 
 def _require_headers(cls: type[MasterRow], raw: dict[str, Any], source: Path) -> None:

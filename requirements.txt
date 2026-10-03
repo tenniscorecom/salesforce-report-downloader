@@ -5,6 +5,7 @@
 comken       # F:\dev\comken を pip install -e ../comken で入れる（PyPI には無い）
 requests     # comken.salesforce が使う
 pywin32      # comken.credentials（DPAPI）が使う
+pandas       # v3 の comken は pandas.DataFrame を返す（Report API / SOQL / 履歴 / 管理表の読み書きで必要）
 # --- 開発用 ---
 ruff
 pytest

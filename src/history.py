@@ -16,9 +16,9 @@ from pathlib import Path
 
 from comken.core.dates import now
 from comken.services.salesforce_downloader.history import (
-    COLUMNS,
     FAILURE,
     SUCCESS,
+    HistoryColumns,
     HistoryRow,
 )
 
@@ -88,22 +88,27 @@ def record(
         "保存結果": _stage(row.saved_to_file),
         "保存先": str(folder) if folder is not None else _resolved_folder(entry),
         "ファイル名": row.file_name,
-        "取得件数": "" if row.row_count is None else row.row_count,
+        "取得件数": "" if row.row_count is None else str(row.row_count),
         "処理秒数": f"{row.seconds:.2f}",
         "原因区分": row.cause,
         "エラーコード": row.error_code,
         "エラー内容": row.error.replace("\n", " "),
         # 取得経路（API / SOQL / ブラウザ / 自動切替2種）。``HistoryRow.route`` の
         # 既定値は空文字なので、``record()`` 経由で書かれる経路が無い古い呼び出しも
-        # そのまま通る（``append_history()`` が ``COLUMNS`` に無いキーで
-        # ``InvalidTableInputError`` を出す関係で、後段の ``COLUMNS`` 並べ直しで
-        # 空文字に落ちる）
+        # そのまま通る（``append_history()`` が ``HistoryColumns.names()`` に無い
+        # キーで ``InvalidTableInputError`` を出す関係で、後段の
+        # ``HistoryColumns.names()`` 並べ直しで空文字に落ちる）
         "取得経路": row.route,
     }
-    # ``append_history()`` が ``COLUMNS`` に無いキーを ``InvalidTableInputError``
-    # で止めるので、``COLUMNS`` 順の dict へ並べ直す（``実行日時`` は ``append_history``
-    # 側で ``timestamp`` から組み立てるため、ここでは含めない）
-    values = {column: values.get(column, "") for column in COLUMNS if column != "実行日時"}
+    # ``append_history()`` が ``HistoryColumns.names()`` に無いキーを
+    # ``InvalidTableInputError`` で止めるので、 ``HistoryColumns.names()`` 順の dict
+    # へ並べ直す（``実行日時`` は ``append_history`` 側で ``timestamp`` から組み立てる
+    # ため、ここでは含めない）
+    values = {
+        column: values.get(column, "")
+        for column in HistoryColumns.names()
+        if column != "実行日時"
+    }
     append_history(path, values, executed_at=timestamp)
     logger.debug("履歴追記完了: path=%s", path)
 
