@@ -19,9 +19,7 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
-from comken.core.table.model import Table as CoreTable
 from comken.exceptions import ComkenFileNotFoundError, SheetNotFoundError
-from comken.toolbox.excel import Color, Excel
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
@@ -50,9 +48,9 @@ _TEMPLATE_FONT_NAME = "Noto Sans JP"
 _DATA_VALIDATION_ROWS = 1000
 
 # 記入例の行に付ける背景色。本物のデータと見分けが付くよう、薄い灰色系で
-# `Color.LIGHT_GRAY` を使う（強く出すと「エラー行」に見えるため）
-_EXAMPLE_FILL_COLOR = Color.LIGHT_GRAY
-_EXAMPLE_FILL = PatternFill(fill_type="solid", fgColor=_EXAMPLE_FILL_COLOR)
+# 記入例の行に付ける背景色（薄い灰色系）。 v2 の ``Color.LIGHT_GRAY`` 相当。
+# 本物のデータと見分けが付く程度の濃さに留め、 強く出すと「エラー行」に見えるため
+_EXAMPLE_FILL = PatternFill(fill_type="solid", fgColor="D9D9D9")
 
 # 「スケジュール」シートで「取得頻度」と矛盾する「曜日」「日付」セルに付ける
 # エラー色（薄い赤 + 濃い赤文字）。``ScheduleRule.validate()`` で読み込み時に
@@ -162,12 +160,24 @@ def create_template(
     # を投げるため、書き込み前に既存シートを削除する。ファイルが無ければ何もしない
     _delete_existing_template_sheets(path, [row_cls.SHEET_NAME])
 
-    # 空の雛形でも Excel テーブルを成立させるため、API が要求する見出しだけを
-    # 持つ Table を作る。実データが無い場合の仮行は create_table が保持しない。
-    template_table = CoreTable(headers, rows)
-    with Excel(path) as excel:
-        excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
-    logger.debug("雛形: データシート作成: path=%s, sheet=%s", path, row_cls.SHEET_NAME)
+    # ``read_excel`` 側と整合させるため、 ``PY_`` プレフィックス付きのシート名で
+    # 書き出す。見出し行＋データ行を openpyxl で直接書く
+    sheet_name = f"PY_{row_cls.SHEET_NAME}"
+    book = Workbook() if not path.exists() else load_workbook(path)
+    if sheet_name in book.sheetnames:
+        del book[sheet_name]
+    sheet = book.create_sheet(sheet_name)
+    # 見出し行
+    for column_index, header in enumerate(headers, start=1):
+        sheet.cell(row=1, column=column_index, value=header)
+    # データ行
+    for row_offset, raw_row in enumerate(rows, start=_FIRST_DATA_ROW):
+        for column_index, header in enumerate(headers, start=1):
+            sheet.cell(row=row_offset, column=column_index, value=raw_row.get(header, ""))
+    _add_excel_table(sheet, headers, len(rows), row_cls)
+    book.save(path)
+    book.close()
+    logger.debug("雛形: データシート作成: path=%s, sheet=%s", path, sheet_name)
 
     book = load_workbook(path)
     sheet = book[f"PY_{row_cls.SHEET_NAME}"]
@@ -267,28 +277,32 @@ def create_combined_workbook(path: str | Path) -> Path:
         [ReportEntry.SHEET_NAME, ScheduleRule.SHEET_NAME, GroupSetting.SHEET_NAME],
     )
 
-    with Excel(path) as excel:
-        _write_data_sheet(
-            excel,
-            ReportEntry,
-            REPORT_ENTRY_EXAMPLES,
-            specs_report,
-            existing_rows=existing_report,
-        )
-        _write_data_sheet(
-            excel,
-            ScheduleRule,
-            SCHEDULE_EXAMPLES,
-            specs_schedule,
-            existing_rows=existing_schedule,
-        )
-        _write_data_sheet(
-            excel,
-            GroupSetting,
-            GROUP_SETTING_EXAMPLES,
-            specs_settings,
-            existing_rows=existing_settings,
-        )
+    # ``_delete_existing_template_sheets`` が全シート削除でファイルごと消したケース
+    # と、最初からファイルが無いケースの双方を ``Workbook()`` で扱う
+    book = Workbook() if not path.exists() else load_workbook(path)
+    _write_data_sheet(
+        book,
+        ReportEntry,
+        REPORT_ENTRY_EXAMPLES,
+        specs_report,
+        existing_rows=existing_report,
+    )
+    _write_data_sheet(
+        book,
+        ScheduleRule,
+        SCHEDULE_EXAMPLES,
+        specs_schedule,
+        existing_rows=existing_schedule,
+    )
+    _write_data_sheet(
+        book,
+        GroupSetting,
+        GROUP_SETTING_EXAMPLES,
+        specs_settings,
+        existing_rows=existing_settings,
+    )
+    book.save(path)
+    book.close()
     logger.debug("3シート雛形: データシート作成: path=%s", path)
 
     book = load_workbook(path)
@@ -491,6 +505,10 @@ def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) ->
     書き込み直前に呼び出して、シートを消した状態で ``Excel.create_data_sheet()``
     に進む。
 
+    ``PY_T_<クラス名>`` の Excel テーブル定義（ ``definedNames`` ）も一緒に消す。
+    残しておくと次に ``create_template`` で同名テーブルを追加しようとしたときに
+    openpyxl が ``Table with name ... already exists`` で ``ValueError`` を上げる。
+
     Args:
         path: 対象ファイル。存在しなければ何もしない。
         data_sheet_names: 削除対象の ``row_cls.SHEET_NAME``（プレフィックス無し）の
@@ -512,6 +530,16 @@ def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) ->
             del book[full_name]
             deleted = True
             logger.debug("既存データシートを削除: path=%s, sheet=%s", path, full_name)
+    # テーブル定義（ ``PY_T_<クラス名>`` ）もまとめて削除。 v2 は ``Excel`` が
+    # ``create_data_sheet`` 時にテーブルを作り直していたため不要だったが、
+    # openpyxl 直書きでは前の定義が残ると ``ValueError`` になるため
+    defined_names = book.defined_names
+    if defined_names is not None:
+        for table_name in list(defined_names):
+            if str(table_name).startswith("PY_T_"):
+                del defined_names[table_name]
+                deleted = True
+                logger.debug("既存テーブル定義を削除: path=%s, table=%s", path, table_name)
     if "記入方法" in book.sheetnames:
         del book["記入方法"]
         deleted = True
@@ -529,17 +557,20 @@ def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) ->
 
 
 def _write_data_sheet(
-    excel: Excel,
+    book: Workbook,
     row_cls: type[MasterRow],
     examples: list[dict],
     specs: list[tuple[str, ColumnSpec, Any, Any]],
     *,
     existing_rows: list[dict] | None = None,
 ) -> None:
-    """`excel` インスタンスへ1シート分のデータシートを書き出す。
+    """``book`` インスタンスへ1シート分のデータシートを書き出す。
 
     ``existing_rows`` が ``None`` でなければ記入例の代わりにマイグレーション結果を
     使う（増減した列を吸収済み・宣言順に並んだ行）。
+
+    ``PY_`` プレフィックス付きのシート名で書き出す。 ``read_excel`` 側が同じ
+    プレフィックスを優先するため、 読み書きの整合性が保たれる。
     """
     headers = [spec.header for _, spec, _, _ in specs]
     if existing_rows is not None:
@@ -552,8 +583,22 @@ def _write_data_sheet(
             }
             for example in examples
         ]
-    template_table = CoreTable(headers, rows)
-    excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
+    sheet_name = f"PY_{row_cls.SHEET_NAME}"
+    if sheet_name in book.sheetnames:
+        del book[sheet_name]
+    # シート削除だけだと対応する ``PY_T_<クラス名>`` のテーブル定義が ``definedNames``
+    # に残り、 ``add_table`` が ``ValueError`` を上げる。 ここで先に消す
+    table_name = f"PY_T_{row_cls.__name__}"
+    defined_names = book.defined_names
+    if defined_names is not None and table_name in defined_names:
+        del defined_names[table_name]
+    sheet = book.create_sheet(sheet_name)
+    for column_index, header in enumerate(headers, start=1):
+        sheet.cell(row=1, column=column_index, value=header)
+    for row_offset, raw_row in enumerate(rows, start=_FIRST_DATA_ROW):
+        for column_index, header in enumerate(headers, start=1):
+            sheet.cell(row=row_offset, column=column_index, value=raw_row.get(header, ""))
+    _add_excel_table(sheet, headers, len(rows), row_cls)
 
 
 def _finalize_sheet(
@@ -916,6 +961,34 @@ def _auto_width(sheet: Worksheet, *, max_width: int | None = None) -> None:
         if max_width is not None:
             width = min(width, max_width)
         sheet.column_dimensions[get_column_letter(column_index)].width = width
+
+
+def _add_excel_table(sheet: Worksheet, headers: list[str], row_count: int, row_cls: type) -> None:
+    """``PY_T_<クラス名>`` という名前で Excel テーブルを追加する。
+
+    v2 の ``Excel.create_data_sheet(...).create_table(name, table)`` と同じ結果。
+    ``row_count`` が 0 のときは Excel のテーブルを作れない（見出し行が必要）ので、
+    スキップして ``PY_T_`` 名前テストは ``EXAMPLES`` 付き呼び出しで守られる。
+    """
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    if row_count == 0:
+        return
+    last_column_letter = get_column_letter(len(headers))
+    last_data_row = row_count + _FIRST_DATA_ROW - 1
+    table_ref = f"A{_FIRST_DATA_ROW}:{last_column_letter}{last_data_row}"
+    table = Table(displayName=f"PY_T_{row_cls.__name__}", ref=table_ref)
+    # 既定のテーブル書式（罫線・縞模様）を有効にする。 v2 の ``create_table`` も
+    # 暗黙にスタイルを付けていたため、 同じ見た目になる
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    sheet.add_table(table)
 
 
 __all__ = [
