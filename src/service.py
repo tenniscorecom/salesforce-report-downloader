@@ -53,9 +53,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pandas as pd
 from comken.core.dates import now as clock_now
 from comken.core.files import atomic_write
-from comken.core.table.model import Table
 from comken.core.timer import measure
 from comken.exceptions import (
     ComkenError,
@@ -76,7 +76,7 @@ from comken.services.salesforce_downloader.history import (
     HistoryRow,
 )
 from comken.services.salesforce_downloader.history_file_lock import HistoryFileLock
-from comken.toolbox.csv import CSV
+from comken.toolbox.office.csv import read_csv, write_csv
 from comken.toolbox.salesforce.sites import site_for
 
 from src import paths
@@ -388,7 +388,7 @@ class _Attempt:
     def record_success(
         self,
         path: Path,
-        rows: Table,
+        rows: pd.DataFrame,
         *,
         route: str = "",
     ) -> None:
@@ -404,7 +404,7 @@ class _Attempt:
             schedule_key=self._schedule_key,
             route=route,
         )
-        if rows:
+        if len(rows):
             logger.info("取得しました: %s（%d 行 / %.1f 秒）", path, len(rows), seconds)
         else:
             logger.info("取得しました: %s（0 件 / 0件ありのため正常）", path)
@@ -425,7 +425,7 @@ class _Attempt:
     def record_success_with_route(
         self,
         path: Path,
-        rows: Table,
+        rows: pd.DataFrame,
         *,
         route: str,
         notify_fallback: bool,
@@ -567,7 +567,7 @@ def _download(
                     raise BrowserFallbackFailedError(
                         entry.key, entry.summary, "0件", ROUTE_BROWSER_FALLBACK_EMPTY
                     ) from browser_exc
-                if browser_table:
+                if len(browser_table) > 0:
                     # ブラウザで取れたので、保存し直して履歴は「成功・自動切替」で記録
                     # （``_Attempt`` の開始時刻はそのまま使い、route だけ書き換える）
                     path = _save(
@@ -694,7 +694,7 @@ def _fetch_with_auto_fallback(
     *,
     filters: list[dict] | None,
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None,
-) -> tuple[str, Table]:
+) -> tuple[str, pd.DataFrame]:
     """Report API 経路での自動切替（``SalesforceReportTruncatedError``）を扱う。
 
     戻り値は ``(route, table)`` の2要素タプル:
@@ -808,7 +808,7 @@ def _fetch(
     filters: list[dict] | None = None,
     *,
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
-) -> Table:
+) -> pd.DataFrame:
     """Salesforce へ問い合わせて明細表を返す。
 
     つなぐ組織は URL のドメインで決まる（`site_for()`）。管理表に組織を選ぶ列は
@@ -848,7 +848,7 @@ def _fetch(
     return _fetch_via_api(entry, filters)
 
 
-def _fetch_via_soql(entry: ReportEntry) -> Table:
+def _fetch_via_soql(entry: ReportEntry) -> pd.DataFrame:
     """SOQL経由で entry を取得し、`_fetch()` と同じ Table を返す。
 
     ``entry.key`` と同じ ``KEY`` を持つ ``SoqlReport`` を comken の
@@ -870,7 +870,7 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
 def _fetch_via_api(
     entry: ReportEntry,
     filters: list[dict] | None,
-) -> Table:
+) -> pd.DataFrame:
     """通常の Report API で取得する（自動切替なし）。``_download()`` が呼び、
     ``SalesforceReportTruncatedError`` の取り直しも ``_download()`` 側で
     オーケストレートする。
@@ -888,7 +888,7 @@ def _fetch_via_browser(
     entry: ReportEntry,
     *,
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
-) -> Table:
+) -> pd.DataFrame:
     """ブラウザ経由で entry を取得し、`_fetch()` と同じ Table を返す。
 
     **ログインの扱い:** ブラウザを新規に開くとき（使い回し中でないとき）は
@@ -930,8 +930,10 @@ def _fetch_via_browser(
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
                 dict(sf.export_reports({entry.url: tmp_path}))
-                with CSV(tmp_path, read_only=True) as source:
-                    return source.read()
+                # v2 の ``CSV.read()`` は文字列として返していたため、 ここで ``dtype=str``
+                # を指定して同じ値を保つ。pandas の既定の型推論だと ``金額`` のような
+                # 数字が ``int`` になり、 下流の判定（ ``"100" == 100`` ）を壊す
+                return read_csv(tmp_path, columns=None, dtype=str)
         raise AssertionError("unreachable")  # 上の with 内で必ず return する
 
     # 同じ組織のブラウザが既に開いていれば再利用、無ければ開く
@@ -969,8 +971,9 @@ def _fetch_via_browser(
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
             dict(sf.export_reports({entry.url: tmp_path}))
-            with CSV(tmp_path, read_only=True) as source:
-                return source.read()
+            # v2 の ``CSV.read()`` は文字列として返していたため、 ここで ``dtype=str``
+            # を指定して同じ値を保つ
+            return read_csv(tmp_path, columns=None, dtype=str)
     except Exception:
         # 壊れた状態のブラウザを次回以降に渡さないため、ここで閉じて dict から外す。
         # 閉じるときに起きた例外は元の失敗を隠すので、警告ログに留めて元例外を上げる
@@ -993,7 +996,7 @@ def _validate_filters_by_report(
 
 def _save(
     entry: ReportEntry,
-    table: Table,
+    table: pd.DataFrame,
     *,
     schedule_run_time: dt.time | None = None,
     current: dt.datetime | None = None,
@@ -1039,7 +1042,7 @@ def _save(
     path = _reserve_unique_path(base, entry.key)
     try:
         # 問い合わせは成功したが明細が無い。**0件あり × なら失敗扱い、○ なら正常終了**
-        if not table and not entry.allow_empty:
+        if len(table) == 0 and not entry.allow_empty:
             raise EmptyReportError(entry.key, entry.summary, entry.url)
         _write_csv(path, table)
     except Exception:
@@ -1071,14 +1074,19 @@ def _reserve_unique_path(base_path: Path, report_key: str) -> Path:
     raise ReportReservePathLimitError(report_key, base_path, RESERVE_PATH_LIMIT)
 
 
-def _write_csv(path: Path, table: Table) -> None:
+def _write_csv(path: Path, table: pd.DataFrame) -> None:
     """一時ファイルへ書いてから置き換える。
 
     複数のプロジェクトが同時に呼ぶので、直接書くと**読んでいる最中のファイルが
     半端な状態**になりうる。同じフォルダ内の置き換えは一度に入れ替わる。
+
+    ``comken.toolbox.office.csv.write_csv`` が ``utf-8-sig`` を既定で書き出すため、
+    ``CSV`` クラスの既定と互換（v2 の ``CSV.write_csv`` も ``utf-8-sig``）。
+    ``NaN`` は空文字として書き出されるので、 ``empty=''`` 相当の挙動を保てる
+    （v2 では ``Table.replace`` が空セルを空文字で書き出す仕様だった）。
     """
-    with atomic_write(path) as tmp, CSV(tmp) as csv_file:
-        csv_file.replace(table)
+    with atomic_write(path) as tmp:
+        write_csv(table, tmp)
 
 
 def _warn_shared_reports(entries: dict[str, ReportEntry]) -> None:

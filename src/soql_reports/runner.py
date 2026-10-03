@@ -32,14 +32,14 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
+import pandas as pd
 from comken.core.files import DateNameBuilder, atomic_write
-from comken.core.table.model import Table
 from comken.exceptions import (
     ComkenError,
     DownloaderError,
 )
 from comken.runtime import is_dry_run
-from comken.toolbox.csv import CSV
+from comken.toolbox.office.csv import write_csv
 from comken.toolbox.salesforce.sites import site_for
 
 from src.exceptions import (
@@ -148,7 +148,7 @@ def _require_folder(report_cls: type[SoqlReport]) -> None:
         raise ReportFolderNotFoundError(report_cls.KEY, folder)
 
 
-def _fetch(report_cls: type[SoqlReport]) -> Table:
+def _fetch(report_cls: type[SoqlReport]) -> pd.DataFrame:
     """Salesforce へ問い合わせて明細表を返す。
 
     ``download_scheduled()`` と同じく、つなぐ組織は URL のドメインで決まる
@@ -161,12 +161,12 @@ def _fetch(report_cls: type[SoqlReport]) -> Table:
         return salesforce.query(instance.soql())
 
 
-def _save(report_cls: type[SoqlReport], table: Table) -> Path:
+def _save(report_cls: type[SoqlReport], table: pd.DataFrame) -> Path:
     """行数と ``ALLOW_EMPTY`` に応じて保存先へ書き込み、書き終わったパスを返す。
 
     ``service._save()`` と同じ方針:
     0 行・``ALLOW_EMPTY`` × → ``EmptyReportError``（=失敗）／○ → 空 CSV を置く。
-    0 行でも ``SalesforceBase.query()`` が ``Table.columns`` を持って返るので、
+    0 行でも ``SalesforceBase.query()`` が ``DataFrame.columns`` を持って返るので、
     見出し行だけ書いた空 CSV を保存する。
 
     **概要のフォルダは保存名の予約前に ``mkdir`` する。** ベース（``FOLDER``）は
@@ -179,7 +179,7 @@ def _save(report_cls: type[SoqlReport], table: Table) -> Path:
         path.parent.mkdir(exist_ok=True)
     path = _reserve_path(report_cls)
     try:
-        if not table and not report_cls.ALLOW_EMPTY:
+        if len(table) == 0 and not report_cls.ALLOW_EMPTY:
             raise EmptyReportError(report_cls.KEY, report_cls.SUMMARY, report_cls.URL)
         _write_csv(path, table)
     except Exception:
@@ -226,11 +226,14 @@ def _file_path_of(report_cls: type[SoqlReport]) -> Path:
     )
 
 
-def _write_csv(path: Path, table: Table) -> None:
+def _write_csv(path: Path, table: pd.DataFrame) -> None:
     """一時ファイルへ書いてから置き換える。
 
     ``service._write_csv()`` と同じ組み立て方。複数のプロジェクトが同時に呼ぶので、
     直接書くと**読んでいる最中のファイルが半端な状態**になりうる。
+
+    ``comken.toolbox.office.csv.write_csv`` が ``utf-8-sig`` を既定で書き出すため、
+    ``CSV`` クラスの既定と互換。``NaN`` は空文字で書き出される。
     """
-    with atomic_write(path) as tmp, CSV(tmp) as csv_file:
-        csv_file.replace(table)
+    with atomic_write(path) as tmp:
+        write_csv(table, tmp)
