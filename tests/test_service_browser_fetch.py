@@ -13,10 +13,34 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
+from comken.toolbox.office.csv import read_csv
 
 from src.service import _fetch, _fetch_via_browser
 from src.sheets.master import ReportEntry
+
+
+# ``test_service.py`` と同形の薄い ``CSV`` ラッパー（ ``comken.toolbox.csv.CSV``
+# の後継）。 ``with CSV(path) as csv_file: csv_file.read()`` のパターンをテストが
+# 使うので、中身だけ pandas の ``read_csv`` に委譲する
+class CSV:
+    def __init__(self, path: Path | str, read_only: bool = False) -> None:
+        self.path = Path(path)
+        self.read_only = read_only
+
+    def __enter__(self) -> "CSV":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self) -> list[dict[str, object]]:
+        df = read_csv(self.path, columns=None, dtype=str)
+        return [
+            {k: ("" if pd.isna(v) else v) for k, v in row.items()}
+            for row in df.to_dict(orient="records")
+        ]
 
 ENTRY = ReportEntry(
     key="9001",
@@ -85,8 +109,8 @@ class TestFetchViaBrowser:
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
             table = _fetch_via_browser(ENTRY)
 
-        assert table.columns == ["名前", "金額"]
-        assert list(table) == [{"名前": "山田", "金額": "100"}]
+        assert list(table.columns) == ["名前", "金額"]
+        assert table.to_dict(orient="records") == [{"名前": "山田", "金額": "100"}]
 
     def test_calls_login_with_credentials_before_export(self):
         site_class, site_instance = _fake_browser_site()
@@ -486,7 +510,7 @@ class TestBrowserSessionReuseBrokenByRemoval:
         def _no_evict(entry, *, browser_sessions=None):
             """故意に「``pop`` しない」壊れた実装。"""
             from comken.toolbox.browser.sites.salesforce import site_for as browser_site_for
-            from comken.toolbox.csv import CSV
+            from comken.toolbox.office.csv import read_csv
 
             site_class = browser_site_for(entry.url)
             if browser_sessions is None:
@@ -496,8 +520,7 @@ class TestBrowserSessionReuseBrokenByRemoval:
                         tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
                         Path(tmp_path).write_bytes(b"col,amt\nv,1\n")
                         dict(sf.export_reports({entry.url: tmp_path}))
-                        with CSV(tmp_path, read_only=True) as source:
-                            return source.read()
+                        return read_csv(tmp_path, columns=None)
                 raise AssertionError("unreachable")
 
             sf = browser_sessions.get(site_class)

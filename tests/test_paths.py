@@ -23,9 +23,8 @@ patch するだけで全箇所に反映される（``service.py`` 内のロー�
 import datetime as dt
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
-from comken.toolbox.excel import Excel
 
 import src.paths as paths_module
 from src.exceptions import (
@@ -75,16 +74,12 @@ def reset_master_cache():
 
 def make_master(path: Path, rows: list[list], settings_rows: list[list] | None = None) -> Path:
     """管理表（Excel）を作る。設定シートも一緒に作るかは ``settings_rows`` で切り替える。"""
-    table_rows = [dict(zip(HEADERS, row, strict=True)) for row in rows]
-    with Excel(path) as book:
-        book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
+    df_master = pd.DataFrame(rows, columns=HEADERS)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df_master.to_excel(writer, sheet_name="PY_管理表", index=False)
         if settings_rows is not None:
-            settings_table_rows = [
-                dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
-            ]
-            book.create_data_sheet("設定").create_table(
-                "設定", Table(GROUP_SETTINGS_HEADERS, settings_table_rows)
-            )
+            df_settings = pd.DataFrame(settings_rows, columns=GROUP_SETTINGS_HEADERS)
+            df_settings.to_excel(writer, sheet_name="PY_設定", index=False)
     return path
 
 

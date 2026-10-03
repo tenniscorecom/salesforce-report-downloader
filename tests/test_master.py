@@ -8,10 +8,9 @@
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
 from comken.exceptions import SalesforceReportIDNotFoundError
-from comken.toolbox.excel import Excel
 
 from src.exceptions import MasterTableError
 from src.sheets.master import ReportEntry, load_master
@@ -47,9 +46,9 @@ LEGACY_HEADERS = [
 
 def make_master(path: Path, headers: list[str], rows: list[list]) -> Path:
     """管理表（Excel）を作る。"""
-    table_rows = [dict(zip(headers, row, strict=True)) for row in rows]
-    with Excel(path) as book:
-        book.create_data_sheet("管理表").create_table("管理表", Table(headers, table_rows))
+    df = pd.DataFrame(rows, columns=headers)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="PY_管理表", index=False)
     return path
 
 

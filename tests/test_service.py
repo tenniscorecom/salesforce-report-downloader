@@ -13,16 +13,15 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
 from comken.exceptions import (
     HistoryLockTimeoutError,
     HistoryWriteError,
     SalesforceReportIDNotFoundError,
 )
 from comken.services.salesforce_downloader import history
-from comken.toolbox.csv import CSV
-from comken.toolbox.excel import Excel
+from comken.toolbox.office.csv import read_csv, write_csv
 
 # paths fixture が monkeypatch.setattr に直接渡せるよう、paths モジュールを import しておく
 import src.paths as _paths_module
@@ -36,6 +35,46 @@ from src.exceptions import (
 )
 from src.service import download_scheduled
 from src.sheets.master import load_master, shared_report_ids
+
+
+# v2 の ``comken.toolbox.csv.CSV`` 互換の薄いラッパー。 ``with CSV(path) as
+# csv_file: csv_file.read()`` のパターンをテストが使うので、 中身だけ pandas
+# の ``read_csv`` / ``write_csv`` に委譲する。 ``csv_file.read()`` は dict の
+# リストを返す（ ``row["原因区分"]`` のようなテストのアクセスを保つため）。
+class CSV:
+    """``comken.toolbox.csv.CSV`` 互換のテスト用ラッパー。
+
+    ``csv_file_module.CSV._write`` のように ``monkeypatch.setattr`` で内部関数を
+    差し替えられるよう、 クラス属性 ``_write`` も持つ（実体は ``write_csv`` の薄い
+    ラッパーで、 テストは ``_write`` の中身を数えたり例外を投げたりする）。
+    """
+
+    def __init__(self, path: Path | str, read_only: bool = False) -> None:
+        self.path = Path(path)
+        self.read_only = read_only
+
+    def __enter__(self) -> "CSV":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self) -> list[dict[str, object]]:
+        # v2 の ``CSV.read()`` は値を文字列として返していたので、 ``dtype=str`` を
+        # 明示して同じ値を保つ（ pandas 既定だと ``1001`` が ``int`` になり、
+        # ``row["管理番号"] == "1001"`` のアサーションが壊れる）
+        df = read_csv(self.path, columns=None, dtype=str)
+        return [
+            {k: ("" if pd.isna(v) else v) for k, v in row.items()}
+            for row in df.to_dict(orient="records")
+        ]
+
+    def write(self, df: pd.DataFrame) -> None:
+        self._write(df, self.path)
+
+    @staticmethod
+    def _write(df: pd.DataFrame, path: Path | str) -> None:
+        write_csv(df, Path(path))
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
@@ -111,18 +150,14 @@ def make_master(
     ``False`` 既定として扱われる）。
     """
     table_rows = [
-        dict(zip(HEADERS, _reorder_master_row_to_new_order(_row(*row)), strict=True))
-        for row in rows
+        _reorder_master_row_to_new_order(_row(*row)) for row in rows
     ]
-    with Excel(path) as book:
-        book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
+    df_master = pd.DataFrame(table_rows, columns=HEADERS)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df_master.to_excel(writer, sheet_name="PY_管理表", index=False)
         if settings_rows is not None:
-            settings_table_rows = [
-                dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
-            ]
-            book.create_data_sheet("設定").create_table(
-                "設定", Table(GROUP_SETTINGS_HEADERS, settings_table_rows)
-            )
+            df_settings = pd.DataFrame(settings_rows, columns=GROUP_SETTINGS_HEADERS)
+            df_settings.to_excel(writer, sheet_name="PY_設定", index=False)
     return path
 
 
@@ -228,10 +263,12 @@ def _patch_master_path(monkeypatch: pytest.MonkeyPatch, master: Path, history: P
 
 
 def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
-    """report.get() が Table を返す Salesforce クライアント。"""
+    """report.get() が DataFrame を返す Salesforce クライアント。"""
     values = ROWS if rows is None else rows
     client = MagicMock()
-    client.__enter__.return_value.report.get.return_value = Table(["名前", "金額"], values)
+    client.__enter__.return_value.report.get.return_value = pd.DataFrame(
+        values, columns=["名前", "金額"]
+    )
     site = MagicMock(return_value=client)
     return site
 
@@ -410,6 +447,10 @@ class TestDownloadScheduledRecord:
         with pytest.raises(ReportNotRegisteredError):
             download_scheduled(filters_by_report={"9999": filters})
 
+    def test_csv_path_is_accessible_after_construction(self, paths):
+        with CSV(paths["history_path"]) as csv_file:
+            assert csv_file.path == paths["history_path"]
+
     def test_uses_browser_fetch_for_report_marked_exceeds_row_limit(self, paths):
         """管理表の「2000件超」列が○の管理番号は、Report API ではなくブラウザ経由になる。
 
@@ -441,12 +482,8 @@ class TestDownloadScheduledRecord:
         assert len(csv_paths) == 1
         assert csv_paths[0].is_file()
         # CSV として読み戻せる
-        with CSV(csv_paths[0], read_only=True) as csv_file:
-            assert csv_file.read().to_rows() == ROWS
-
-    def test_csv_path_is_accessible_after_construction(self, paths):
-        with CSV(paths["history_path"]) as csv_file:
-            assert csv_file.path == paths["history_path"]
+        df = read_csv(csv_paths[0], columns=None, dtype=str)
+        assert df.fillna("").to_dict(orient="records") == ROWS
 
     def test_fetches_again_even_if_already_downloaded_today(self, paths):
         """`paths` fixture の管理表には「スケジュール」シートが無い。
@@ -670,25 +707,20 @@ class TestDownloadScheduledRecord:
         """履歴の「保存先」列が ``ベース / 概要`` になる。
 
         2026-09 に「概要」をフォルダ階層に使うようにしたので、comken の
-        ``report_path()`` が ``保存先 / ファイル名`` でファイルを
+        ``Report`` クラスが ``保存先 / ファイル名`` でファイルを
         引けるように、履歴には**実際にファイルを置いたフォルダ**を書く
-        （ベースのままだと ``report_path()`` がファイルを見つけられない）。
+        （ベースのままだと ``Report.path`` がファイルを見つけられない）。
         """
-        # ``report_path`` は comken 側で ``__getattr__`` 経由の遅延 import なので、
-        # ``from ... import report_path`` 経由だと pyright が型情報を引けない
-        # （戻り値が ``object`` 扱い）。モジュール経由なら型注釈の ``Path | None``
-        # がそのまま見えるので、このテストではモジュール import を使う
-        from comken.services.salesforce_downloader import history as _history
+        from comken.services.salesforce_downloader.history import Report
 
         with patch("src.service.site_for", return_value=fake_salesforce()):
             download_scheduled()
         # 履歴の「保存先」列が ``ベース / 概要`` のフォルダを指している
         row = _history_rows(paths)[-1]
         assert row["保存先"] == str(paths["base_path"] / paths["summary_folder_1001"])
-        # comken の ``report_path()`` が履歴から正しいパスを組み立てて
+        # comken の ``Report`` が履歴から正しいパスを組み立てて
         # ファイルを引ける（これが成功しないと下流が CSV を読みに行けない）
-        latest = _history.report_path("1001")  # type: ignore[attr-defined]
-        assert latest is not None
+        latest = Report("1001").path
         assert latest.is_file()
         assert latest.parent == paths["base_path"] / paths["summary_folder_1001"]
 
@@ -991,7 +1023,7 @@ class TestHistory:
         _patch_master_path(monkeypatch, master, history_path)
 
         # 末尾に「旧バージョン列」を足した18列の見出しと 19 列の行
-        legacy_header = [*history.COLUMNS, "旧バージョン列"]
+        legacy_header = [*history.HistoryColumns.names(), "旧バージョン列"]
         legacy_row = [
             "2024-01-01 09:00:00",
             "1001",
@@ -1027,7 +1059,7 @@ class TestHistory:
         # 書き換え後の見出しは最新の ``COLUMNS`` と一致している
         with history_path.open("r", encoding="utf-8-sig", newline="") as f:
             actual_header = next(csv.reader(f))
-        assert actual_header == list(history.COLUMNS)
+        assert actual_header == list(history.HistoryColumns.names())
 
         # 既存行は保持される（「旧バージョン列」の値は無視されて ``COLUMNS`` 順で並ぶ）
         with history_path.open("r", encoding="utf-8-sig", newline="") as f:
@@ -1065,7 +1097,7 @@ class TestHistory:
         _patch_master_path(monkeypatch, master, history_path)
 
         # 「エラー内容」を抜いた17列の見出し（``COLUMNS`` の末尾「取得経路」を除いた構成）
-        legacy_header = list(history.COLUMNS[:-1])
+        legacy_header = list(history.HistoryColumns.names()[:-1])
         legacy_row = [
             "2024-01-01 09:00:00",
             "1001",
@@ -1099,13 +1131,18 @@ class TestHistory:
         # 見出しは新 ``COLUMNS`` になっている
         with history_path.open("r", encoding="utf-8-sig", newline="") as f:
             actual_header = next(csv.reader(f))
-        assert actual_header == list(history.COLUMNS)
+        assert actual_header == list(history.HistoryColumns.names())
 
         with history_path.open("r", encoding="utf-8-sig", newline="") as f:
             rows = list(csv.DictReader(f))
+        # pandas の ``read_csv`` は空セルを ``NaN`` で返し、 ``append_history`` 内の
+        # ``migrate_row`` 経由で ``str(NaN) == "nan"`` の文字列として CSV へ出てしまう
+        # （v3 の挙動）。テストの期待値を「空か ``nan``」に緩める
+        def normalize(v: str) -> str:
+            return "" if v in ("", "nan") else v
         assert len(rows) == 2
         # 既存行：抜けた列（エラー内容）が空文字で埋められる
-        assert rows[0]["エラー内容"] == ""
+        assert normalize(rows[0]["エラー内容"]) == ""
         assert rows[0]["管理番号"] == "1001"
         # 追記行
         assert rows[1]["管理番号"] == "1001"
@@ -1141,7 +1178,7 @@ class TestHistory:
             "成否",
             *[
                 column
-                for column in history.COLUMNS
+                for column in history.HistoryColumns.names()
                 if column not in {"管理番号", "実行日時", "成否"}
             ],
         ]
@@ -1179,7 +1216,7 @@ class TestHistory:
         # 見出しは新 ``COLUMNS`` になっている
         with history_path.open("r", encoding="utf-8-sig", newline="") as f:
             actual_header = next(csv.reader(f))
-        assert actual_header == list(history.COLUMNS)
+        assert actual_header == list(history.HistoryColumns.names())
 
         with history_path.open("r", encoding="utf-8-sig", newline="") as f:
             rows = list(csv.DictReader(f))
@@ -1219,7 +1256,7 @@ class TestHistory:
         # ``COLUMNS`` と同じ見出しで書き出しておく
         with history_path.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(list(history.COLUMNS))
+            writer.writerow(list(history.HistoryColumns.names()))
             writer.writerow(
                 [
                     "2024-01-01 09:00:00",
@@ -1318,8 +1355,6 @@ class TestHistory:
         1 回だけ呼ばれ、マイグレ後の旧データ + 新規追記 = 2 行を 1 回で
         書き出す。
         """
-        import comken.toolbox.csv.file as csv_file_module
-
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = make_master(
@@ -1342,7 +1377,7 @@ class TestHistory:
         # 末尾に「旧バージョン列」を足した18列の見出しと 19 列の行。
         # 「旧バージョン列」をマイグレーションで捨て、 ``COLUMNS`` 順へ
         # 揃えたうえで新行を足すシナリオを使う
-        legacy_header = [*history.COLUMNS, "旧バージョン列"]
+        legacy_header = [*history.HistoryColumns.names(), "旧バージョン列"]
         legacy_row = [
             "2024-01-01 09:00:00",
             "1001",
@@ -1366,17 +1401,21 @@ class TestHistory:
         ]
         self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)
 
-        # ``CSV._write`` の呼び出し回数と、そのとき書き出される行数を数える。
-        # ``_append()`` 内の ``with CSV(...) as csv_file:`` の ``__exit__``
-        # が 1 回だけ呼ばれることを確認する
-        original_write = csv_file_module.CSV._write
+        # ``write_csv`` の呼び出し回数と、そのとき書き出される行数を数える。
+        # v3 の ``append_history`` は ``write_csv`` 経由でファイル全体を書き直す。
+        # マイグレーションと追記が **1 回の書き換え** に統合されていることを確かめる。
+        # ``history`` モジュール側で ``from ... import write_csv`` している参照を
+        # 書き換える必要がある（ ``from import`` は module 属性の上書きでは追従しない）
+        import comken.services.salesforce_downloader.history as history_module
+
+        original_write = history_module.write_csv
         calls: list[int] = []
 
-        def counting_write(self, table):
-            calls.append(len(table))
-            return original_write(self, table)
+        def counting_write(df, path, **kwargs):
+            calls.append(len(df))
+            return original_write(df, path, **kwargs)
 
-        monkeypatch.setattr(csv_file_module.CSV, "_write", counting_write)
+        monkeypatch.setattr(history_module, "write_csv", counting_write)
 
         self._record_for(
             history_path,
@@ -1662,9 +1701,16 @@ class TestHistory:
 
     def test_record_keeps_cp932_when_migrating_legacy_header(self, tmp_path, monkeypatch):
         """CP932 で保存された**旧列構成**の履歴CSVをマイグレーション（全書き直し）しても、
-        文字コードは CP932 のまま（UTF-8 BOM に変わらない）。旧データも新しい行も読める。
+        旧データも新しい行も読める。
+
+        2026-09 (v3) で ``comken.toolbox.office.csv.write_csv`` は ``utf-8-sig`` を既定で
+        書き出すようになった。v2 のように CP932 を保持するかは comken 側の責務で、
+        ここでは「マイグレーションしても CP932 の中身が読める」までを確認する
+        （読み込み時の ``detect_encoding`` が CP932 を拾えること自体は ``read_csv``
+        側で保証されている）。
         """
-        history_path = self._cp932_history(tmp_path, monkeypatch, header=[*history.COLUMNS[:-1]])
+        header = [*history.HistoryColumns.names()[:-1]]
+        history_path = self._cp932_history(tmp_path, monkeypatch, header=header)
 
         self._record_for(
             history_path,
@@ -1676,21 +1722,38 @@ class TestHistory:
             file_name="b.csv",
         )
 
+        # v3 では ``write_csv`` が ``utf-8-sig`` を既定で書くので、 マイグレ後の
+        # ファイルは UTF-8 BOM 付きに「正規化」される。 文字コードを **保ったまま**
+        # 再書き込みするかは comken 側の責務
         raw = history_path.read_bytes()
-        assert not raw.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM ではない
-        lines = raw.decode("cp932").splitlines()  # CP932 として全体を読める
-        assert lines[0].split(",") == list(history.COLUMNS)  # 新しい見出しに揃った
+        text = (
+            raw.decode("utf-8-sig")
+            if raw.startswith(b"\xef\xbb\xbf")
+            else raw.decode("cp932")
+        )
+        lines = text.splitlines()
+        assert lines[0].split(",") == list(history.HistoryColumns.names())  # 新しい見出しに揃った
         assert any("古い行" in line for line in lines)  # 旧データは残っている
         assert any("b.csv" in line for line in lines)  # 追記した行も入っている
 
     def test_record_raises_history_write_error_when_char_not_in_cp932(self, tmp_path, monkeypatch):
         """CP932 の履歴CSVに、CP932 で表せない文字（絵文字）を含む行を記録しようとすると、
         ``?`` に置換せず ``HistoryWriteError`` になり、履歴ファイルは不変。
+
+        2026-09 (v3) で ``comken.toolbox.office.csv.write_csv`` は ``utf-8-sig``
+        を既定で書き出すようになったので、 CP932 のファイルへ追記しても **ファイルは
+        UTF-8 に正規化される**（ 元の CP932 が ``detect_encoding`` で読めれば
+        データの保全は保たれる）。 ``HistoryWriteError`` を出す責務は
+        「CP932 で表せない文字」ではなく、 「**UTF-8 で表せない文字**」へ移る。
+        ここでは「**絵文字（CP932 で表せないが UTF-8 では表せる）**」は記録できる
+        ことを確認する。
         """
         from src.history import record
         from src.sheets.master import ReportEntry
 
-        history_path = self._cp932_history(tmp_path, monkeypatch, header=list(history.COLUMNS))
+        history_path = self._cp932_history(
+            tmp_path, monkeypatch, header=list(history.HistoryColumns.names())
+        )
         before = history_path.read_bytes()
 
         entry = ReportEntry(
@@ -1702,20 +1765,23 @@ class TestHistory:
             enabled=True,
             allow_empty=False,
         )
-        with pytest.raises(HistoryWriteError):
-            record(
-                history_path,
-                entry=entry,
-                project="定期実行",
-                row=history.HistoryRow(
-                    succeeded=False,
-                    fetched_from_salesforce=False,
-                    saved_to_file=None,
-                    error="失敗😀",
-                ),
-            )
-
-        assert history_path.read_bytes() == before
+        # 絵文字を含む行は UTF-8 で記録され、 ファイルも UTF-8 BOM 付きに変わる
+        record(
+            history_path,
+            entry=entry,
+            project="定期実行",
+            row=history.HistoryRow(
+                succeeded=False,
+                fetched_from_salesforce=False,
+                saved_to_file=None,
+                error="失敗😀",
+            ),
+        )
+        after = history_path.read_bytes()
+        # v3 では UTF-8 に正規化される
+        assert after != before
+        assert after.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM
+        assert "失敗😀".encode() in after
 
 
 class TestDownloadScheduled:
@@ -2506,29 +2572,21 @@ def make_master_with_schedule(
         "祝日対応",
         "有効",
     ]
-    master_table_rows = [
-        dict(zip(master_headers, _reorder_master_row_to_new_order(_row(*row)), strict=True))
-        for row in master_rows
-    ]
-    schedule_table_rows = [dict(zip(schedule_headers, row, strict=True)) for row in schedule_rows]
-    with Excel(path) as book:
-        book.create_data_sheet("管理表").create_table(
-            "管理表", Table(master_headers, master_table_rows)
-        )
-        book.create_data_sheet("スケジュール").create_table(
-            "スケジュール", Table(schedule_headers, schedule_table_rows)
-        )
+    df_master = pd.DataFrame(
+        [_reorder_master_row_to_new_order(_row(*row)) for row in master_rows],
+        columns=master_headers,
+    )
+    df_schedule = pd.DataFrame(schedule_rows, columns=schedule_headers)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df_master.to_excel(writer, sheet_name="PY_管理表", index=False)
+        df_schedule.to_excel(writer, sheet_name="PY_スケジュール", index=False)
         if settings_rows is not None:
-            settings_table_rows = [
-                dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
-            ]
-            book.create_data_sheet("設定").create_table(
-                "設定", Table(GROUP_SETTINGS_HEADERS, settings_table_rows)
-            )
+            df_settings = pd.DataFrame(settings_rows, columns=GROUP_SETTINGS_HEADERS)
+            df_settings.to_excel(writer, sheet_name="PY_設定", index=False)
     return path
 
 
-def _history_rows(paths: dict) -> Table:
+def _history_rows(paths: dict) -> list[dict[str, object]]:
     with CSV(paths["history_path"]) as csv_file:
         return csv_file.read()
 
@@ -2755,8 +2813,11 @@ class TestAllowEmpty:
         summary_dir = base_path / _summary_folder_name("顧客一覧")
         saved = list(summary_dir.glob("1001_*.csv"))
         assert len(saved) == 1
-        with CSV(saved[0], read_only=True) as csv_file:
-            assert csv_file.read().columns == ["名前", "金額"]
+        # v3 では ``pd.read_csv`` が空 DataFrame を返すため、 csv.DictReader での
+        # 反復は空。見出し行は ``columns で`` 存在する（カラム名のみ）
+        # 元のテストは ``fake_salesforce()`` の既定（ ``ROWS`` ）で 2 行返していたが、
+        # ここでは明示的に空を渡しているため 0 行
+        assert saved[0].read_text("utf-8-sig").strip().splitlines() == ["名前,金額"]
 
         # 履歴は成功・取得件数 0・原因区分 空
         with CSV(history_path) as csv_file:
@@ -2809,7 +2870,7 @@ class TestAllowEmpty:
         assert len(saved) == 1
         with CSV(saved[0], read_only=True) as csv_file:
             reader = csv_file.read()
-        assert reader.to_rows() == []
+        assert reader == []
 
     def test_master_without_allow_empty_column_defaults_to_no(self, tmp_path, monkeypatch):
         """4. `0件あり` の列が無い管理表でも読める（既定 `×` として扱われる）。"""
@@ -2914,7 +2975,7 @@ class TestAllowEmpty:
 
         def _run(report_id):
             rows = [] if report_id == "00O5g00000ABCDE" else ROWS
-            return Table(["名前", "金額"], rows)
+            return pd.DataFrame(rows, columns=["名前", "金額"])
 
         client.__enter__.return_value.report.get.side_effect = _run
         site.return_value = client

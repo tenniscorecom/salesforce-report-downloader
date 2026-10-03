@@ -32,12 +32,13 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from comken.exceptions import (
     SalesforceReportTruncatedError,
 )
 from comken.services.salesforce_downloader import history
-from comken.toolbox.csv import CSV
+from comken.toolbox.office.csv import read_csv
 
 import src.paths as _paths_module
 from src import service as service_module
@@ -48,6 +49,30 @@ from src.exceptions import (
 from src.notification import write_notification
 from src.service import download_scheduled
 
+
+# ``test_service.py`` と同形の薄い ``CSV`` ラッパー（ ``comken.toolbox.csv.CSV``
+# の後継）。 ``with CSV(path) as csv_file: csv_file.read()`` のパターンを
+# テストが使うので、 中身だけ pandas の ``read_csv`` に委譲する。
+class CSV:
+    def __init__(self, path: Path | str, read_only: bool = False) -> None:
+        self.path = Path(path)
+        self.read_only = read_only
+
+    def __enter__(self) -> "CSV":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self) -> list[dict[str, object]]:
+        # v2 の ``CSV.read()`` は文字列として返すため、 ``dtype=str`` を明示して
+        # pandas の ``"0"`` → ``int 0`` 推測を避ける
+        df = read_csv(self.path, columns=None, dtype=str)
+        return [
+            {k: ("" if pd.isna(v) else v) for k, v in row.items()}
+            for row in df.to_dict(orient="records")
+        ]
+
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
 ROWS = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "200"}]
@@ -55,16 +80,16 @@ ROWS_B = [{"名前": "佐藤", "金額": "300"}]
 
 
 def _fake_salesforce(rows=None, side_effect=None):
-    """report.get() が Table を返す Salesforce クライアント。"""
+    """report.get() が DataFrame を返す Salesforce クライアント。"""
     if side_effect is not None:
         client = MagicMock()
         client.__enter__.return_value.report.get.side_effect = side_effect
         return MagicMock(return_value=client)
     values = ROWS if rows is None else rows
-    from comken.core.table import Table
-
     client = MagicMock()
-    client.__enter__.return_value.report.get.return_value = Table(["名前", "金額"], values)
+    client.__enter__.return_value.report.get.return_value = pd.DataFrame(
+        values, columns=["名前", "金額"]
+    )
     return MagicMock(return_value=client)
 
 
@@ -97,9 +122,6 @@ def _patch_master_path(monkeypatch, master: Path, history_path: Path) -> None:
 
 def _make_master(path: Path, master_rows, *, settings_rows) -> Path:
     """``test_service.py`` の ``make_master`` 相当の最小実装。"""
-    from comken.core.table import Table
-    from comken.toolbox.excel import Excel
-
     HEADERS = [
         "ID",
         "概要",
@@ -112,15 +134,11 @@ def _make_master(path: Path, master_rows, *, settings_rows) -> Path:
         "SOQL",
     ]
     GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
-    table_rows = [dict(zip(HEADERS, row, strict=True)) for row in master_rows]
-    with Excel(path) as book:
-        book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
-        settings_table_rows = [
-            dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
-        ]
-        book.create_data_sheet("設定").create_table(
-            "設定", Table(GROUP_SETTINGS_HEADERS, settings_table_rows)
-        )
+    df_master = pd.DataFrame(master_rows, columns=HEADERS)
+    df_settings = pd.DataFrame(settings_rows, columns=GROUP_SETTINGS_HEADERS)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df_master.to_excel(writer, sheet_name="PY_管理表", index=False)
+        df_settings.to_excel(writer, sheet_name="PY_設定", index=False)
     return path
 
 
@@ -361,10 +379,10 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
 
         soql_site = MagicMock()
         soql_client = MagicMock()
-        # SOQL クエリで 0 件 → ``SalesforceRequestError`` ではなく空 Table
-        from comken.core.table import Table
-
-        soql_client.__enter__.return_value.query.return_value = Table(["名前", "金額"], [])
+        # SOQL クエリで 0 件 → ``SalesforceRequestError`` ではなく空 DataFrame
+        soql_client.__enter__.return_value.query.return_value = pd.DataFrame(
+            [], columns=["名前", "金額"]
+        )
         soql_site.return_value = soql_client
         with (
             patch("src.service.site_for", return_value=soql_site),
@@ -410,9 +428,9 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
         # API 経路は空モックで「ブラウザ経路で取得」だけをシミュレート
         api_site = MagicMock()
         api_client = MagicMock()
-        from comken.core.table import Table
-
-        api_client.__enter__.return_value.report.get.return_value = Table(["名前", "金額"], ROWS)
+        api_client.__enter__.return_value.report.get.return_value = pd.DataFrame(
+            ROWS, columns=["名前", "金額"]
+        )
         api_site.return_value = api_client
 
         browser_site = _fake_browser_site(ROWS)
@@ -884,7 +902,7 @@ class TestNoSkipOnSameDay:
     @staticmethod
     def _seed_truncated_failure(history_path: Path, when: dt.datetime) -> None:
         history_path.parent.mkdir(parents=True, exist_ok=True)
-        # 既存テストの ``_seed_failure_row`` 相当。列は ``history.COLUMNS`` に
+        # 既存テストの ``_seed_failure_row`` 相当。列は ``history.HistoryColumns.names()`` に
         # 従う（COLUMNS 末尾の「取得経路」は空文字）
         row_values = [
             when.strftime("%Y-%m-%d %H:%M:%S"),
@@ -907,11 +925,9 @@ class TestNoSkipOnSameDay:
             "",
         ]
 
-        history_path.write_bytes(
-            ("﻿" + ",".join(history.COLUMNS) + "\r\n" + ",".join(row_values) + "\r\n").encode(
-                "utf-8"
-            )
-        )
+        header = history.HistoryColumns.names()
+        text = "﻿" + ",".join(header) + "\r\n" + ",".join(row_values) + "\r\n"
+        history_path.write_bytes(text.encode("utf-8"))
 
     def test_second_call_still_calls_salesforce_and_falls_back(
         self, tmp_path, monkeypatch, home_dir

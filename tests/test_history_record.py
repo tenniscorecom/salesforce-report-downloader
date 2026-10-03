@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from comken.services.salesforce_downloader.history import COLUMNS, FAILURE, SUCCESS, HistoryRow
+from comken.services.salesforce_downloader.history import (
+    FAILURE,
+    SUCCESS,
+    HistoryColumns,
+    HistoryRow,
+)
 
 from src.history import record
 from src.sheets.master import ReportEntry
@@ -66,7 +71,7 @@ def _expected_row_bytes(
     ]
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(list(COLUMNS))
+    writer.writerow(list(HistoryColumns.names()))
     writer.writerow(values)
     # ``record()`` 側の実装は UTF-8 BOM 付きで書く（``CSV`` クラスの既定）ので、
     # 期待側もそれを再現する
@@ -137,11 +142,11 @@ def test_record_writes_byte_identical_row_to_history_csv(
     import src.paths as paths_module
 
     master_path = tmp_path / "管理表.xlsx"
-    from comken.core.table import Table
-    from comken.toolbox.excel import Excel
+    import pandas as pd
 
-    with Excel(master_path) as excel:
-        excel.create_data_sheet("設定").create_table("設定", Table(["グループ", "ベースURL"], []))
+    pd.DataFrame([], columns=["グループ", "ベースURL"]).to_excel(
+        master_path, sheet_name="PY_設定", index=False
+    )
     monkeypatch.setattr(paths_module, "MASTER_PATH", master_path)
     monkeypatch.setattr(
         "comken.services.salesforce_downloader.paths.HISTORY_PATH", tmp_path / "履歴.csv"
@@ -198,11 +203,11 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
     import src.paths as paths_module
 
     master_path = tmp_path / "管理表.xlsx"
-    from comken.core.table import Table
-    from comken.toolbox.excel import Excel
+    import pandas as pd
 
-    with Excel(master_path) as excel:
-        excel.create_data_sheet("設定").create_table("設定", Table(["グループ", "ベースURL"], []))
+    pd.DataFrame([], columns=["グループ", "ベースURL"]).to_excel(
+        master_path, sheet_name="PY_設定", index=False
+    )
     monkeypatch.setattr(paths_module, "MASTER_PATH", master_path)
     monkeypatch.setattr(
         "comken.services.salesforce_downloader.paths.HISTORY_PATH", tmp_path / "履歴.csv"
@@ -229,13 +234,13 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
         executed_at=dt.datetime(2026, 9, 26, 11, 0, 0),  # noqa: DTZ001
     )
 
-    # 書き出された CSV を ``csv.DictReader`` で読み、列順が ``COLUMNS`` と一致し、
-    # 各列の値が期待どおりであることを確認する
+    # 書き出された CSV を ``csv.reader`` で読み、列順が ``HistoryColumns.names()``
+    # と一致し、各列の値が期待どおりであることを確認する
     with history_path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
         rows = list(reader)
-    assert header == list(COLUMNS)
+    assert header == list(HistoryColumns.names())
     assert len(rows) == 1
     row = dict(zip(header, rows[0], strict=True))
     assert row["実行日時"] == "2026-09-26 11:00:00"

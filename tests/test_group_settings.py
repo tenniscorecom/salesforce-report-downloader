@@ -7,12 +7,11 @@ Excel を作って ``GroupSetting.load()`` を直接呼ぶ経路と、``load_gro
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
 from comken.exceptions import (
     ComkenFileNotFoundError,
 )
-from comken.toolbox.excel import Excel
 
 import src.paths as paths_module
 from src.exceptions import (
@@ -28,9 +27,9 @@ SETTINGS_HEADERS = ["グループ", "ベースURL"]
 
 def make_book_with_settings(path: Path, settings_rows: list[list]) -> Path:
     """「設定」シートだけを持つ Excel を作る。"""
-    table_rows = [dict(zip(SETTINGS_HEADERS, row, strict=True)) for row in settings_rows]
-    with Excel(path) as book:
-        book.create_data_sheet("設定").create_table("設定", Table(SETTINGS_HEADERS, table_rows))
+    df = pd.DataFrame(settings_rows, columns=SETTINGS_HEADERS)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="PY_設定", index=False)
     return path
 
 

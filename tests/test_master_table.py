@@ -9,13 +9,12 @@ import typing
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
 from comken.exceptions import (
     ComkenFileNotFoundError,
     ExcelApplicationNotAvailableError,
 )
-from comken.toolbox.excel import Excel
 from openpyxl import load_workbook
 
 from src.exceptions import (
@@ -45,9 +44,9 @@ ROW_B = ["1002", "在庫", r"\\server\在庫\data.csv", "手動", "×", ""]
 
 def make_sheet(path: Path, rows: list[list], headers: list[str] | None = None) -> Path:
     actual_headers = headers or HEADERS
-    table_rows = [dict(zip(actual_headers, row, strict=False)) for row in rows]
-    with Excel(path) as excel:
-        excel.create_data_sheet("一覧").create_table("一覧", Table(actual_headers, table_rows))
+    df = pd.DataFrame(rows, columns=actual_headers)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="PY_一覧", index=False)
     return path
 
 

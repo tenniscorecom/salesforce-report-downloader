@@ -7,12 +7,11 @@
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
 from comken.exceptions import (
     ComkenFileNotFoundError,
 )
-from comken.toolbox.excel import Excel
 
 from src.exceptions import (
     MasterTableError,
@@ -56,18 +55,12 @@ def make_master_with_schedule(
         "有効",
         "備考",
     ]
-    master_table_rows = [dict(zip(master_headers, row, strict=True)) for row in master_rows]
-    with Excel(path) as book:
-        book.create_data_sheet("管理表").create_table(
-            "管理表", Table(master_headers, master_table_rows)
-        )
+    df_master = pd.DataFrame(master_rows, columns=master_headers)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df_master.to_excel(writer, sheet_name="PY_管理表", index=False)
         if schedule_rows is not None:
-            schedule_table_rows = [
-                dict(zip(SCHEDULE_HEADERS, row, strict=True)) for row in schedule_rows
-            ]
-            book.create_data_sheet(SCHEDULE_SHEET_NAME).create_table(
-                SCHEDULE_SHEET_NAME, Table(SCHEDULE_HEADERS, schedule_table_rows)
-            )
+            df_schedule = pd.DataFrame(schedule_rows, columns=SCHEDULE_HEADERS)
+            df_schedule.to_excel(writer, sheet_name=f"PY_{SCHEDULE_SHEET_NAME}", index=False)
     return path
 
 

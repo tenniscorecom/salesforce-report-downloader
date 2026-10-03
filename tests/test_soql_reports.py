@@ -12,13 +12,13 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
 from comken.exceptions import (
     DownloaderError,
     SalesforceError,
 )
-from comken.toolbox.csv import CSV
+from comken.toolbox.office.csv import read_csv
 
 from src.exceptions import SoqlReportNotRegisteredError
 from src.soql_reports import _registry, soql_report_for
@@ -80,8 +80,8 @@ class _EmptyReport(SoqlReport):
 
 
 def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
-    """``query()`` が ``Table`` を返す Salesforce クライアント。"""
-    table = Table(["Id", "Name"], rows if rows is not None else ROWS)
+    """``query()`` が ``DataFrame`` を返す Salesforce クライアント。"""
+    table = pd.DataFrame(rows if rows is not None else ROWS, columns=["Id", "Name"])
     client = MagicMock()
     client.__enter__.return_value.query.return_value = table
     site = MagicMock(return_value=client)
@@ -89,9 +89,9 @@ def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
 
 
 def fake_empty_salesforce() -> MagicMock:
-    """``query()`` が 0 行の ``Table`` を返す Salesforce クライアント。"""
+    """``query()`` が 0 行の ``DataFrame`` を返す Salesforce クライアント。"""
     client = MagicMock()
-    client.__enter__.return_value.query.return_value = Table(["Id", "Name"], [])
+    client.__enter__.return_value.query.return_value = pd.DataFrame([], columns=["Id", "Name"])
     site = MagicMock(return_value=client)
     return site
 
@@ -172,8 +172,8 @@ class TestDownloadSoqlReports:
         # ファイル名には概要が混ざらない（管理番号_日時_マイクロ秒.csv）
         assert csv_path.name.startswith(f"{_DummyReport.KEY}_")
         assert "_" + _DummyReport.SUMMARY not in csv_path.name
-        with CSV(csv_path, read_only=True) as csv_file:
-            assert csv_file.read().to_rows() == ROWS
+        table = read_csv(csv_path, columns=None, dtype=str).fillna("")
+        assert table.to_dict(orient="records") == ROWS
 
     def test_saves_csv_under_summary_subfolder_created_on_demand(self, folder):
         """概要のフォルダが無いときは ``_save()`` が ``mkdir`` で自動作成する。
@@ -211,11 +211,11 @@ class TestDownloadSoqlReports:
     def test_continues_after_one_failure(self, folder):
         """1件失敗しても他のレポートの取得は止めない。"""
 
-        def query_side_effect(soql: str) -> Table:
+        def query_side_effect(soql: str) -> pd.DataFrame:
             # ``9003`` だけ例外を投げる（SOQL 文字列で識別）。
             if "FROM Bogus" in soql:
                 raise SalesforceError(f"この URL の組織が登録されていません: {URL}")
-            table = Table(["Id", "Name"], ROWS)
+            table = pd.DataFrame(ROWS, columns=["Id", "Name"])
             return table
 
         _DummyReport.FOLDER = str(folder)
@@ -236,7 +236,7 @@ class TestDownloadSoqlReports:
         """全件失敗のときも ``DownloaderError`` が送出される。"""
         _DummyReport.FOLDER = str(folder)
 
-        def query_side_effect(_soql: str) -> Table:
+        def query_side_effect(_soql: str) -> pd.DataFrame:
             raise SalesforceError(f"この URL の組織が登録されていません: {URL}")
 
         client = MagicMock()
@@ -253,7 +253,7 @@ class TestDownloadSoqlReports:
         """想定外の例外（``TypeError`` 等）はそのまま伝播する。"""
         _DummyReport.FOLDER = str(folder)
 
-        def query_side_effect(_soql: str) -> Table:
+        def query_side_effect(_soql: str) -> pd.DataFrame:
             raise TypeError("プログラムバグ")
 
         client = MagicMock()
@@ -291,11 +291,10 @@ class TestSaveSemantics:
         # ベース直下ではなく、「ベース / 概要」の 2 階層目にある
         assert csv_path.parent == folder / summary_folder_name(_AllowEmptyReport.SUMMARY)
         assert csv_path.is_file()
-        with CSV(csv_path, read_only=True) as csv_file:
-            table = csv_file.read()
-        assert table.to_rows() == []
+        table = read_csv(csv_path, columns=None, dtype=str)
+        assert table.to_dict(orient="records") == []
         # 0 行でも列は見出しとして残る（``SalesforceBase.query()`` が ``columns`` を返すため）
-        assert table.columns == ["Id", "Name"]
+        assert list(table.columns) == ["Id", "Name"]
 
     def test_missing_folder_raises(self, tmp_path):
         """保存先フォルダが無ければ ``DownloaderError`` に変換される。"""

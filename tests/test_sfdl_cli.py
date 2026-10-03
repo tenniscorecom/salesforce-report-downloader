@@ -7,8 +7,7 @@
 
 from pathlib import Path
 
-from comken.core.table import Table
-from comken.toolbox.excel import Excel
+import pandas as pd
 
 from src.cli import main as sfdl_main
 
@@ -55,30 +54,18 @@ def make_workbook(
     （CLI 側では ``SheetNotFoundError`` を ``load_schedule`` が捕捉して空リストに
     するため、読み込みエラーにはならない）。
     """
-    with Excel(path) as book:
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
         if master_rows is not None:
-            book.create_data_sheet("管理表").create_table(
-                "管理表",
-                Table(
-                    MASTER_HEADERS,
-                    [dict(zip(MASTER_HEADERS, row, strict=True)) for row in master_rows],
-                ),
+            pd.DataFrame(master_rows, columns=MASTER_HEADERS).to_excel(
+                writer, sheet_name="PY_管理表", index=False
             )
         if schedule_rows is not None:
-            book.create_data_sheet("スケジュール").create_table(
-                "スケジュール",
-                Table(
-                    SCHEDULE_HEADERS,
-                    [dict(zip(SCHEDULE_HEADERS, row, strict=True)) for row in schedule_rows],
-                ),
+            pd.DataFrame(schedule_rows, columns=SCHEDULE_HEADERS).to_excel(
+                writer, sheet_name="PY_スケジュール", index=False
             )
         if settings_rows is not None:
-            book.create_data_sheet("設定").create_table(
-                "設定",
-                Table(
-                    GROUP_SETTINGS_HEADERS,
-                    [dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows],
-                ),
+            pd.DataFrame(settings_rows, columns=GROUP_SETTINGS_HEADERS).to_excel(
+                writer, sheet_name="PY_設定", index=False
             )
     return path
 

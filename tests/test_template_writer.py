@@ -10,10 +10,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from comken.core.table import Table
 from comken.exceptions import SheetNotFoundError
-from comken.toolbox.excel import Excel
 from openpyxl import load_workbook
 
 import src.paths as _paths_module
@@ -197,11 +196,9 @@ class TestCreateTemplateScheduleRule:
 
 def _make_schedule_book(path: Path, rows: list[list]) -> Path:
     """「スケジュール」シートだけ持つ既存ブックを作る。"""
-    table_rows = [dict(zip(SCHEDULE_HEADERS, row, strict=True)) for row in rows]
-    with Excel(path) as book:
-        book.create_data_sheet(SCHEDULE_SHEET_NAME).create_table(
-            SCHEDULE_SHEET_NAME, Table(SCHEDULE_HEADERS, table_rows)
-        )
+    df = pd.DataFrame(rows, columns=SCHEDULE_HEADERS)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=f"PY_{SCHEDULE_SHEET_NAME}", index=False)
     return path
 
 
@@ -241,8 +238,9 @@ class TestApplyScheduleDropdowns:
 
     def test_missing_schedule_sheet_raises(self, tmp_path):
         """「スケジュール」シートが無いブックでは SheetNotFoundError。"""
-        with Excel(tmp_path / "no_sched.xlsx") as book:
-            book.create_data_sheet("別のシート").create_table("別のシート", Table(["列"], []))
+        pd.DataFrame([], columns=["列"]).to_excel(
+            tmp_path / "no_sched.xlsx", sheet_name="別のシート"
+        )
         with pytest.raises(SheetNotFoundError):
             apply_schedule_dropdowns(tmp_path / "no_sched.xlsx")
 
@@ -596,22 +594,10 @@ class TestMigrateTemplate:
         path = tmp_path / "管理表.xlsx"
         # わざと逆順で列を書いた古いシートを作る
         legacy_headers = ["有効", "Salesforce URL", "概要", "担当者", "グループ", "ID"]
-        with Excel(path) as book:
-            book.create_data_sheet("管理表").create_table(
-                "管理表",
-                Table(
-                    legacy_headers,
-                    [
-                        dict(
-                            zip(
-                                legacy_headers,
-                                ["○", "https://example/1001", "顧客", "山田", "営業", "1001"],
-                                strict=True,
-                            )
-                        ),
-                    ],
-                ),
-            )
+        pd.DataFrame(
+            [["○", "https://example/1001", "顧客", "山田", "営業", "1001"]],
+            columns=legacy_headers,
+        ).to_excel(path, sheet_name="PY_管理表", index=False)
         create_template(path, ReportEntry)
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
@@ -718,28 +704,19 @@ class TestMigrateCombinedWorkbook:
         report_headers = ReportEntry.headers()
         schedule_headers = ScheduleRule.headers()
         settings_headers = GroupSetting.headers()
-        with Excel(path) as book:
-            book.create_data_sheet(ReportEntry.SHEET_NAME).create_table(
-                ReportEntry.SHEET_NAME,
-                Table(
-                    report_headers,
-                    [dict.fromkeys(report_headers, "") | {"ID": "1001"}],
-                ),
-            )
-            book.create_data_sheet(ScheduleRule.SHEET_NAME).create_table(
-                ScheduleRule.SHEET_NAME,
-                Table(
-                    schedule_headers,
-                    [dict.fromkeys(schedule_headers, "") | {"スケジュールキー": "S001"}],
-                ),
-            )
-            book.create_data_sheet(GroupSetting.SHEET_NAME).create_table(
-                GroupSetting.SHEET_NAME,
-                Table(
-                    settings_headers,
-                    [dict.fromkeys(settings_headers, "") | {"グループ": "営業本部"}],
-                ),
-            )
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            pd.DataFrame(
+                [dict.fromkeys(report_headers, "") | {"ID": "1001"}],
+                columns=report_headers,
+            ).to_excel(writer, sheet_name=f"PY_{ReportEntry.SHEET_NAME}", index=False)
+            pd.DataFrame(
+                [dict.fromkeys(schedule_headers, "") | {"スケジュールキー": "S001"}],
+                columns=schedule_headers,
+            ).to_excel(writer, sheet_name=f"PY_{ScheduleRule.SHEET_NAME}", index=False)
+            pd.DataFrame(
+                [dict.fromkeys(settings_headers, "") | {"グループ": "営業本部"}],
+                columns=settings_headers,
+            ).to_excel(writer, sheet_name=f"PY_{GroupSetting.SHEET_NAME}", index=False)
         create_combined_workbook(path)
         wb = load_workbook(path)
         # 3シートとも実データが残る
