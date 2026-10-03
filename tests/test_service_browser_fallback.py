@@ -25,7 +25,6 @@ Box 通知ファイル（``src.notification``）も同時に検証する。
 「Box 通知」のオーケストレーションを集約する。
 """
 
-import csv
 import datetime as dt
 import json
 import logging
@@ -50,28 +49,12 @@ from src.notification import write_notification
 from src.service import download_scheduled
 
 
-# ``test_service.py`` と同形の薄い ``CSV`` ラッパー（ ``comken.toolbox.csv.CSV``
-# の後継）。 ``with CSV(path) as csv_file: csv_file.read()`` のパターンを
-# テストが使うので、 中身だけ pandas の ``read_csv`` に委譲する。
-class CSV:
-    def __init__(self, path: Path | str, read_only: bool = False) -> None:
-        self.path = Path(path)
-        self.read_only = read_only
+def _read_rows(path: Path) -> list[dict[str, str]]:
+    """CSV を読み、全セルを文字列（空欄は ""）にした行のリストを返す。"""
+    return read_csv(path, columns=None, dtype=str, keep_default_na=False).to_dict(
+        orient="records"
+    )
 
-    def __enter__(self) -> "CSV":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
-
-    def read(self) -> list[dict[str, object]]:
-        # v2 の ``CSV.read()`` は文字列として返すため、 ``dtype=str`` を明示して
-        # pandas の ``"0"`` → ``int 0`` 推測を避ける
-        df = read_csv(self.path, columns=None, dtype=str)
-        return [
-            {k: ("" if pd.isna(v) else v) for k, v in row.items()}
-            for row in df.to_dict(orient="records")
-        ]
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
@@ -206,11 +189,10 @@ class TestAutoFallbackOnTruncated:
         assert browser_site.return_value.export_reports.call_count == 1
 
         # 履歴: 成功・route=自動切替（2000件超）
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "成功"
-            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
-            assert row["取得件数"] == str(len(ROWS))
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "成功"
+        assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
+        assert row["取得件数"] == str(len(ROWS))
 
         # 通知: 自動切替で 1 ファイル
         notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
@@ -252,11 +234,10 @@ class TestAutoFallbackOnEmpty:
 
         assert len(saved) == 1
         # 履歴: route=自動切替（0件）
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "成功"
-            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
-            assert row["取得件数"] == str(len(ROWS))
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "成功"
+        assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
+        assert row["取得件数"] == str(len(ROWS))
 
         # 通知: 自動切替で 1 ファイル
         notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
@@ -292,11 +273,10 @@ class TestAutoFallbackOnEmpty:
             download_scheduled("案件集計")
 
         # 履歴: 失敗・route=API（ブラウザに切り替えても 0 行だった）
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "失敗"
-            assert row["取得経路"] == history.ROUTE_API
-            assert row["エラーコード"] == "EmptyReportError"
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "失敗"
+        assert row["取得経路"] == history.ROUTE_API
+        assert row["エラーコード"] == "EmptyReportError"
 
         # 通知: 失敗で 1 ファイル
         notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
@@ -333,12 +313,11 @@ class TestAutoFallbackOnEmpty:
             download_scheduled("案件集計")
 
         # 履歴: 成功・route=API・取得件数=0
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "成功"
-            assert row["取得経路"] == history.ROUTE_API
-            assert row["取得件数"] == "0"
-            assert row["原因区分"] == ""
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "成功"
+        assert row["取得経路"] == history.ROUTE_API
+        assert row["取得件数"] == "0"
+        assert row["原因区分"] == ""
 
         # 通知: 書かれない（成功時）
         notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
@@ -445,10 +424,9 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
             download_scheduled("案件集計")
 
         # 履歴: 成功・route=ブラウザ（最初からブラウザ経路。自動切替ではない）
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "成功"
-            assert row["取得経路"] == history.ROUTE_BROWSER
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "成功"
+        assert row["取得経路"] == history.ROUTE_BROWSER
 
 
 class TestBrowserReusedAcrossReports:
@@ -494,8 +472,7 @@ class TestBrowserReusedAcrossReports:
         # ``export_reports`` は 2 回（=2 件の取得）
         assert browser_site.return_value.export_reports.call_count == 2
 
-        with CSV(history_path) as _csv_file:
-            rows = list(csv.DictReader(open(history_path, encoding="utf-8-sig")))
+        rows = _read_rows(history_path)
         routes = [r["取得経路"] for r in rows if r["成否"] == "成功"]
         assert routes == [
             history.ROUTE_BROWSER_FALLBACK_TRUNCATED,
@@ -574,13 +551,12 @@ class TestBrowserFallbackFails:
         assert caught.value.__cause__.__cause__ is not None
 
         # 履歴: 失敗・原因区分=「Salesforce」（=``ComkenError`` 系として分類される）
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "失敗"
-            assert row["エラーコード"] == "BrowserFallbackFailedError"
-            assert row["原因区分"] == "Salesforce"
-            # 取得経路は「ブラウザ（自動切替：2000件超）」（=ブラウザに切り替えたが失敗）
-            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "失敗"
+        assert row["エラーコード"] == "BrowserFallbackFailedError"
+        assert row["原因区分"] == "Salesforce"
+        # 取得経路は「ブラウザ（自動切替：2000件超）」（=ブラウザに切り替えたが失敗）
+        assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
 
         # 通知: 失敗で 1 ファイル
         notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
@@ -622,13 +598,12 @@ class TestBrowserFallbackFails:
         assert isinstance(caught.value.__cause__, BrowserFallbackFailedError)
 
         # 履歴: 失敗・原因区分=「Salesforce」
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "失敗"
-            assert row["エラーコード"] == "BrowserFallbackFailedError"
-            assert row["原因区分"] == "Salesforce"
-            # 取得経路は「ブラウザ（自動切替：0件）」（=ブラウザに切り替えたが失敗）
-            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "失敗"
+        assert row["エラーコード"] == "BrowserFallbackFailedError"
+        assert row["原因区分"] == "Salesforce"
+        # 取得経路は「ブラウザ（自動切替：0件）」（=ブラウザに切り替えたが失敗）
+        assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
 
         # 通知: 失敗で 1 ファイル
         notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))

@@ -21,7 +21,7 @@ from comken.exceptions import (
     SalesforceReportIDNotFoundError,
 )
 from comken.services.salesforce_downloader import history
-from comken.toolbox.office.csv import read_csv, write_csv
+from comken.toolbox.office.csv import read_csv
 
 # paths fixture が monkeypatch.setattr に直接渡せるよう、paths モジュールを import しておく
 import src.paths as _paths_module
@@ -37,44 +37,12 @@ from src.service import download_scheduled
 from src.sheets.master import load_master, shared_report_ids
 
 
-# v2 の ``comken.toolbox.csv.CSV`` 互換の薄いラッパー。 ``with CSV(path) as
-# csv_file: csv_file.read()`` のパターンをテストが使うので、 中身だけ pandas
-# の ``read_csv`` / ``write_csv`` に委譲する。 ``csv_file.read()`` は dict の
-# リストを返す（ ``row["原因区分"]`` のようなテストのアクセスを保つため）。
-class CSV:
-    """``comken.toolbox.csv.CSV`` 互換のテスト用ラッパー。
+def _read_rows(path: Path) -> list[dict[str, str]]:
+    """CSV を読み、全セルを文字列（空欄は ""）にした行のリストを返す。"""
+    return read_csv(path, columns=None, dtype=str, keep_default_na=False).to_dict(
+        orient="records"
+    )
 
-    ``csv_file_module.CSV._write`` のように ``monkeypatch.setattr`` で内部関数を
-    差し替えられるよう、 クラス属性 ``_write`` も持つ（実体は ``write_csv`` の薄い
-    ラッパーで、 テストは ``_write`` の中身を数えたり例外を投げたりする）。
-    """
-
-    def __init__(self, path: Path | str, read_only: bool = False) -> None:
-        self.path = Path(path)
-        self.read_only = read_only
-
-    def __enter__(self) -> "CSV":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
-
-    def read(self) -> list[dict[str, object]]:
-        # v2 の ``CSV.read()`` は値を文字列として返していたので、 ``dtype=str`` を
-        # 明示して同じ値を保つ（ pandas 既定だと ``1001`` が ``int`` になり、
-        # ``row["管理番号"] == "1001"`` のアサーションが壊れる）
-        df = read_csv(self.path, columns=None, dtype=str)
-        return [
-            {k: ("" if pd.isna(v) else v) for k, v in row.items()}
-            for row in df.to_dict(orient="records")
-        ]
-
-    def write(self, df: pd.DataFrame) -> None:
-        self._write(df, self.path)
-
-    @staticmethod
-    def _write(df: pd.DataFrame, path: Path | str) -> None:
-        write_csv(df, Path(path))
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
@@ -447,10 +415,6 @@ class TestDownloadScheduledRecord:
         with pytest.raises(ReportNotRegisteredError):
             download_scheduled(filters_by_report={"9999": filters})
 
-    def test_csv_path_is_accessible_after_construction(self, paths):
-        with CSV(paths["history_path"]) as csv_file:
-            assert csv_file.path == paths["history_path"]
-
     def test_uses_browser_fetch_for_report_marked_exceeds_row_limit(self, paths):
         """管理表の「2000件超」列が○の管理番号は、Report API ではなくブラウザ経由になる。
 
@@ -482,8 +446,7 @@ class TestDownloadScheduledRecord:
         assert len(csv_paths) == 1
         assert csv_paths[0].is_file()
         # CSV として読み戻せる
-        df = read_csv(csv_paths[0], columns=None, dtype=str)
-        assert df.fillna("").to_dict(orient="records") == ROWS
+        assert _read_rows(csv_paths[0]) == ROWS
 
     def test_fetches_again_even_if_already_downloaded_today(self, paths):
         """`paths` fixture の管理表には「スケジュール」シートが無い。
@@ -721,6 +684,7 @@ class TestDownloadScheduledRecord:
         # comken の ``Report`` が履歴から正しいパスを組み立てて
         # ファイルを引ける（これが成功しないと下流が CSV を読みに行けない）
         latest = Report("1001").path
+        assert latest is not None
         assert latest.is_file()
         assert latest.parent == paths["base_path"] / paths["summary_folder_1001"]
 
@@ -845,14 +809,13 @@ class TestHistory:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        with CSV(history_path) as csv_file:
-            rows = csv_file.read()
-            assert len(rows) == 1
-            row = rows[0]
-            assert row["成否"] == "失敗"
-            assert row["Salesforce取得結果"] == ""
-            assert row["保存結果"] == ""
-            assert row["エラーコード"] == "ReportFolderNotFoundError"
+        rows = _read_rows(history_path)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["成否"] == "失敗"
+        assert row["Salesforce取得結果"] == ""
+        assert row["保存結果"] == ""
+        assert row["エラーコード"] == "ReportFolderNotFoundError"
 
     def test_history_when_salesforce_call_fails(self, tmp_path, monkeypatch):
         """Salesforce への問い合わせが失敗 → 成否=失敗 / Salesforce取得結果=失敗 /
@@ -897,14 +860,13 @@ class TestHistory:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        with CSV(history_path) as csv_file:
-            rows = csv_file.read()
-            assert len(rows) == 1
-            row = rows[0]
-            assert row["成否"] == "失敗"
-            assert row["Salesforce取得結果"] == "失敗"
-            assert row["保存結果"] == ""
-            assert row["エラーコード"] == "SalesforceRequestError"
+        rows = _read_rows(history_path)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["成否"] == "失敗"
+        assert row["Salesforce取得結果"] == "失敗"
+        assert row["保存結果"] == ""
+        assert row["エラーコード"] == "SalesforceRequestError"
 
     def test_history_when_report_is_empty(self, paths):
         """取得できたが 0 行だった → 成否=失敗 / Salesforce取得結果=成功 /
@@ -1135,14 +1097,9 @@ class TestHistory:
 
         with history_path.open("r", encoding="utf-8-sig", newline="") as f:
             rows = list(csv.DictReader(f))
-        # pandas の ``read_csv`` は空セルを ``NaN`` で返し、 ``append_history`` 内の
-        # ``migrate_row`` 経由で ``str(NaN) == "nan"`` の文字列として CSV へ出てしまう
-        # （v3 の挙動）。テストの期待値を「空か ``nan``」に緩める
-        def normalize(v: str) -> str:
-            return "" if v in ("", "nan") else v
         assert len(rows) == 2
         # 既存行：抜けた列（エラー内容）が空文字で埋められる
-        assert normalize(rows[0]["エラー内容"]) == ""
+        assert rows[0]["エラー内容"] == ""
         assert rows[0]["管理番号"] == "1001"
         # 追記行
         assert rows[1]["管理番号"] == "1001"
@@ -1475,14 +1432,13 @@ class TestHistory:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        with CSV(history_path) as csv_file:
-            rows = csv_file.read()
-            assert len(rows) == 1
-            row = rows[0]
-            assert row["成否"] == "失敗"
-            assert row["Salesforce取得結果"] == "成功"
-            assert row["保存結果"] == "失敗"
-            assert row["エラーコード"] == "OSError"
+        rows = _read_rows(history_path)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["成否"] == "失敗"
+        assert row["Salesforce取得結果"] == "成功"
+        assert row["保存結果"] == "失敗"
+        assert row["エラーコード"] == "OSError"
 
     # ── 「原因区分」列（4区分 + 成功時の空文字）─────────────────────
     def test_cause_is_blank_on_success(self, paths):
@@ -1525,9 +1481,8 @@ class TestHistory:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["原因区分"] == "設定"
+        row = _read_rows(history_path)[-1]
+        assert row["原因区分"] == "設定"
 
     def test_cause_is_salesforce_when_request_fails(self, tmp_path, monkeypatch):
         """Salesforce への問い合わせが失敗 → 「Salesforce」。"""
@@ -1567,9 +1522,8 @@ class TestHistory:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["原因区分"] == "Salesforce"
+        row = _read_rows(history_path)[-1]
+        assert row["原因区分"] == "Salesforce"
 
     def test_cause_is_empty_data_when_report_is_empty(self, paths):
         """取得できたが 0 行 → 「データなし」（取得は成功・保存未到達を一意に指す区分）。
@@ -1639,9 +1593,8 @@ class TestHistory:
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["原因区分"] == "ファイル"
+        row = _read_rows(history_path)[-1]
+        assert row["原因区分"] == "ファイル"
 
     def test_cause_is_program_when_unexpected_error_raises(self, tmp_path, monkeypatch):
         """_fetch() が TypeError を投げる（comken 側のバグ想定）→ 「プログラム」。"""
@@ -1677,9 +1630,8 @@ class TestHistory:
             pytest.raises(TypeError),
         ):
             download_scheduled()
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["原因区分"] == "プログラム"
+        row = _read_rows(history_path)[-1]
+        assert row["原因区分"] == "プログラム"
 
     # ── 履歴CSVの文字コードは変えない ────────────────────────────────
 
@@ -1701,16 +1653,11 @@ class TestHistory:
 
     def test_record_keeps_cp932_when_migrating_legacy_header(self, tmp_path, monkeypatch):
         """CP932 で保存された**旧列構成**の履歴CSVをマイグレーション（全書き直し）しても、
-        旧データも新しい行も読める。
-
-        2026-09 (v3) で ``comken.toolbox.office.csv.write_csv`` は ``utf-8-sig`` を既定で
-        書き出すようになった。v2 のように CP932 を保持するかは comken 側の責務で、
-        ここでは「マイグレーションしても CP932 の中身が読める」までを確認する
-        （読み込み時の ``detect_encoding`` が CP932 を拾えること自体は ``read_csv``
-        側で保証されている）。
+        文字コードは CP932 のまま（UTF-8 BOM に変わらない）。旧データも新しい行も読める。
         """
-        header = [*history.HistoryColumns.names()[:-1]]
-        history_path = self._cp932_history(tmp_path, monkeypatch, header=header)
+        history_path = self._cp932_history(
+            tmp_path, monkeypatch, header=[*history.HistoryColumns.names()[:-1]]
+        )
 
         self._record_for(
             history_path,
@@ -1722,16 +1669,9 @@ class TestHistory:
             file_name="b.csv",
         )
 
-        # v3 では ``write_csv`` が ``utf-8-sig`` を既定で書くので、 マイグレ後の
-        # ファイルは UTF-8 BOM 付きに「正規化」される。 文字コードを **保ったまま**
-        # 再書き込みするかは comken 側の責務
         raw = history_path.read_bytes()
-        text = (
-            raw.decode("utf-8-sig")
-            if raw.startswith(b"\xef\xbb\xbf")
-            else raw.decode("cp932")
-        )
-        lines = text.splitlines()
+        assert not raw.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM ではない
+        lines = raw.decode("cp932").splitlines()  # CP932 として全体を読める
         assert lines[0].split(",") == list(history.HistoryColumns.names())  # 新しい見出しに揃った
         assert any("古い行" in line for line in lines)  # 旧データは残っている
         assert any("b.csv" in line for line in lines)  # 追記した行も入っている
@@ -1739,14 +1679,6 @@ class TestHistory:
     def test_record_raises_history_write_error_when_char_not_in_cp932(self, tmp_path, monkeypatch):
         """CP932 の履歴CSVに、CP932 で表せない文字（絵文字）を含む行を記録しようとすると、
         ``?`` に置換せず ``HistoryWriteError`` になり、履歴ファイルは不変。
-
-        2026-09 (v3) で ``comken.toolbox.office.csv.write_csv`` は ``utf-8-sig``
-        を既定で書き出すようになったので、 CP932 のファイルへ追記しても **ファイルは
-        UTF-8 に正規化される**（ 元の CP932 が ``detect_encoding`` で読めれば
-        データの保全は保たれる）。 ``HistoryWriteError`` を出す責務は
-        「CP932 で表せない文字」ではなく、 「**UTF-8 で表せない文字**」へ移る。
-        ここでは「**絵文字（CP932 で表せないが UTF-8 では表せる）**」は記録できる
-        ことを確認する。
         """
         from src.history import record
         from src.sheets.master import ReportEntry
@@ -1765,23 +1697,20 @@ class TestHistory:
             enabled=True,
             allow_empty=False,
         )
-        # 絵文字を含む行は UTF-8 で記録され、 ファイルも UTF-8 BOM 付きに変わる
-        record(
-            history_path,
-            entry=entry,
-            project="定期実行",
-            row=history.HistoryRow(
-                succeeded=False,
-                fetched_from_salesforce=False,
-                saved_to_file=None,
-                error="失敗😀",
-            ),
-        )
-        after = history_path.read_bytes()
-        # v3 では UTF-8 に正規化される
-        assert after != before
-        assert after.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM
-        assert "失敗😀".encode() in after
+        with pytest.raises(HistoryWriteError):
+            record(
+                history_path,
+                entry=entry,
+                project="定期実行",
+                row=history.HistoryRow(
+                    succeeded=False,
+                    fetched_from_salesforce=False,
+                    saved_to_file=None,
+                    error="失敗😀",
+                ),
+            )
+
+        assert history_path.read_bytes() == before
 
 
 class TestDownloadScheduled:
@@ -2129,8 +2058,7 @@ class TestDownloadScheduled:
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
         # 履歴の「スケジュールキー」列が S002 だけであること（S001 は記録されない）
-        with CSV(tmp_path / "履歴.csv") as csv_file:
-            rows = csv_file.read()
+        rows = _read_rows(tmp_path / "履歴.csv")
         assert len(rows) == 1
         assert rows[0]["管理番号"] == "1001"
         assert rows[0]["スケジュールキー"] == "S002"
@@ -2255,8 +2183,7 @@ class TestScheduleDedup:
         saved = list(summary_dir.glob("1001_*.csv"))
         assert len(saved) == 1
         # 履歴の「スケジュールキー」列に、根拠のキーが記録されている
-        with CSV(tmp_path / "履歴.csv") as csv_file:
-            rows = csv_file.read()
+        rows = _read_rows(tmp_path / "履歴.csv")
         assert len(rows) == 1
         assert rows[0]["管理番号"] == "1001"
         assert rows[0]["スケジュールキー"] == "S001"
@@ -2362,8 +2289,7 @@ class TestScheduleDedup:
             download_scheduled()
 
         # 失敗時の履歴行の「スケジュールキー」列に、空でない根拠キーが入っている
-        with CSV(tmp_path / "履歴.csv") as csv_file:
-            rows = csv_file.read()
+        rows = _read_rows(tmp_path / "履歴.csv")
         assert len(rows) == 1
         assert rows[0]["管理番号"] == "1001"
         assert rows[0]["成否"] == "失敗"
@@ -2405,8 +2331,7 @@ class TestScheduleDedup:
         ):
             download_scheduled()
         # 履歴には S_WED が記録されている
-        with CSV(tmp_path / "履歴.csv") as csv_file:
-            first_rows = csv_file.read()
+        first_rows = _read_rows(tmp_path / "履歴.csv")
         assert len(first_rows) == 1
         assert first_rows[0]["スケジュールキー"] == "S_WED"
 
@@ -2422,8 +2347,7 @@ class TestScheduleDedup:
         ):
             saved2 = download_scheduled()
         assert [path.name.split("_")[0] for path in saved2] == ["1001"]
-        with CSV(tmp_path / "履歴.csv") as csv_file:
-            rows = csv_file.read()
+        rows = _read_rows(tmp_path / "履歴.csv")
         # S_MON の成功履歴が増える
         keys = sorted(row["スケジュールキー"] for row in rows)
         assert keys == ["S_MON", "S_WED"]
@@ -2587,8 +2511,7 @@ def make_master_with_schedule(
 
 
 def _history_rows(paths: dict) -> list[dict[str, object]]:
-    with CSV(paths["history_path"]) as csv_file:
-        return csv_file.read()
+    return _read_rows(paths["history_path"])
 
 
 # ── 1 実行の基準日時を固定（日付またぎ対策） ──────────────────────────────
@@ -2661,8 +2584,7 @@ class TestFixedCurrentAcrossExecution:
         )
 
         # 履歴の「実行日時」は開始時刻（2026-09-23 23:59:50）で固定されている
-        with CSV(history_path) as csv_file:
-            rows = csv_file.read()
+        rows = _read_rows(history_path)
         assert len(rows) == 1
         assert rows[0]["実行日時"] == "2026-09-23 23:59:50", (
             f"履歴の実行日時が開始時刻ではない: {rows[0]['実行日時']!r}"
@@ -2764,13 +2686,12 @@ class TestAllowEmpty:
         # ファイルは作られない
         assert list(base_path.glob("1001_*.csv")) == []
         # 履歴には `データなし` が残る（取得成功・保存未到達の組合せのみ取り得る）
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "失敗"
-            assert row["Salesforce取得結果"] == "成功"
-            assert row["保存結果"] == ""
-            assert row["エラーコード"] == "EmptyReportError"
-            assert row["原因区分"] == "データなし"
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "失敗"
+        assert row["Salesforce取得結果"] == "成功"
+        assert row["保存結果"] == ""
+        assert row["エラーコード"] == "EmptyReportError"
+        assert row["原因区分"] == "データなし"
 
     def test_empty_report_with_allow_empty_yes_succeeds_and_writes_empty_file(
         self, tmp_path, monkeypatch
@@ -2820,14 +2741,13 @@ class TestAllowEmpty:
         assert saved[0].read_text("utf-8-sig").strip().splitlines() == ["名前,金額"]
 
         # 履歴は成功・取得件数 0・原因区分 空
-        with CSV(history_path) as csv_file:
-            row = csv_file.read()[-1]
-            assert row["成否"] == "成功"
-            assert row["Salesforce取得結果"] == "成功"
-            assert row["保存結果"] == "成功"
-            assert row["取得件数"] == "0"
-            assert row["原因区分"] == ""
-            assert row["エラーコード"] == ""
+        row = _read_rows(history_path)[-1]
+        assert row["成否"] == "成功"
+        assert row["Salesforce取得結果"] == "成功"
+        assert row["保存結果"] == "成功"
+        assert row["取得件数"] == "0"
+        assert row["原因区分"] == ""
+        assert row["エラーコード"] == ""
 
     def test_scheduled_empty_report_can_be_received(self, tmp_path, monkeypatch):
         """0件で成功した定期取得は、ファイルが空のまま読み取れる。"""
@@ -2868,8 +2788,7 @@ class TestAllowEmpty:
         summary_dir = base_path / _summary_folder_name("顧客一覧")
         saved = list(summary_dir.glob("1001_*.csv"))
         assert len(saved) == 1
-        with CSV(saved[0], read_only=True) as csv_file:
-            reader = csv_file.read()
+        reader = _read_rows(saved[0])
         assert reader == []
 
     def test_master_without_allow_empty_column_defaults_to_no(self, tmp_path, monkeypatch):
@@ -2987,14 +2906,13 @@ class TestAllowEmpty:
         names = sorted(path.name.split("_")[0] for path in saved)
         assert names == ["1001", "1002"]
         # 履歴を確認: "1001" は成功・0件、"1002" も成功・2件
-        with CSV(history_path) as csv_file:
-            rows = csv_file.read()
-            by_key = {row["管理番号"]: row for row in rows}
-            assert by_key["1001"]["成否"] == "成功"
-            assert by_key["1001"]["取得件数"] == "0"
-            assert by_key["1001"]["原因区分"] == ""
-            assert by_key["1002"]["成否"] == "成功"
-            assert by_key["1002"]["取得件数"] == "2"
+        rows = _read_rows(history_path)
+        by_key = {row["管理番号"]: row for row in rows}
+        assert by_key["1001"]["成否"] == "成功"
+        assert by_key["1001"]["取得件数"] == "0"
+        assert by_key["1001"]["原因区分"] == ""
+        assert by_key["1002"]["成否"] == "成功"
+        assert by_key["1002"]["取得件数"] == "2"
 
 
 # ── 2000件超で失敗したレポートの当日スキップ ─────────────────────────
