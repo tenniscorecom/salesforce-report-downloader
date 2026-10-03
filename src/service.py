@@ -930,10 +930,9 @@ def _fetch_via_browser(
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
                 dict(sf.export_reports({entry.url: tmp_path}))
-                # v2 の ``CSV.read()`` は文字列として返していたため、 ここで ``dtype=str``
-                # を指定して同じ値を保つ。pandas の既定の型推論だと ``金額`` のような
-                # 数字が ``int`` になり、 下流の判定（ ``"100" == 100`` ）を壊す
-                return read_csv(tmp_path, columns=None, dtype=str)
+                # 全セルを文字列で読む（空欄は ""）。型推測させると「001」が 1 に、
+                # 「N/A」「null」などが空欄に化けて、保存する CSV が Salesforce の出力と変わる
+                return read_csv(tmp_path, columns=None, dtype=str, keep_default_na=False)
         raise AssertionError("unreachable")  # 上の with 内で必ず return する
 
     # 同じ組織のブラウザが既に開いていれば再利用、無ければ開く
@@ -971,9 +970,9 @@ def _fetch_via_browser(
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / f"{entry.key}.csv"
             dict(sf.export_reports({entry.url: tmp_path}))
-            # v2 の ``CSV.read()`` は文字列として返していたため、 ここで ``dtype=str``
-            # を指定して同じ値を保つ
-            return read_csv(tmp_path, columns=None, dtype=str)
+            # 全セルを文字列で読む（空欄は ""）。型推測させると「001」が 1 に、
+            # 「N/A」「null」などが空欄に化けて、保存する CSV が Salesforce の出力と変わる
+            return read_csv(tmp_path, columns=None, dtype=str, keep_default_na=False)
     except Exception:
         # 壊れた状態のブラウザを次回以降に渡さないため、ここで閉じて dict から外す。
         # 閉じるときに起きた例外は元の失敗を隠すので、警告ログに留めて元例外を上げる

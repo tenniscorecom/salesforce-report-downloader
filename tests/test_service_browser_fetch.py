@@ -89,6 +89,18 @@ class TestFetchViaBrowser:
         assert list(table.columns) == ["名前", "金額"]
         assert table.to_dict(orient="records") == [{"名前": "山田", "金額": "100"}]
 
+    def test_keeps_na_like_strings_and_empty_cells_as_text(self):
+        """「N/A」「NA」「null」などの文字列は空欄にせず、空欄は空文字のまま返す。
+
+        pandas の既定だとこれらが欠損値（NaN）になり、保存した CSV で空欄に化ける。
+        """
+        csv_bytes = "名前,備考\n山田,N/A\n鈴木,NA\n佐藤,null\n田中,\n".encode()
+        site_class, _site_instance = _fake_browser_site(csv_bytes)
+        with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
+            table = _fetch_via_browser(ENTRY)
+
+        assert table["備考"].tolist() == ["N/A", "NA", "null", ""]
+
     def test_calls_login_with_credentials_before_export(self):
         site_class, site_instance = _fake_browser_site()
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
