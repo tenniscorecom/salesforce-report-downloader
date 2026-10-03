@@ -977,7 +977,8 @@ def _add_excel_table(sheet: Worksheet, headers: list[str], row_count: int, row_c
         return
     last_column_letter = get_column_letter(len(headers))
     last_data_row = row_count + _FIRST_DATA_ROW - 1
-    table_ref = f"A{_FIRST_DATA_ROW}:{last_column_letter}{last_data_row}"
+    # 範囲は見出し行（データ行の 1 つ上）から始める
+    table_ref = f"A{_FIRST_DATA_ROW - 1}:{last_column_letter}{last_data_row}"
     table = Table(displayName=f"PY_T_{row_cls.__name__}", ref=table_ref)
     # 既定のテーブル書式（罫線・縞模様）を有効にする。 v2 の ``create_table`` も
     # 暗黙にスタイルを付けていたため、 同じ見た目になる

@@ -323,6 +323,18 @@ class TestCreateCombinedWorkbook:
         assert f"PY_{ScheduleRule.SHEET_NAME}" in wb.sheetnames
         assert f"PY_{GroupSetting.SHEET_NAME}" in wb.sheetnames
 
+    def test_tables_start_at_header_row(self, tmp_path):
+        """Excel テーブルの範囲は見出し行（1行目）から始まる。
+
+        2行目から始めると、記入例の1行目がテーブルの見出しとして扱われてしまう。
+        """
+        path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
+        wb = load_workbook(path)
+        for row_cls in (ReportEntry, ScheduleRule, GroupSetting):
+            sheet = wb[f"PY_{row_cls.SHEET_NAME}"]
+            table = sheet.tables[f"PY_T_{row_cls.__name__}"]
+            assert table.ref.startswith("A1:")
+
     def test_load_master_reads_report_entries(self, paths):
         master_path, _ = paths
         create_combined_workbook(master_path)
