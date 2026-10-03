@@ -41,3 +41,12 @@ max-complexity = 10
 # src/ はプロジェクトルートからの絶対 import（`src.service` 等）で参照するため、
 # ルート自身もパスに含める。
 extraPaths = [".", "../comken"]
+
+[tool.pytest.ini_options]
+# ``tests/conftest.py`` の autouse fixture が本番パスを ``tmp_path`` 配下に
+# 倒すが、 「既定値のモジュール定数そのもの」を **直接読む** テストは
+# このマーカーでオプトアウトする。 例: ``test_paths.py`` の
+# ``TestMasterPathPatchEffect::test_default_master_path_points_to_unc_and_is_unreadable``。
+markers = [
+    "no_isolate_production_paths: opt out of the autouse production-path isolation",
+]

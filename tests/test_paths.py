@@ -334,6 +334,7 @@ class TestMasterPathPatchEffect:
     失敗するため）。
     """
 
+    @pytest.mark.no_isolate_production_paths
     def test_default_master_path_points_to_unc_and_is_unreadable(self):
         """``MASTER_PATH`` の既定値は実在しない UNC パス。差し替えないと
         ``load_master`` が ``ComkenFileNotFoundError`` で失敗する。

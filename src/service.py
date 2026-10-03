@@ -56,6 +56,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import logging
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -227,12 +228,13 @@ def download_scheduled(
             RPA 基盤から見て成功と区別が付かない。
     """
     # **同時起動防止:** 履歴 SQLite とは別のロックファイル
-    # （``{history_db_path}.run``）で、対象選定〜履歴追記をひとまとまりに
-    # プロセス間排他する。ロックが取れないときは別プロセスが進行中なので、
-    # 例外にせず警告ログだけ出して ``[]`` を返す。
-    # ``HistoryFileLock`` は名前のとおり履歴用ロックの部品だが、Windows の
-    # msvcrt ロックはファイル単位なので、``history_db_path`` とは違うファイルを
-    # 渡せば履歴読み書き（``{history_db_path}.lock``）と衝突しない。
+    # （``{history_db_path}.run``、``HistoryFileLock`` が内部で
+    # ``{run_lock_path}.lock`` を作る）で、対象選定〜履歴追記を
+    # ひとまとまりにプロセス間排他する。 ロックが取れないときは
+    # 別プロセスが進行中なので、例外にせず警告ログだけ出して ``[]``
+    # を返す。 履歴 SQLite 自体の読み書きは SQLite の内部ロック
+    # （ページ単位の書き込みロック）で守られるため、 ``.run.lock``
+    # という別ファイル経由の msvcrt ファイルロックとは衝突しない。
     # DB は取得を実行する PC のローカルに置くので、ロックも同じ PC の
     # プロセス間排他として機能する（SMB 越しに置いてはいけない）。
     # ``ExitStack`` を使い、ロック取得**だけ**を try/except で囲う。本体側で
@@ -261,7 +263,28 @@ def download_scheduled(
             # （人が Excel で開いている等で書き出しできなくても、 取得自体は
             # 止めない。 正本は SQLite 側にあるので書き出し失敗は取得失敗に
             # ならない）。
-            _export_history_warn_only()
+            #
+            # **想定外の例外が ``_export_history_warn_only()`` から出た場合は、
+            # ``finally`` で上書きされると本体の例外（ ``ScheduledDownloadFailedError``
+            # など）が隠れる。** なので、 ``sys.exc_info()`` を見て
+            # 「本体が既に例外中」なら ``logger.exception`` だけで握り、
+            # 本体の例外をそのまま伝播させる。 本体が正常終了したときの
+            # 想定外の例外は今どおり送出する。
+            body_exc_info = sys.exc_info()
+            try:
+                _export_history_warn_only()
+            except HistoryExportError:
+                # ``_export_history_warn_only()`` 自身が握る想定だが、
+                # 将来 ``except`` を広げ忘れた場合のため、ここでも握る
+                pass
+            except Exception:
+                if body_exc_info[1] is not None:
+                    logger.exception(
+                        "履歴の閲覧用 CSV 書き出しで想定外の例外が出ましたが、"
+                        "本体側の例外を優先するため握りつぶします"
+                    )
+                else:
+                    raise
 
 
 def _download_scheduled_locked(

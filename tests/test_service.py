@@ -2114,6 +2114,81 @@ class TestRequiredHistory:
         assert "0 行" in str(original)
 
 
+class TestHistoryExportFinallyErrorSuppression:
+    """``download_scheduled()`` の ``finally`` で ``_export_history_warn_only()`` が
+    想定外の例外（ ``HistoryExportError`` 以外）を出したとき、
+    **本体側の例外を隠さない** ことの確認。
+
+    旧実装では ``finally`` の例外がそのまま送出されていたため、
+    本体が ``ScheduledDownloadFailedError`` で終わった書き出しが ``RuntimeError`` で
+    失敗すると、 呼び出し側には ``RuntimeError`` だけが伝わって元の
+    ``ScheduledDownloadFailedError`` が消えていた。 修正後は ``sys.exc_info()``
+    を見て 「本体が既に例外中」 なら ``logger.exception`` だけで握り、
+    本体の例外をそのまま伝播させる。 本体が正常終了したときの想定外の
+    例外は今どおり送出する。
+    """
+
+    def test_body_failure_is_not_overwritten_by_export_runtime_error(self, paths, monkeypatch):
+        """本体が ``ScheduledDownloadFailedError`` で終わり、 書き出しが
+        ``RuntimeError`` で失敗 → 呼び出し側に届くのは
+        ``ScheduledDownloadFailedError`` （ ``RuntimeError`` ではない）。
+
+        ``HistoryExportError`` 以外の例外が ``finally`` の
+        ``_export_history_warn_only()`` から出たケースを、 ``export_history``
+        を ``RuntimeError`` で失敗させることで疑似する。
+        """
+
+        def _raise_runtime(*_args, **_kwargs):
+            raise RuntimeError("想定外の書き出し失敗")
+
+        with (
+            patch(
+                "src.service.site_for",
+                return_value=fake_salesforce([]),
+            ),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=fake_browser_site([]),
+            ),
+            patch("src.service.export_history", side_effect=_raise_runtime),
+            pytest.raises(ScheduledDownloadFailedError) as caught,
+        ):
+            download_scheduled("案件集計")
+
+        # ``RuntimeError`` は握られ、 本体の ``ScheduledDownloadFailedError``
+        # がそのまま外へ伝わる
+        assert isinstance(caught.value, ScheduledDownloadFailedError)
+        # ``RuntimeError`` の文字列が ``ScheduledDownloadFailedError`` の
+        # メッセージや ``__cause__`` に出てこないこと（=本体側で握られて
+        # いない、 ＝「本体側の例外を見逃さない」 保証）
+        assert "想定外の書き出し失敗" not in str(caught.value)
+        assert not (
+            caught.value.__cause__ is not None
+            and "想定外の書き出し失敗" in str(caught.value.__cause__)
+        )
+
+    def test_body_success_still_propagates_unexpected_export_error(self, paths, monkeypatch):
+        """本体が正常終了したとき、 書き出しの想定外の例外はそのまま送出する
+        （=旧挙動を壊さない）。
+
+        本体が空リストを返した状態で ``export_history`` を ``RuntimeError`` で
+        失敗させると、 ``RuntimeError`` 自体が外へ伝わる。
+        """
+
+        def _raise_runtime(*_args, **_kwargs):
+            raise RuntimeError("想定外の書き出し失敗")
+
+        with (
+            patch(
+                "src.service.site_for",
+                return_value=fake_salesforce(),
+            ),
+            patch("src.service.export_history", side_effect=_raise_runtime),
+            pytest.raises(RuntimeError, match="想定外の書き出し失敗"),
+        ):
+            download_scheduled("案件集計")
+
+
 # ── 0件あり / 0 行の扱い ─────────────────────────────────────────────
 class TestAllowEmpty:
     """管理表の「0件あり」列で、0 行のとき失敗にするか正常終了にするかを選ぶ。"""
