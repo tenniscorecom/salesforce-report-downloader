@@ -3,6 +3,8 @@
 管理表の「SOQL」列（``ReportEntry.use_soql``）が真だと、_fetch() がレポートAPIでも
 ブラウザ経由でもなく、comken の ``soql_report_for()`` で引いた ``SoqlReport`` 経由で
 取得する（「2000件超」列より優先。tests/test_service_browser_fetch.py 側と対）。
+
+取得は ``SalesforceBase.bulk_query()`` 経由（同期の ``query()`` ではない）。
 """
 
 from dataclasses import replace
@@ -92,16 +94,18 @@ class TestFetchRoutesToSoql:
 class TestFetchViaSoql:
     """_fetch_via_soql() — SOQL経由で取得し、_fetch() と同じ Table を返す。"""
 
-    def test_returns_table_from_query(self):
+    def test_returns_table_from_bulk_query(self):
         table = MagicMock()
         client = MagicMock()
-        client.__enter__.return_value.query.return_value = table
+        client.__enter__.return_value.bulk_query.return_value = table
         site = MagicMock(return_value=client)
         with patch("src.service.site_for", return_value=site) as site_for:
             result = _fetch_via_soql(SOQL_ENTRY)
 
         site_for.assert_called_once_with(SOQL_ENTRY.url)
-        client.__enter__.return_value.query.assert_called_once_with("SELECT Id, Name FROM Account")
+        client.__enter__.return_value.bulk_query.assert_called_once_with(
+            "SELECT Id, Name FROM Account"
+        )
         assert result is table
 
     def test_raises_when_no_matching_soql_report_registered(self):

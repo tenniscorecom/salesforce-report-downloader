@@ -1,7 +1,8 @@
 r"""src/soql_reports/base.py — SOQLで取るレポートの基底クラス。
 
-Report API（2000行上限）で取れない大きなレポートは、SOQL（`SalesforceBase.query()`、
-上限なし）で取る。サブクラスは1レポート=1ファイルで ``reports/`` に書く。
+Report API（2000行上限）で取れない大きなレポートは、SOQL
+（`SalesforceBase.bulk_query()`、上限なし）で取る。サブクラスは
+1レポート=1ファイルで ``reports/`` に書く。
 **登録は自動** — ファイルを置くと ``_registry.registered_reports()`` が
 ``pkgutil.iter_modules`` で走査して ``SoqlReport`` サブクラスを集める（明示的な
 タプル編集は不要）。ファイル名が ``_`` で始まるモジュールは走査対象外

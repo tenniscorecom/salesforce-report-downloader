@@ -51,12 +51,12 @@ FAKE_ROWS = [
 
 
 def _fake_site() -> MagicMock:
-    """疑似 Salesforce 組織。``with site() as sf: sf.query(soql)`` の形を保ったまま、
+    """疑似 Salesforce 組織。``with site() as sf: sf.bulk_query(soql)`` の形を保ったまま、
     実際の HTTP 通信をせずに固定の ``Table`` を返す。
     """
     table = Table(list(FAKE_ROWS[0]), FAKE_ROWS)
     client = MagicMock()
-    client.__enter__.return_value.query.return_value = table
+    client.__enter__.return_value.bulk_query.return_value = table
     client.__exit__.return_value = False
     return MagicMock(return_value=client)  # site_for() の戻り値（呼ぶと client を返す「組織」）
 

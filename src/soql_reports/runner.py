@@ -154,11 +154,16 @@ def _fetch(report_cls: type[SoqlReport]) -> Table:
     ``download_scheduled()`` と同じく、つなぐ組織は URL のドメインで決まる
     （``site_for()``）。サブクラス側で URL を間違えれば ``SalesforceError``
     で即座に気付ける。
+
+    取得は ``SalesforceBase.bulk_query()`` で行う。SOQL 経由のレポートは
+    件数が大きいものが多く、Bulk API 2.0 のサーバ側ジョブで往復回数を
+    抑えられる。集計関数・``GROUP BY`` 等 Bulk API 2.0 が受け付けない
+    SOQL はこの経路では使えない。
     """
     instance = report_cls()
     site = site_for(report_cls.URL)
     with site() as salesforce:
-        return salesforce.query(instance.soql())
+        return salesforce.bulk_query(instance.soql())
 
 
 def _save(report_cls: type[SoqlReport], table: Table) -> Path:
@@ -166,7 +171,7 @@ def _save(report_cls: type[SoqlReport], table: Table) -> Path:
 
     ``service._save()`` と同じ方針:
     0 行・``ALLOW_EMPTY`` × → ``EmptyReportError``（=失敗）／○ → 空 CSV を置く。
-    0 行でも ``SalesforceBase.query()`` が ``Table.columns`` を持って返るので、
+    0 行でも ``SalesforceBase.bulk_query()`` が ``Table.columns`` を持って返すので、
     見出し行だけ書いた空 CSV を保存する。
 
     **概要のフォルダは保存名の予約前に ``mkdir`` する。** ベース（``FOLDER``）は
