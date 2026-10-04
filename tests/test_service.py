@@ -968,7 +968,10 @@ class TestHistory:
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
 
-        # 末尾に「旧バージョン列」を足した18列の見出しと 18 列の行
+        # 末尾に「旧バージョン列」を足した19列の見出しと 19 列の行。
+        # ``history.COLUMNS`` が 18 列（最後に「取得経路」が増えている）に
+        # なったので、末尾の未知列込みで 19 列。取得経路はまだ無い時代の
+        # 履歴を想定して空文字で埋める
         legacy_header = [*history.COLUMNS, "旧バージョン列"]
         legacy_row = [
             "2024-01-01 09:00:00",
@@ -985,6 +988,7 @@ class TestHistory:
             "a.csv",
             "1",
             "0.10",
+            "",
             "",
             "",
             "",
@@ -1041,7 +1045,7 @@ class TestHistory:
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
 
-        # 「エラー内容」を抜いた16列の見出し
+        # 「取得経路」を抜いた17列の見出し（``history.COLUMNS`` は 18 列）
         legacy_header = list(history.COLUMNS[:-1])
         legacy_row = [
             "2024-01-01 09:00:00",
@@ -1058,6 +1062,7 @@ class TestHistory:
             "a.csv",
             "1",
             "0.10",
+            "",
             "",
             "",
         ]
@@ -1139,6 +1144,7 @@ class TestHistory:
             "",  # 原因区分
             "",  # エラーコード
             "",  # エラー内容
+            "",  # 取得経路（旧ファイルには無い想定なので空文字）
         ]
         self._seed_legacy_history(history_path, header=reordered_header, row=reordered_row)
         self._record_for(
@@ -1214,6 +1220,7 @@ class TestHistory:
                     "",
                     "",
                     "",
+                    "",  # 取得経路（``use_soql=False`` 等の想定なので空文字で書く）
                 ]
             )
 
@@ -1313,9 +1320,10 @@ class TestHistory:
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
 
-        # 末尾に「旧バージョン列」を足した18列の見出しと 18 列の行。
+        # 末尾に「旧バージョン列」を足した19列の見出しと 19 列の行。
         # 「旧バージョン列」をマイグレーションで捨て、 ``COLUMNS`` 順へ
-        # 揃えたうえで新行を足すシナリオを使う
+        # 揃えたうえで新行を足すシナリオを使う（``history.COLUMNS`` が
+        # 18 列になったので、末尾の未知列込みで 19 列）
         legacy_header = [*history.COLUMNS, "旧バージョン列"]
         legacy_row = [
             "2024-01-01 09:00:00",
@@ -1335,6 +1343,7 @@ class TestHistory:
             "",
             "",
             "",
+            "",  # 取得経路（無い時代の履歴を想定して空文字）
             "旧バージョン列の値",
         ]
         self._seed_legacy_history(history_path, header=legacy_header, row=legacy_row)

@@ -18,6 +18,9 @@ from comken.core.dates import now
 from comken.services.salesforce_downloader.history import (
     COLUMNS,
     FAILURE,
+    ROUTE_API,
+    ROUTE_BROWSER,
+    ROUTE_SOQL,
     SUCCESS,
     HistoryRow,
 )
@@ -40,10 +43,12 @@ def record(
     """履歴を1行追記する。ファイルが無ければ見出し行から作る。
 
     履歴の本体（ロック・列検証・書き換え）は comken 側の ``append_history()`` に
-    委譲する。**書き込まれる値（各列の中身・順番・空欄の扱い）は comken 側に
-    移す前の ``record()`` と 1 文字も変えない**（管理番号・概要・レポートID・URL
-    ・保存先・ファイル名・件数・秒数・原因区分・エラーコード・エラー内容の各列と
-    その順序）。
+    委譲する。**「取得経路」列が最後に増えた**。他の列の値・順番・空欄の扱いは
+    comken 側に移す前の ``record()`` から変えない（管理番号・概要・レポートID・
+    URL・保存先・ファイル名・件数・秒数・原因区分・エラーコード・エラー内容の各列
+    とその順序）。取得経路の値は呼び出し側が ``row.route`` に明示していればそれを、
+    無ければ ``_route_of(entry)`` で ``entry``（管理表の1行）の「SOQL」「2000件超」
+    列から決める（``src.service._fetch()`` と同じ優先順位）。
 
     Args:
         path: 履歴 CSV のパス。
@@ -93,6 +98,11 @@ def record(
         "原因区分": row.cause,
         "エラーコード": row.error_code,
         "エラー内容": row.error.replace("\n", " "),
+        # **「取得経路」列は ``row.route`` が空でなければそれを優先し、空なら
+        # ``_route_of(entry)`` で ``entry``（管理表の1行）の「SOQL」「2000件超」
+        # 列から決める。** 優先順位は ``src.service._fetch()`` と同じ
+        # （SOQL → 2000件超 → API）
+        "取得経路": row.route or _route_of(entry),
     }
     # ``append_history()`` が ``COLUMNS`` に無いキーを ``InvalidTableInputError``
     # で止めるので、``COLUMNS`` 順の dict へ並べ直す（``実行日時`` は ``append_history``
@@ -123,6 +133,27 @@ def _stage(value: bool | None) -> str:
     if value is None:
         return ""
     return SUCCESS if value else FAILURE
+
+
+def _route_of(entry: ReportEntry) -> str:
+    """``entry``（管理表の1行）から「取得経路」列に書く文字列を決める。
+
+    優先順位は ``src.service._fetch()`` と同じ（**SOQL → 2000件超 → API**）:
+
+    1. ``entry.use_soql`` が真 → ``ROUTE_SOQL``
+    2. ``entry.exceeds_row_limit`` が真 → ``ROUTE_BROWSER``
+    3. どちらも偽 → ``ROUTE_API``
+
+    「Report API が 2000件超で失敗したら自動でブラウザに切り替える」処理は
+    ダウンローダー側に無いため、自動切替2種（``ROUTE_BROWSER_FALLBACK_*``）
+    はこの関数では返さない（``row.route`` に入れる呼び出し側が現れたときに
+    使う想定）。
+    """
+    if entry.use_soql:
+        return ROUTE_SOQL
+    if entry.exceeds_row_limit:
+        return ROUTE_BROWSER
+    return ROUTE_API
 
 
 __all__ = ["record", "HistoryRow"]

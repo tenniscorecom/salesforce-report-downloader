@@ -62,6 +62,12 @@ def _expected_row_bytes(
         row_data["cause"],
         row_data["error_code"],
         row_data["error"].replace("\n", " "),
+        # 「取得経路」列は comken 側の ``COLUMNS`` 末尾。``row.route`` が空の
+        # ときは ``src.history._route_of(entry)`` が ``entry`` の「SOQL」/
+        # 「2000件超」列から決める（テストでは ``entry`` がどちらも既定の偽
+        # なので ``ROUTE_API``）。``row.route`` が明示されているテストは
+        # ``row_data["route"]`` でその値を差し込む
+        row_data["route"],
     ]
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -167,6 +173,10 @@ def test_record_writes_byte_identical_row_to_history_csv(
         "schedule_key": "S001",
         "executed_at": dt.datetime(2026, 9, 26, 10, 0, 0),  # noqa: DTZ001
         "folder_text": None,  # 下の try/except で上書き
+        # 「取得経路」列: ``entry`` は use_soql=False / exceeds_row_limit=False
+        # （=Report API 経路）なので ``ROUTE_API``。``row.route`` を明示したい
+        # テストはここで上書きする
+        "route": "",
     }
     try:
         output_path(entry)
@@ -174,6 +184,14 @@ def test_record_writes_byte_identical_row_to_history_csv(
         row_data["folder_text"] = f"(保存先を組み立てられません: {exc})"
     else:  # pragma: no cover — ここには来ない
         row_data["folder_text"] = "(保存先を組み立てられません: 想定外)"
+
+    # 「取得経路」列の期待値: ``entry`` が use_soql=False / exceeds_row_limit=False
+    # （既定）なので ``_route_of(entry)`` は ``ROUTE_API`` を返す。
+    # ``row.route`` は空のまま（``HistoryRow(route="")`` ）なので
+    # ``record()`` は ``_route_of(entry)`` の結果を履歴に書く
+    from comken.services.salesforce_downloader.history import ROUTE_API
+
+    row_data["route"] = ROUTE_API
 
     # 期待値を見出し + データ行のバイト列として組み立てる
     expected = _expected_row_bytes(entry=entry, row_data=row_data)
@@ -247,3 +265,182 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
     assert row["エラー内容"] == "保存先のフォルダがありません: 1001"
     # 保存先フォルダは ``_resolved_folder()`` が例外を握りつぶして文字列化した値
     assert row["保存先"].startswith("(保存先を組み立てられません")
+
+
+# ── 「取得経路」列の分岐テスト ─────────────────────────────────────────
+# ``_route_of(entry)`` の優先順位（SOQL → 2000件超 → API）と、
+# ``row.route`` の上書きを確かめる。``_route_of`` の条件式を入れ替えると
+# 落ちるようにしてある（``monkeypatch.setattr`` で分岐を書き換える）
+
+
+def _read_route(history_path: Path) -> str:
+    """``record()`` で書き出した履歴 CSV の「取得経路」列の値を返す。"""
+    with history_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        next(reader)  # 見出し
+        row = next(reader)
+    return dict(zip(COLUMNS, row, strict=True))["取得経路"]
+
+
+def _route_test_entry(**overrides: Any) -> ReportEntry:
+    """テスト用の ``ReportEntry`` を作る。``use_soql`` / ``exceeds_row_limit``
+    の ``overrides`` を渡して分岐を切り替える。"""
+    from dataclasses import replace
+
+    base = ReportEntry(
+        key="1001",
+        summary="顧客一覧",
+        url="https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view",
+        group="登録されていないグループ",
+        assignee="山田",
+        enabled=True,
+        allow_empty=False,
+    )
+    return replace(base, **overrides)
+
+
+@pytest.fixture
+def history_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``record()`` が新規ファイルを作る前提で ``HISTORY_PATH`` と ``MASTER_PATH``
+    を差し替える。
+
+    既存ファイルが残ったままだと「マイグレーションして追記」の経路に入り、
+    「取得経路」列を 1 段ずらしたテストが分岐を跨ぎにくくなるので、毎回
+    空のパスを渡す。 ``MASTER_PATH`` は ``_resolved_folder()`` が
+    ``output_path()`` 経由で読むため、空の ``設定`` シートだけ持つ
+    管理表を ``tmp_path`` 配下に置いて ``output_path()`` が
+    ``GroupNotRegisteredError`` を上げる経路に持ち込む（``GroupNotRegisteredError``
+    以外の例外を ``_resolved_folder()`` がそのまま伝播するため、設定シートの
+    「グループ」列に登録が無い状態で呼び出される必要がある）。
+    """
+    from comken.core.table import Table
+    from comken.toolbox.excel import Excel
+
+    import src.paths as paths_module
+
+    master_path = tmp_path / "管理表.xlsx"
+    with Excel(master_path) as excel:
+        excel.create_data_sheet("設定").create_table("設定", Table(["グループ", "ベースURL"], []))
+    monkeypatch.setattr(paths_module, "MASTER_PATH", master_path)
+    monkeypatch.setattr(
+        "comken.services.salesforce_downloader.paths.HISTORY_PATH", tmp_path / "履歴.csv"
+    )
+    # ``load_master()`` の初回キャッシュが残ると ``MASTER_PATH`` を差し替えても
+    # 内部のキャッシュから読まれる可能性があるので
+    paths_module._reset_cached_master()
+    return tmp_path / "履歴.csv"
+
+
+def test_record_writes_soql_when_entry_uses_soql(
+    history_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``entry.use_soql`` が真の entry では「取得経路」に ``SOQL`` が書かれる。
+
+    ``_route_of`` の SOQL 分岐が壊れたら、このテストは落ちる（``API`` や
+    ``ブラウザ`` が書かれてしまう）。
+    """
+    entry = _route_test_entry(use_soql=True, exceeds_row_limit=False)
+    record(
+        history_path,
+        entry=entry,
+        project="案件集計",
+        row=HistoryRow(
+            succeeded=True,
+            fetched_from_salesforce=True,
+            saved_to_file=True,
+        ),
+    )
+    assert _read_route(history_path) == "SOQL"
+
+
+def test_record_writes_browser_when_entry_exceeds_row_limit(
+    history_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``entry.exceeds_row_limit`` が真の entry では「取得経路」に ``ブラウザ`` が書かれる。
+
+    ``use_soql=False`` / ``exceeds_row_limit=True`` の組合せ。 ``_route_of``
+    のブラウザ分岐が壊れたら ``API`` が書かれて落ちる。
+    """
+    entry = _route_test_entry(use_soql=False, exceeds_row_limit=True)
+    record(
+        history_path,
+        entry=entry,
+        project="案件集計",
+        row=HistoryRow(
+            succeeded=True,
+            fetched_from_salesforce=True,
+            saved_to_file=True,
+        ),
+    )
+    assert _read_route(history_path) == "ブラウザ"
+
+
+def test_record_writes_api_when_no_special_flags(
+    history_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``use_soql=False`` / ``exceeds_row_limit=False`` の entry では
+    「取得経路」に ``API`` が書かれる（既定値ケース）。
+
+    ``_route_of`` の API 分岐が壊れたら ``SOQL`` や ``ブラウザ`` が書かれて
+    落ちる。
+    """
+    entry = _route_test_entry(use_soql=False, exceeds_row_limit=False)
+    record(
+        history_path,
+        entry=entry,
+        project="案件集計",
+        row=HistoryRow(
+            succeeded=True,
+            fetched_from_salesforce=True,
+            saved_to_file=True,
+        ),
+    )
+    assert _read_route(history_path) == "API"
+
+
+def test_record_prefers_row_route_over_entry(
+    history_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``row.route`` に値を入れて渡すと、``_route_of(entry)`` の結果より
+    ``row.route`` が優先される。
+
+    ``entry`` は SOQL 経路（``_route_of`` は ``SOQL`` を返すはず）だが、
+    ``row.route="ブラウザ"`` を渡しているので、履歴には ``ブラウザ`` が
+    書かれる。優先順位が逆転したら ``SOQL`` が書かれて落ちる。
+    """
+    entry = _route_test_entry(use_soql=True, exceeds_row_limit=False)
+    record(
+        history_path,
+        entry=entry,
+        project="案件集計",
+        row=HistoryRow(
+            succeeded=True,
+            fetched_from_salesforce=True,
+            saved_to_file=True,
+            route="ブラウザ",
+        ),
+    )
+    assert _read_route(history_path) == "ブラウザ"
+
+
+def test_record_soql_takes_priority_over_browser(
+    history_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``use_soql=True`` と ``exceeds_row_limit=True`` が同時に真のとき、
+    SOQL が優先される（``src.service._fetch()`` と同じ優先順位）。
+
+    ``_route_of`` の条件式を入れ替えて SOQL と 2000件超を逆にすると、
+    ``ブラウザ`` が書かれてこのテストは落ちる。
+    """
+    entry = _route_test_entry(use_soql=True, exceeds_row_limit=True)
+    record(
+        history_path,
+        entry=entry,
+        project="案件集計",
+        row=HistoryRow(
+            succeeded=True,
+            fetched_from_salesforce=True,
+            saved_to_file=True,
+        ),
+    )
+    assert _read_route(history_path) == "SOQL"
