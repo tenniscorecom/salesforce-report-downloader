@@ -14,11 +14,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from comken.core.dates import month_end
-from comken.core.holidays import (
+from comken.core.dates import (
     WorkdayNotFoundError,
     is_holiday,
     is_workday,
+    month_end,
     non_workdays_after,
     non_workdays_before,
     nth_workday,
@@ -278,7 +278,7 @@ class ScheduleRule(MasterRow):
     ) -> bool:
         """指定時刻にこのスケジュールを実行すべきか判定する。
 
-        祝日判定は ``comken.core.holidays`` の ``is_holiday`` / ``is_workday``
+        祝日判定は ``comken.core.dates`` の ``is_holiday`` / ``is_workday``
         / ``nth_workday`` を直接使う。国民の祝日と会社休日を
         まとめて判定するため、呼び出し側でカレンダーを差し替える必要はない
         （既定の統一カレンダー 1 本だけがサポート対象）。
@@ -395,7 +395,7 @@ class ScheduleRule(MasterRow):
         「``date`` の前日から前の営業日に達するまで」の非営業日区間を見て、
         **その区間に祝日である対象日が 1 つでも含まれていれば ``True``**。
 
-        非営業日の区間は ``comken.core.holidays`` の ``non_workdays_after`` /
+        非営業日の区間は ``comken.core.dates`` の ``non_workdays_after`` /
         ``non_workdays_before`` が返す（探索の上限もカレンダー側が持つ）。
         ``date`` 自身が非営業日の場合は呼び出し元（``_date_matches``）で先に弾く。
         「対象日条件を満たすか」（曜日・日付・月末・第N営業日）だけがこのクラスの責務。

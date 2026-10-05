@@ -107,7 +107,7 @@ CAUSE_FILE = "ファイル"
 CAUSE_PROGRAM = "プログラム"
 
 # ``_reserve_path`` が連番を足して空きファイル名を探索する回数の上限。
-# ``comken.core.holidays.WORKDAY_SEARCH_LIMIT`` と同じ理由で、
+# ``comken.core.dates.WORKDAY_SEARCH_LIMIT`` と同じ理由で、
 # 共有サーバーの同期・権限異常などで ``FileExistsError`` が返り続けると無限
 # ループになるため、必ず上限を切る。
 RESERVE_PATH_LIMIT = 1000
@@ -785,7 +785,7 @@ def _matched_schedule_key(
     - いずれの行も ``is_due()`` False なら False, ""
     - いずれかの行が ``is_due()`` True でも、今日すでに成功済みなら False, ""
 
-    祝日判定は ``ScheduleRule.is_due()`` が ``comken.core.holidays`` の統一
+    祝日判定は ``ScheduleRule.is_due()`` が ``comken.core.dates`` の統一
     カレンダーを直接見るため、呼び出し側でカレンダーを用意する必要はない。
 
     ``current`` は呼び出し元で固定した基準日時。dedup 判定にも ``current.date()``
