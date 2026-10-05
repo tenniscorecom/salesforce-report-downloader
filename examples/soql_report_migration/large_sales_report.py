@@ -35,6 +35,8 @@ class LargeSalesReport(SoqlReport):
         # レポートの絞り込み条件を WHERE 句にした SOQL の例。
         # 実際のフィールド名は describe_fields() の
         # 「対応フィールドAPI名」列を見て埋める。
+        # 書けない SOQL と値の扱い（bulk の制約・CSV の文字列扱い）は
+        # ``_template.py`` の ``soql()`` を参照。
         return (
             "SELECT Id, Name, Amount, CloseDate, StageName "
             "FROM Opportunity "

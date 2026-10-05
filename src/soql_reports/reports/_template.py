@@ -21,5 +21,15 @@ class NewReport(SoqlReport):
     ALLOW_EMPTY = False  # TODO: 0件を失敗として扱うか（普段データがあるなら False のまま）
 
     def soql(self) -> str:
-        """TODO: 実行する SOQL クエリ文字列を返す。"""
+        """TODO: 実行する SOQL クエリ文字列を返す。
+
+        取得は Bulk API 2.0（``bulk_query()``）で行われるため、集計関数
+        (``COUNT`` / ``SUM`` など)・``GROUP BY``・``OFFSET``・SELECT 句の中の
+        子サブクエリ（例: ``SELECT Id, (SELECT Id FROM Contacts) FROM Account``）
+        はジョブ作成時に 400 で失敗する。
+
+        戻り値の ``Table`` は **全フィールドが文字列**（真偽値は ``"true"`` /
+        ``"false"``、null は空文字）。参照項目（``Account.Name`` など）は
+        ``Account.Name`` の形の列名になり、平坦化されない。
+        """
         raise NotImplementedError("TODO: SOQL文をここに書く")
