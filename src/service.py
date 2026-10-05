@@ -537,12 +537,17 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     参照先の単一の正は管理表で、``SoqlReport.URL`` は
     ``download_soql_reports()``（管理表を経由しない独立した経路）専用の値
     だからここでは読まない。
+
+    取得は ``SalesforceBase.bulk_query()`` で行う。Bulk API 2.0 の
+    ジョブで長時間データをサーバ側で処理できるため、件数が多い
+    SOQL レポートでの往復回数を抑えられる。集計関数・``GROUP BY`` 等
+    Bulk API 2.0 が受け付けない SOQL はこの経路では使えない。
     """
     report_cls = soql_report_for(entry.key)
     instance = report_cls()
     site = site_for(entry.url)
     with site() as salesforce:
-        return salesforce.query(instance.soql())
+        return salesforce.bulk_query(instance.soql())
 
 
 def _fetch_via_browser(

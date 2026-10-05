@@ -1,7 +1,7 @@
 """SOQL レポート取得の基盤（``download_soql_reports()``）を、Salesforce をモックして検証する。
 
 実際のレポート（サブクラス）は作らず、テスト内でダミーの ``SoqlReport`` サブクラスを
-定義して使う。``SalesforceBase.query()`` をモックして Table を返す。
+定義して使う。``SalesforceBase.bulk_query()`` をモックして Table を返す。
 """
 
 from __future__ import annotations
@@ -80,18 +80,18 @@ class _EmptyReport(SoqlReport):
 
 
 def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
-    """``query()`` が ``Table`` を返す Salesforce クライアント。"""
+    """``bulk_query()`` が ``Table`` を返す Salesforce クライアント。"""
     table = Table(["Id", "Name"], rows if rows is not None else ROWS)
     client = MagicMock()
-    client.__enter__.return_value.query.return_value = table
+    client.__enter__.return_value.bulk_query.return_value = table
     site = MagicMock(return_value=client)
     return site
 
 
 def fake_empty_salesforce() -> MagicMock:
-    """``query()`` が 0 行の ``Table`` を返す Salesforce クライアント。"""
+    """``bulk_query()`` が 0 行の ``Table`` を返す Salesforce クライアント。"""
     client = MagicMock()
-    client.__enter__.return_value.query.return_value = Table(["Id", "Name"], [])
+    client.__enter__.return_value.bulk_query.return_value = Table(["Id", "Name"], [])
     site = MagicMock(return_value=client)
     return site
 
@@ -211,7 +211,7 @@ class TestDownloadSoqlReports:
     def test_continues_after_one_failure(self, folder):
         """1件失敗しても他のレポートの取得は止めない。"""
 
-        def query_side_effect(soql: str) -> Table:
+        def bulk_query_side_effect(soql: str) -> Table:
             # ``9003`` だけ例外を投げる（SOQL 文字列で識別）。
             if "FROM Bogus" in soql:
                 raise SalesforceError(f"この URL の組織が登録されていません: {URL}")
@@ -221,7 +221,7 @@ class TestDownloadSoqlReports:
         _DummyReport.FOLDER = str(folder)
         _FailingReport.FOLDER = str(folder)
         client = MagicMock()
-        client.__enter__.return_value.query.side_effect = query_side_effect
+        client.__enter__.return_value.bulk_query.side_effect = bulk_query_side_effect
         site = MagicMock(return_value=client)
         with (
             pytest.raises(DownloaderError) as caught,
@@ -236,11 +236,11 @@ class TestDownloadSoqlReports:
         """全件失敗のときも ``DownloaderError`` が送出される。"""
         _DummyReport.FOLDER = str(folder)
 
-        def query_side_effect(_soql: str) -> Table:
+        def bulk_query_side_effect(_soql: str) -> Table:
             raise SalesforceError(f"この URL の組織が登録されていません: {URL}")
 
         client = MagicMock()
-        client.__enter__.return_value.query.side_effect = query_side_effect
+        client.__enter__.return_value.bulk_query.side_effect = bulk_query_side_effect
         site = MagicMock(return_value=client)
         with (
             pytest.raises(DownloaderError) as caught,
@@ -253,11 +253,11 @@ class TestDownloadSoqlReports:
         """想定外の例外（``TypeError`` 等）はそのまま伝播する。"""
         _DummyReport.FOLDER = str(folder)
 
-        def query_side_effect(_soql: str) -> Table:
+        def bulk_query_side_effect(_soql: str) -> Table:
             raise TypeError("プログラムバグ")
 
         client = MagicMock()
-        client.__enter__.return_value.query.side_effect = query_side_effect
+        client.__enter__.return_value.bulk_query.side_effect = bulk_query_side_effect
         site = MagicMock(return_value=client)
         with (
             pytest.raises(TypeError),
@@ -294,7 +294,7 @@ class TestSaveSemantics:
         with CSV(csv_path, read_only=True) as csv_file:
             table = csv_file.read()
         assert table.to_rows() == []
-        # 0 行でも列は見出しとして残る（``SalesforceBase.query()`` が ``columns`` を返すため）
+        # 0 行でも列は見出しとして残る（``SalesforceBase.bulk_query()`` が ``columns`` を返すため）
         assert table.columns == ["Id", "Name"]
 
     def test_missing_folder_raises(self, tmp_path):
