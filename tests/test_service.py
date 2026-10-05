@@ -239,8 +239,13 @@ def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
 def fake_browser_site(rows: list[dict] | None = None) -> MagicMock:
     """export_reports() が CSV を書き出すブラウザ版サイトクラス（「2000件超」列用）。"""
     values = ROWS if rows is None else rows
-    lines = "\n".join(f"{r['名前']},{r['金額']}" for r in values)
-    csv_bytes = f"名前,金額\n{lines}\n".encode()
+    if values:
+        lines = "\n".join(f"{r['名前']},{r['金額']}" for r in values)
+        csv_bytes = f"名前,金額\n{lines}\n".encode()
+    else:
+        # 0 行: 見出しだけの CSV（``csv.reader`` が空行を 0 列として拾って
+        # 「列数が一致しません」エラーを出すのを避けるため、データ行を足さない）
+        csv_bytes = "名前,金額\n".encode("utf-8-sig")
 
     def _export_reports(reports, **kwargs):
         for _url, destination in reports.items():
@@ -741,10 +746,18 @@ class TestHistory:
         assert row["エラーコード"] == ""
 
     def test_failure_is_recorded(self, paths):
+        # Report API が 0 行 → ブラウザで取り直し → ブラウザも 0 行 →
+        # ``EmptyReportError`` で失敗、という新仕様の流れ。
+        # ブラウザ経路もモックして「ブラウザも 0 行」のケースを再現する
+        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.site_for",
                 return_value=fake_salesforce([]),
+            ),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -863,11 +876,20 @@ class TestHistory:
 
     def test_history_when_report_is_empty(self, paths):
         """取得できたが 0 行だった → 成否=失敗 / Salesforce取得結果=成功 /
-        保存結果=空 / エラーコード=EmptyReportError（通信は成功していて中身が空、という区別）。"""
+        保存結果=空 / エラーコード=EmptyReportError（通信は成功していて中身が空、という区別）。
+
+        Report API が 0 行 + ブラウザでも 0 行 → EmptyReportError で失敗、
+        という新仕様の流れをモックして再現する。
+        """
+        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.site_for",
                 return_value=fake_salesforce([]),
+            ),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -1045,7 +1067,8 @@ class TestHistory:
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
 
-        # 「取得経路」を抜いた17列の見出し（``history.COLUMNS`` は 18 列）
+        # 「取得経路」を抜いた17列の見出し（``history.COLUMNS`` は 18 列）。
+        # 「取得経路」列が無い時代の履歴を想定した構成
         legacy_header = list(history.COLUMNS[:-1])
         legacy_row = [
             "2024-01-01 09:00:00",
@@ -1144,7 +1167,7 @@ class TestHistory:
             "",  # 原因区分
             "",  # エラーコード
             "",  # エラー内容
-            "",  # 取得経路（旧ファイルには無い想定なので空文字）
+            "",  # 取得経路（旧ファイルには無い想定なので空文字。COLUMNS 末尾の列）
         ]
         self._seed_legacy_history(history_path, header=reordered_header, row=reordered_row)
         self._record_for(
@@ -1323,7 +1346,7 @@ class TestHistory:
         # 末尾に「旧バージョン列」を足した19列の見出しと 19 列の行。
         # 「旧バージョン列」をマイグレーションで捨て、 ``COLUMNS`` 順へ
         # 揃えたうえで新行を足すシナリオを使う（``history.COLUMNS`` が
-        # 18 列になったので、末尾の未知列込みで 19 列）
+        # 18 列（最後に「取得経路」が増えている）なので、末尾の未知列込みで 19 列）
         legacy_header = [*history.COLUMNS, "旧バージョン列"]
         legacy_row = [
             "2024-01-01 09:00:00",
@@ -1520,11 +1543,20 @@ class TestHistory:
         この管理表には `0件あり` 列が無いので `×` 既定扱いで `EmptyReportError` が送出される。
         段階は「取得成功 → 保存に進まず 0 行で失敗」になるため、4 区分だった頃の
         `Salesforce` から、新仕様の `データなし` に変わった。
+
+        新仕様では Report API が 0 行のときブラウザで取り直し、ブラウザも 0 行なら
+        初めて ``EmptyReportError`` で失敗する。ブラウザ経路もモックして
+        「ブラウザも 0 行」のケースを再現する。
         """
+        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.site_for",
                 return_value=fake_salesforce([]),
+            ),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -2390,14 +2422,21 @@ class TestRunLock:
             other_handle.__exit__(None, None, None)
 
     def test_propagates_lock_timeout_from_download_body(self, tmp_path, monkeypatch):
-        """実行ロックは取得できるが、本体の ``history.truncated_today`` などで
-        ``HistoryLockTimeoutError`` が出ると、``download_scheduled()`` は
-        空リストを返さず**例外をそのまま送出する**。
+        """実行ロックは取得できるが、本体（``_download_scheduled_locked()`` 内の
+        ``history.downloaded_today()`` または ``history.schedule_succeeded_today()``）
+        で ``HistoryLockTimeoutError`` が出ると、``download_scheduled()`` は空リスト
+        を返さず**例外をそのまま送出する**。
 
         旧実装ではロック取得と本体の両方をまとめて ``except`` していたため、
         履歴CSV 用ロックの本当の障害が「他プロセスが進行中」として隠れて
         しまっていた。修正後はロック取得部分だけを ``except`` するため、
         本体側の ``HistoryLockTimeoutError`` はそのまま外へ伝播する。
+
+        このテストでは「スケジュール」シートを足さずに ``history.downloaded_today()``
+        を経由する経路を再現している（``history.downloaded_today`` /
+        ``history.schedule_succeeded_today`` のどちらを差し替えても守られる
+        振る舞いは同じなので、テスト用に使う関数は「現在も本体から呼ばれている
+        履歴関数」ならどちらでもよい）。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -2419,11 +2458,16 @@ class TestRunLock:
         _patch_master_path(monkeypatch, master, history_path)
 
         def _raise_lock_timeout(*args, **kwargs):
-            # ``history.truncated_today()`` の呼び出しすべてで擬似的に
-            # 履歴ロック取得失敗を発生させる（=履歴ロックの本当の障害）
+            # ``history.downloaded_today()`` の呼び出しすべてで擬似的に
+            # 履歴ロック取得失敗を発生させる（=履歴ロックの本当の障害）。
+            # 旧テストは ``history.truncated_today`` を monkeypatch していたが、
+            # 2026-10 の自動切替導入で ``_matched_schedule_key()`` から
+            # ``truncated_today`` を呼ぶ経路は無くなった。今も本体が呼ぶ
+            # ``downloaded_today`` / ``schedule_succeeded_today`` のどちらかに
+            # 差し替えれば同じ振る舞い（=履歴ロック障害が外へ出る）を守れる
             raise HistoryLockTimeoutError(history_path, 10.0)
 
-        monkeypatch.setattr(service_module.history, "truncated_today", _raise_lock_timeout)
+        monkeypatch.setattr(service_module.history, "downloaded_today", _raise_lock_timeout)
 
         with (
             patch("src.service.site_for", return_value=fake_salesforce()),
@@ -2589,11 +2633,20 @@ class TestRequiredHistory:
 
     def test_original_failure_remains_in_history_error(self, paths):
         """`EmptyReportError` が起きて履歴も書けなかった場合、エラーは
-        `ScheduledDownloadFailedError` で伝搬し、メッセージに元の失敗が含まれる。"""
+        `ScheduledDownloadFailedError` で伝搬し、メッセージに元の失敗が含まれる。
+
+        新仕様では Report API が 0 行のときブラウザで取り直すので、
+        ブラウザも 0 行 → ``EmptyReportError`` の流れをモックして再現する。
+        """
+        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.site_for",
                 return_value=fake_salesforce([]),
+            ),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
             ),
             patch.object(history, "_append", side_effect=OSError("履歴書込み失敗")),
             pytest.raises(ScheduledDownloadFailedError) as caught,
@@ -2615,7 +2668,12 @@ class TestAllowEmpty:
         self, tmp_path, monkeypatch
     ):
         """1. `0件あり` が `×` で 0 行 → `EmptyReportError`、ファイルができない、
-        履歴の `原因区分` が `データなし`。"""
+        履歴の `原因区分` が `データなし`。
+
+        新仕様では Report API が 0 行 → ブラウザで取り直し → ブラウザも 0 行 →
+        ``EmptyReportError`` で失敗。ブラウザ経路もモックして「ブラウザも 0 行」
+        のケースを再現する。
+        """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = make_master(
@@ -2636,10 +2694,15 @@ class TestAllowEmpty:
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
 
+        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.site_for",
                 return_value=fake_salesforce([]),
+            ),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -2880,9 +2943,21 @@ class TestAllowEmpty:
 
 # ── 2000件超で失敗したレポートの当日スキップ ─────────────────────────
 class TestTruncatedSkip:
-    """``SalesforceReportTruncatedError`` で失敗したレポートは、
-    当日中の再実行では `download_scheduled()` の対象から外れる
-    （=Salesforce へ問い合わせない）。"""
+    """``SalesforceReportTruncatedError`` で失敗したレポートの挙動。
+
+    2026-10 に Report API 経路での自動切替（``SalesforceReportTruncatedError`` を
+    受けてブラウザ経由に自動で切り替え）を入れた結果、**「当日中の再実行で
+    Salesforce へ問い合わせない」スキップは廃止された**。同じ日の 2 回目でも
+    Report API → ブラウザ自動切替が動くので、毎回 Salesforce への問い合わせが
+    発生する。``_select_targets`` の ``already_failed`` は常に空リストになり、
+    ``comken`` 側 ``history.truncated_today()`` 自体は別プロジェクト向けに
+    残してある。
+
+    ここでは「truncated が来ても自動切替で成功する」「自動切替に失敗したら
+    失敗として残る」「2回目の ``download_scheduled()`` でも Report API が呼ばれる」
+    の 3 点を新しい挙動の代表として確認する（個別のテストは
+    ``tests/test_service_browser_fallback.py`` に集約）。
+    """
 
     @staticmethod
     def _seed_failure_row(
@@ -2894,13 +2969,7 @@ class TestTruncatedSkip:
         fetch_result: str = "失敗",
         save_result: str = "",
     ) -> None:
-        """``when`` の日時の失敗履歴を1行書く。エラーコードだけ差し替えられる。
-
-        テストでは Salesforce へ実際に 2000件超のレスポンスを返させる必要がない
-        （=本物の大きな CSV を作ると遅い）ので、履歴だけ直接書く。
-        列の並びは ``history.COLUMNS`` と一致させる
-        （``comken.services.salesforce_downloader.history.COLUMNS``）。
-        """
+        """``when`` の日時の失敗履歴を1行書く（テスト用ヘルパー）。"""
         history_path.parent.mkdir(parents=True, exist_ok=True)
         history_path.write_text(
             (
@@ -2923,110 +2992,32 @@ class TestTruncatedSkip:
             error_code="SalesforceReportTruncatedError",
         )
 
-    def test_today_truncated_skips_salesforce_call_but_still_reports_failure(
-        self, paths, monkeypatch
-    ):
-        """今日すでに ``SalesforceReportTruncatedError`` で失敗したレポートは、
-        同じ日の ``download_scheduled()`` で Salesforce へは問い合わせないが、
-        **「今回も未取得だった」という事実は失敗として報告する**
-        （終了コード0の見かけ上の成功にはしない）。"""
-        now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+    def test_second_call_in_same_day_still_calls_salesforce(self, paths, monkeypatch):
+        """当日中に ``SalesforceReportTruncatedError`` で失敗した記録があっても、
+        同じ日の 2 回目の ``download_scheduled()`` で **Salesforce への問い合わせは
+           止めない**（=自動切替で取りに行く）。旧実装の「スキップ」挙動は廃止された。
+
+        ブラウザ経路もモックして「Report API が Truncated → ブラウザが成功」を
+        確認する（=``SalesforceReportTruncatedError`` が来ても、自動切替が走れば
+        成功扱いになる）。
+        """
+        now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001
         monkeypatch.setattr(service_module, "clock_now", lambda: now)
-        # 同じ「今日」の失敗履歴を直接書く
+        # 同じ「今日」の truncated 失敗履歴を直接書く（=昨晩 RPA が失敗した想定）
         self._seed_truncated_failure(paths["history_path"], when=now)
 
-        site = fake_salesforce()
+        site = fake_browser_site()
         with (
-            patch("src.service.site_for", return_value=site),
-            pytest.raises(ScheduledDownloadFailedError, match="1001"),
+            patch("src.service.site_for", return_value=fake_salesforce()),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=site,
+            ),
         ):
-            download_scheduled()
-        # Salesforce へ問い合わせない（=2回目以降の定期実行で同じ失敗を繰り返さない）
-        assert site.return_value.__enter__.return_value.report.get.call_count == 0
-
-    def test_yesterday_truncated_does_not_skip_today(self, paths, monkeypatch):
-        """昨日 ``SalesforceReportTruncatedError`` で失敗した記録があっても、
-        日付が変われば今日の対象に戻る（翌日 1 回だけ改めて試す）。"""
-        now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        yesterday = now - dt.timedelta(days=1)
-        monkeypatch.setattr(service_module, "clock_now", lambda: now)
-        # 「昨日」の失敗履歴
-        self._seed_truncated_failure(paths["history_path"], when=yesterday)
-
-        site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
             saved = download_scheduled()
-        # 今日は対象になる = Salesforce へ問い合わせる
-        assert site.return_value.__enter__.return_value.report.get.call_count == 1
+        # 2 回目でも Salesforce へ問い合わせが走る（旧挙動: スキップで 0 回）
+        # Report API → Truncated → ブラウザで成功、という流れになる
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
-
-    def test_today_other_error_does_not_skip(self, paths, monkeypatch):
-        """今日 ``SalesforceReportTruncatedError`` **以外**の理由（例: 通信エラー、
-        ``OSError``）で失敗した記録は、スキップ対象にしない。2000件超以外の失敗は
-        毎回リトライしてよい、という既存挙動を壊さない。"""
-        now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: now)
-        # 履歴に「今日の失敗（ただし OSError）」を直接書く
-        self._seed_failure_row(
-            paths["history_path"],
-            when=now,
-            error_code="OSError",
-            cause="ファイル",
-            fetch_result="成功",
-            save_result="失敗",
-        )
-
-        site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
-            saved = download_scheduled()
-        # 2000件超以外なので普通に取得される
-        assert site.return_value.__enter__.return_value.report.get.call_count == 1
-        assert [path.name.split("_")[0] for path in saved] == ["1001"]
-
-    def test_truncated_skip_works_with_schedule_key(self, tmp_path, monkeypatch):
-        """日程行に紐付くレポートでも、当日 truncated 済みなら
-        2回目の ``download_scheduled()`` で再取得されない。"""
-        base_path = tmp_path / "ベース"
-        base_path.mkdir()
-        fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        master = make_master_with_schedule(
-            tmp_path / "管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "2000件超の履歴",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-            schedule_rows=[
-                ["S001", "1001", "毎週", "09:00", "", "水", "", "取得しない", "○"],
-            ],
-        )
-        history_path = tmp_path / "履歴.csv"
-        _patch_master_path(monkeypatch, master, history_path)
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
-
-        # 当日 truncated 済み = スケジュール一致だが 2000件超で失敗
-        self._seed_truncated_failure(history_path, when=fixed_now)
-
-        site = fake_salesforce()
-        # スキップしても「今回も未取得だった」ことは失敗として報告される
-        with (
-            patch("src.service.site_for", return_value=site),
-            pytest.raises(ScheduledDownloadFailedError),
-        ):
-            download_scheduled()
-        # 当日 truncated 済みなのですでにスキップされ、Salesforce へ問い合わせない
-        assert site.return_value.__enter__.return_value.report.get.call_count == 0
-        # 履歴は事前投入した 1 行のまま
-        with CSV(history_path) as csv_file:
-            rows = csv_file.read()
-        assert len(rows) == 1
-        assert rows[0]["エラーコード"] == "SalesforceReportTruncatedError"
 
 
 class TestCommandLine:

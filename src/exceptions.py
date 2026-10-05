@@ -19,6 +19,7 @@ __all__ = [
     "ReportFolderNotFoundError",
     "ReportReservePathLimitError",
     "ScheduledDownloadFailedError",
+    "BrowserFallbackFailedError",
     "MasterTableError",
     "MasterRowValueError",
     "MasterDuplicateValueError",
@@ -105,15 +106,17 @@ class EmptyReportError(DownloaderError):
     発生箇所: download_scheduled() の `_save()`
 
     対処:
-        Salesforce の画面で同じレポートを開き、本当に 0 件か確認する。
-        0 件が正常に起こるレポートなら、管理表の「0件あり」を「○」にする。
+        Salesforce の画面で同じレポートを開き、本当に 0 件か確認してください。
+        0 件が普通に起きるレポートなら、管理表の「0件あり」を「○」にしてください。
     """
 
     def __init__(self, report_key: str, summary: str, url: str) -> None:
         super().__init__(
             f"レポートの明細が 0 行でした: {report_key}（{summary}）\n"
             f"{url}\n"
-            "取得の失敗と区別できないため、ファイルは作りません。"
+            "取得の失敗と区別できないため、ファイルは作りません。\n"
+            "Salesforce の画面で同じレポートを開き、本当に 0 件か確認してください。\n"
+            "0 件が普通に起きるレポートなら、管理表の「0件あり」を「○」にしてください。"
         )
 
 
@@ -187,6 +190,46 @@ class ScheduledDownloadFailedError(DownloaderError):
             f"定期取得で {len(failed_keys)} 件が失敗しました: {keys}\n"
             f"失敗した理由は履歴を確認してください: {history_path}"
         )
+
+
+class BrowserFallbackFailedError(DownloaderError):
+    """Report API 経路の自動切替で、ブラウザの取り直し自体が失敗した
+
+    ``SalesforceReportTruncatedError``（2000件超）または 0 行 + ``allow_empty=False``
+    でブラウザ経由に取り直そうとしたが、ブラウザ取得中（``_fetch_via_browser()``）
+    に別の例外（ログイン失敗・CredentialNotFoundError・CredentialError・通信断など）
+    が出て失敗したときに送出する。**この例外は ``DownloaderError`` 系なので、
+    ``_failure_row()`` 側で「Salesforce」区分に分類される**（プログラム扱い
+    にしない）。
+
+    引数で受けるのは ``report_key`` / ``summary`` / ``reason`` / ``route``
+    （``"2000件超"`` または ``"0件"``、 ``route`` は ``ROUTE_BROWSER_FALLBACK_TRUNCATED``
+    / ``ROUTE_BROWSER_FALLBACK_EMPTY`` のいずれか。履歴の「取得経路」列に書くため）。
+    **ダウンローダー側で例外クラスを組み立てる都合上、
+    ``SalesforceReportTruncatedError.__init__(self, report_id, row_limit)``
+    のような「引数 2 つのシグネチャ」を経由しない**（文字列 1 つで ``raise``
+    すると ``TypeError`` になり、原因区分が「プログラム」化ける）。
+
+    発生箇所: ``src/service.py`` の ``_fetch_with_auto_fallback()`` と
+    ``_download()`` の 0 行取り直し経路
+
+    対処:
+        Salesforce の画面から手動でダウンロードするか、管理表の「2000件超」/
+        「0件あり」を「○」にして次回の実行を待ってください。
+        認証情報が未登録なら ``CredentialNotFoundError`` の案内に従う
+    """
+
+    def __init__(self, report_key: str, summary: str, reason: str, route: str) -> None:
+        super().__init__(
+            f"Report API で{reason}だったためブラウザで取り直したが失敗しました: "
+            f"{report_key}（{summary}）\n"
+            "対処: Salesforce の画面から手動でダウンロードするか、"
+            "管理表の「2000件超」/「0件あり」を「○」にして次回の実行を待ってください。"
+        )
+        # ``_download()`` 側で ``record_failure()`` の ``route`` 引数に転写するための
+        # 属性。``ROUTE_BROWSER_FALLBACK_TRUNCATED`` / ``ROUTE_BROWSER_FALLBACK_EMPTY``
+        # のいずれか（自動切替を試みたが失敗した、という意味での値）
+        self.route = route
 
 
 class MasterTableError(ComkenError):

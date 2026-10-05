@@ -66,7 +66,8 @@ def _expected_row_bytes(
         # ときは ``src.history._route_of(entry)`` が ``entry`` の「SOQL」/
         # 「2000件超」列から決める（テストでは ``entry`` がどちらも既定の偽
         # なので ``ROUTE_API``）。``row.route`` が明示されているテストは
-        # ``row_data["route"]`` でその値を差し込む
+        # ``row_data["route"]`` でその値を差し込む（自動切替など ``_route_of``
+        # の戻り値以外の値も ``row.route`` から来る前提のため）
         row_data["route"],
     ]
     buffer = io.StringIO()
@@ -101,6 +102,7 @@ def _row_bytes_from_record(
             error_code=row_data["error_code"],
             error=row_data["error"],
             schedule_key=row_data["schedule_key"],
+            route=row_data.get("route", ""),
         ),
         executed_at=row_data["executed_at"],
     )
@@ -171,12 +173,13 @@ def test_record_writes_byte_identical_row_to_history_csv(
         "error_code": "",
         "error": "",
         "schedule_key": "S001",
-        "executed_at": dt.datetime(2026, 9, 26, 10, 0, 0),  # noqa: DTZ001
-        "folder_text": None,  # 下の try/except で上書き
         # 「取得経路」列: ``entry`` は use_soql=False / exceeds_row_limit=False
         # （=Report API 経路）なので ``ROUTE_API``。``row.route`` を明示したい
-        # テストはここで上書きする
+        # テストはここで上書きする（下の ``row_data["route"] = ROUTE_API`` で
+        # 期待値用の値に差し替える）
         "route": "",
+        "executed_at": dt.datetime(2026, 9, 26, 10, 0, 0),  # noqa: DTZ001
+        "folder_text": None,  # 下の try/except で上書き
     }
     try:
         output_path(entry)

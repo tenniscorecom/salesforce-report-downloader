@@ -98,10 +98,12 @@ def record(
         "原因区分": row.cause,
         "エラーコード": row.error_code,
         "エラー内容": row.error.replace("\n", " "),
-        # **「取得経路」列は ``row.route`` が空でなければそれを優先し、空なら
+        # 「取得経路」列: ``row.route`` が空でなければそれを優先し、空なら
         # ``_route_of(entry)`` で ``entry``（管理表の1行）の「SOQL」「2000件超」
-        # 列から決める。** 優先順位は ``src.service._fetch()`` と同じ
-        # （SOQL → 2000件超 → API）
+        # 列から決める（API / SOQL / ブラウザ / 自動切替2種のいずれも ``row.route``
+        # に明示されていればそれがそのまま書かれる。``HistoryRow.route`` の既定値は
+        # 空文字なので、古い呼び出しは ``_route_of(entry)`` の経路で書かれる）。
+        # 優先順位は ``src.service._fetch()`` と同じ（SOQL → 2000件超 → API）。
         "取得経路": row.route or _route_of(entry),
     }
     # ``append_history()`` が ``COLUMNS`` に無いキーを ``InvalidTableInputError``
