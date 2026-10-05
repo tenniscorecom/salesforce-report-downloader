@@ -15,7 +15,7 @@ from comken.core.dates import (
     is_workday,
     nth_workday,
 )
-from comken.core.dates._holidays import _Holidays, _set_calendar_for_test
+from comken.core.dates.holidays import _Holidays, _set_calendar_for_test
 from comken.exceptions import DownloaderError
 
 from src.sheets.schedule import (
