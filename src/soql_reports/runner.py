@@ -32,7 +32,8 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
-from comken.core.files import DateNameBuilder, atomic_write
+from comken.core.dates import now
+from comken.core.files import atomic_write
 from comken.core.table.model import Table
 from comken.exceptions import (
     ComkenError,
@@ -76,7 +77,7 @@ def _soql_download_failed_error(failed_keys: list[str]) -> DownloaderError:
 # 無限ループになるため、必ず上限を切る
 RESERVE_PATH_LIMIT = 1000
 
-# ``DateNameBuilder.suffix()`` に渡す書式。「管理番号_日付_時刻_マイクロ秒.csv」になる
+# 保存名の書式。「管理番号_日付_時刻_マイクロ秒.csv」になる
 _DATETIME_FORMAT = "%Y%m%d_%H%M%S_%f"
 
 
@@ -223,11 +224,10 @@ def _file_path_of(report_cls: type[SoqlReport]) -> Path:
     混ぜない（``src.paths.summary_folder_name()`` で安全化し、定期取得側と
     同じ規則でフォルダ名を作る）。
     """
-    name = f"{report_cls.KEY}.csv"
     return (
         Path(report_cls.FOLDER)
         / summary_folder_name(report_cls.SUMMARY)
-        / DateNameBuilder(name).suffix(_DATETIME_FORMAT)
+        / f"{report_cls.KEY}_{now():{_DATETIME_FORMAT}}.csv"
     )
 
 
