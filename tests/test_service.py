@@ -2949,9 +2949,9 @@ class TestTruncatedSkip:
     受けてブラウザ経由に自動で切り替え）を入れた結果、**「当日中の再実行で
     Salesforce へ問い合わせない」スキップは廃止された**。同じ日の 2 回目でも
     Report API → ブラウザ自動切替が動くので、毎回 Salesforce への問い合わせが
-    発生する。``_select_targets`` の ``already_failed`` は常に空リストになり、
-    ``comken`` 側 ``history.truncated_today()`` 自体は別プロジェクト向けに
-    残してある。
+    発生する。``_select_targets`` の ``already_failed`` は常に空リストになる。
+    2026-10-05 に ``comken`` 側 ``history.truncated_today()`` も削除された
+    （自動切替で取り直す用途が無くなったため）。
 
     ここでは「truncated が来ても自動切替で成功する」「自動切替に失敗したら
     失敗として残る」「2回目の ``download_scheduled()`` でも Report API が呼ばれる」
