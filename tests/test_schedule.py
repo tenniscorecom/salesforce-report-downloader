@@ -10,12 +10,12 @@ import datetime as dt
 from typing import Any
 
 import pytest
-from comken.core.holidays import (
+from comken.core.dates import (
     is_holiday,
     is_workday,
     nth_workday,
 )
-from comken.core.holidays._holidays import _Holidays, _set_calendar_for_test
+from comken.core.dates._holidays import _Holidays, _set_calendar_for_test
 from comken.exceptions import DownloaderError
 
 from src.sheets.schedule import (
@@ -330,7 +330,7 @@ class TestHolidayPolicySkipFetch:
     """``HOLIDAY_SKIP`` / ``HOLIDAY_FETCH`` の既存挙動が変わっていないこと（回帰確認）。
 
     「1営業日前」「1営業日後」は ``TestHolidayPolicyShifted`` で別クラスにまとめる。
-    祝日判定は ``comken.core.holidays.is_holiday`` を直接使う（=既定カレンダー）。
+    祝日判定は ``comken.core.dates.is_holiday`` を直接使う（=既定カレンダー）。
     """
 
     def test_skip_does_not_match_on_holiday(self):
