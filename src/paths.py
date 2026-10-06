@@ -13,6 +13,13 @@
 あるが、出力パスには使わない。``summary`` はフォルダ階層の 1 段目にだけ使う
 （人が業務ごとに探しやすくするため。ファイル名には混ぜない）。
 
+**2026-10 に保存時の「予約ファイルを作ってから置き換える」方式をやめ、**
+**「一時ファイル（``~`` プレフィックス）に書いてから ``os.rename`` で**
+**移し先へ移す」方式に統一した。** 移し先が既に存在するときは ``_1`` / ``_2``
+… と連番を足して別名を確保する。``move_into_place()`` が共通ヘルパー。
+これにより **本番の名前の空ファイルを一瞬も作らない** 保存になる。
+詳細は ``move_into_place()`` の docstring 参照。
+
 **履歴CSVの置き場所は `comken.services.salesforce_downloader.paths.HISTORY_PATH`
 に移した（境界は履歴）— このファイルは管理表だけを管理する。** 履歴の形式や
 ロック・読み取り関数も同じく comken 側にあるので、ダウンローダーは自分で持たず
@@ -21,6 +28,7 @@ comken の `append_history()` へ委譲する。
 このファイルが持つもの:
 - レポートの唯一の保存先パスを組み立てる `output_path`
 - 設定シートから保存先フォルダを返す `report_folder`
+- 一時ファイル→最終パスのリネーム（連番フォールバック付き）`move_into_place`
 - 管理表・グループ設定のプロセス内キャッシュ
 - 管理表の置き場所の定数（`MASTER_PATH`）
 
@@ -34,6 +42,8 @@ comken の `append_history()` へ委譲する。
 
 import datetime as dt
 import logging
+import os
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 
@@ -43,6 +53,7 @@ from comken.exceptions import DownloaderError
 from src.exceptions import (
     GroupNotRegisteredError,
     ReportNotRegisteredError,
+    ReportReservePathLimitError,
 )
 from src.sheets.master import ReportEntry
 
@@ -154,6 +165,71 @@ def summary_folder_name(summary: str) -> str:
     return truncated or "レポート"
 
 
+# ── 保存ファイル名の連番上限 ──────────────────────────────────────
+# ``move_into_place()`` が連番を足して空きファイル名を探索する回数の上限。
+# ``comken.core.dates.WORKDAY_SEARCH_LIMIT`` と同じ理由で、共有サーバーの
+# 同期・権限異常などで ``FileExistsError`` が返り続けると無限ループになる
+# ため、必ず上限を切る
+RESERVE_PATH_LIMIT = 1000
+
+
+def make_temp_csv_path(target: Path) -> Path:
+    """``target`` と同じフォルダに置く一時ファイル名を作る。``~`` で始めて
+    ``1001_*.csv`` のような glob で拾われないようにし、衝突回避のため UUID
+    を入れる（``comken.core.files._new_temp_name`` と同じ命名規則）。
+
+    ファイルは作らない（パスだけを返す）。呼び出し側が ``CSV(tmp)`` などで
+    開いたときに初めて作られる。
+    """
+    return target.with_name(f"~{target.stem}.{uuid.uuid4().hex}{target.suffix}")
+
+
+def move_into_place(tmp_path: Path, base_path: Path, report_key: str) -> Path:
+    """一時ファイルを最終パスへ ``os.rename`` で移す（**上書きしない**）。
+
+    同じフォルダに既存ファイルがあると連番（ ``_1`` / ``_2`` …）を足して別の
+    ファイル名を探す。 ``RESERVE_PATH_LIMIT`` を超えると ``ReportReservePathLimitError``
+    を送出する（権限・同期の異常で ``FileExistsError`` が返り続ける無限ループを
+    避けるため）。
+
+    なぜこの方式か:
+        旧コードは ``open("x")`` で本番の名前の空ファイルを予約 → ``os.replace``
+        で中身を置き換える、2 段構えだった。2026-10 に会社のファイルサーバー（UNC）で
+        「ログ上は 243493 行で成功、ファイルは 0 バイト」が起きた。原因は特定できて
+        いないが、予約の空ファイルは書き込みの間ずっと本番の名前で見えている。
+        その間に他のプロセス（サーバー側のウイルス対策など）が触る余地を
+        なくすため、本番の名前の空ファイルを一瞬も作らないように、
+        **先に一時ファイルへ全部書いてから** ``os.rename``
+        （Windows では既存があると ``FileExistsError``）で移す。失敗時は次の
+        連番候補を試す。最終的に移ったパスを返す（呼び出し側で 0 バイト検査を
+        行う）。
+
+    Args:
+        tmp_path: 既に内容物が書かれている一時ファイルのパス（呼び出し側が
+            作った ``~`` プレフィックスのファイル）。
+        base_path: 本番の保存先候補パス。既に同名ファイルがある可能性がある。
+        report_key: エラーメッセージに含める管理番号。
+
+    Returns:
+        実際に移った先のパス。``base_path`` か ``base_path_1.csv`` /
+        ``base_path_2.csv`` … のいずれか。
+
+    Raises:
+        ReportReservePathLimitError: ``RESERVE_PATH_LIMIT`` 回試しても空きが
+            見つからなかった場合。
+    """
+    candidate = base_path
+    sequence = 0
+    for _ in range(RESERVE_PATH_LIMIT):
+        try:
+            os.rename(tmp_path, candidate)
+            return candidate
+        except FileExistsError:
+            sequence += 1
+            candidate = base_path.with_stem(f"{base_path.stem}_{sequence}")
+    raise ReportReservePathLimitError(report_key, base_path, RESERVE_PATH_LIMIT)
+
+
 def output_path(
     entry: ReportEntry,
     schedule_run_time: dt.time | None = None,
@@ -173,7 +249,9 @@ def output_path(
     ベースのフォルダは作らないし検査もしない（検査は ``service._require_folder`` の責務）。
 
     常に新規ファイルとして扱う（同じパスへの上書きは想定しない。衝突回避は呼び出し側
-    ``Salesforceレポートダウンローダー`` の ``_reserve_unique_path`` の責務）。
+    ``Salesforceレポートダウンローダー`` の ``move_into_place`` の責務）。
+    ``move_into_place()`` は書き終えた一時ファイルを ``os.rename`` で移すので、
+    本番の名前の空ファイルは作らない）。
 
     Args:
         entry: レポート管理表の1行。

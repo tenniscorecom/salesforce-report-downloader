@@ -17,6 +17,12 @@ r"""src/soql_reports/runner.py — SOQLレポートの取得実行。
 ``history.record()`` を無理に流用せず、まずは「取得して保存する」ところまで
 を作る。履歴記録は、実際に使う場面が見えてから別途検討する。
 
+**2026-10 に保存方式を ``src.service._save()`` と統一した。** 共通ヘルパー
+``src.paths.move_into_place()`` が ``os.rename`` で一時ファイル（``~``
+プレフィックス）を最終パスへ移し、既存ファイルがあるときは連番（``_1`` /
+``_2`` …）で別名を確保する。本番の名前の空ファイルを一瞬も作らない。
+詳細は ``src.paths.move_into_place()`` 参照。
+
 このファイルが持つもの:
 - SOQL レポートの取得・保存
 - 1件失敗しても残りを続ける運用
@@ -46,9 +52,8 @@ from comken.toolbox.salesforce.sites import site_for
 from src.exceptions import (
     EmptyReportError,
     ReportFolderNotFoundError,
-    ReportReservePathLimitError,
 )
-from src.paths import summary_folder_name
+from src.paths import make_temp_csv_path, move_into_place, summary_folder_name
 from src.soql_reports import _registry
 from src.soql_reports.base import SoqlReport
 
@@ -71,11 +76,10 @@ def _soql_download_failed_error(failed_keys: list[str]) -> DownloaderError:
     )
 
 
-# ``_reserve_path`` が連番を足して空きファイル名を探索する回数の上限。
-# Salesforceレポートダウンローダー の ``service.RESERVE_PATH_LIMIT`` と同じ
-# 理由: 共有サーバーの同期・権限異常で ``FileExistsError`` が返り続けると
-# 無限ループになるため、必ず上限を切る
-RESERVE_PATH_LIMIT = 1000
+# ``move_into_place()`` が連番を足して空きファイル名を探索する回数の上限は
+# ``src.paths.RESERVE_PATH_LIMIT`` に集約した（service / runner の両方から
+# 同じ上限を使うため）。テストでは ``monkeypatch.setattr(paths_module,
+# "RESERVE_PATH_LIMIT", ...)`` で差し替える。
 
 # 保存名の書式。「管理番号_日付_時刻_マイクロ秒.csv」になる
 _DATETIME_FORMAT = "%Y%m%d_%H%M%S_%f"
@@ -175,44 +179,38 @@ def _save(report_cls: type[SoqlReport], table: Table) -> Path:
     0 行でも ``SalesforceBase.bulk_query()`` が ``Table.columns`` を持って返すので、
     見出し行だけ書いた空 CSV を保存する。
 
-    **概要のフォルダは保存名の予約前に ``mkdir`` する。** ベース（``FOLDER``）は
+    **保存の流れ（2026-10 改定）:** ``service._save()`` と同じく、本番の名前の
+    空ファイルを一瞬も作らない ``os.rename`` 方式 (``src.paths.move_into_place()``
+    経由) に統一した。先に一時ファイル（``~`` プレフィックス）へ CSV を全部
+    書いてから、 ``os.rename`` で最終パス（または連番 ``_1`` / ``_2`` …）へ移す。
+    詳細は ``src.paths.move_into_place()`` の docstring 参照。
+
+    **概要のフォルダは保存前に ``mkdir`` する。** ベース（``FOLDER``）は
     ``_require_folder()`` で先に検査済みなので ``parents=False`` で安全。
     dry-run 中は ``mkdir`` もしない（``service._save()`` と同じ防御）。
+    dry-run はファイルも一時ファイルも作らない（``base`` をそのまま返す）。
     """
-    path = _file_path_of(report_cls)
-    # **概要のフォルダは保存名の予約前に ``mkdir`` する。**
+    base = _file_path_of(report_cls)
+    # **概要のフォルダは保存前に ``mkdir`` する。**
     if not is_dry_run():
-        path.parent.mkdir(exist_ok=True)
-    path = _reserve_path(report_cls)
+        base.parent.mkdir(exist_ok=True)
+    tmp_path = make_temp_csv_path(base)
+    final_path: Path | None = None
     try:
         if not table and not report_cls.ALLOW_EMPTY:
             raise EmptyReportError(report_cls.KEY, report_cls.SUMMARY, report_cls.URL)
-        _write_csv(path, table)
+        if is_dry_run():
+            # dry-run は副作用を出さない契約
+            return base
+        _write_csv(tmp_path, table)
+        final_path = move_into_place(tmp_path, base, report_cls.KEY)
     except Exception:
-        path.unlink(missing_ok=True)
+        # 失敗時: 移せていれば最終ファイル、後始末
+        if final_path is not None:
+            final_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
         raise
-    return path
-
-
-def _reserve_path(report_cls: type[SoqlReport]) -> Path:
-    """排他的な新規作成で保存名を予約し、既存ファイルを上書きしない。
-
-    同じフォルダに既存ファイルがあると連番（ ``_1`` / ``_2`` …）を足して別の
-    ファイル名を探す。 ``RESERVE_PATH_LIMIT`` を超えると ``ReportReservePathLimitError``
-    を送出する（権限・同期の異常で ``FileExistsError`` が返り続ける無限ループを
-    避けるため）。``service._reserve_unique_path()`` と同じアルゴリズム。
-    """
-    base_path = _file_path_of(report_cls)
-    candidate = base_path
-    sequence = 0
-    for _ in range(RESERVE_PATH_LIMIT):
-        try:
-            candidate.open("x").close()
-            return candidate
-        except FileExistsError:
-            sequence += 1
-            candidate = base_path.with_stem(f"{base_path.stem}_{sequence}")
-    raise ReportReservePathLimitError(report_cls.KEY, base_path, RESERVE_PATH_LIMIT)
+    return final_path
 
 
 def _file_path_of(report_cls: type[SoqlReport]) -> Path:

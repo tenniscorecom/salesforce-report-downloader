@@ -499,9 +499,13 @@ class TestDownloadScheduledRecord:
         共有サーバーの権限・同期の異常で ``FileExistsError`` が返り続けると
         既存実装では無限ループになる。 上限を設けて、運用側に気付ける
         メッセージを伴った例外で抜ける。
+
+        2026-10 に ``_reserve_unique_path()`` を ``paths.move_into_place()``
+        （``os.rename`` ベースの連番探索）に置き換えたので、上限は
+        ``src.paths.RESERVE_PATH_LIMIT`` 側を差し替える。
         """
         # テスト時間短縮のため、上限を小さい値に下げる
-        monkeypatch.setattr(service_module, "RESERVE_PATH_LIMIT", 5)
+        monkeypatch.setattr(_paths_module, "RESERVE_PATH_LIMIT", 5)
         # 出力先パスを固定するため `clock_now` を差し止める（`service` と `provider` の
         # 両方が `clock_now` をローカル束縛にしているので両方差し替える必要がある）
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
@@ -513,8 +517,8 @@ class TestDownloadScheduledRecord:
         base = summary_dir / "1001_20260918_0930.csv"
 
         # ベース名と ``_1`` 〜 ``_4`` までの連番を全部作っておく（計5ファイル）。
-        # ``_reserve_unique_path`` は base と ``_1`` 〜 ``_4`` を試して全部 FileExistsError
-        # になると、上限に達して例外を上げる
+        # ``paths.move_into_place()`` は base と ``_1`` 〜 ``_4`` を ``os.rename``
+        # で試して全部 ``FileExistsError`` になると、上限に達して例外を上げる
         for sequence in range(5):
             if sequence == 0:
                 candidate = base
@@ -603,6 +607,166 @@ class TestDownloadScheduledRecord:
             download_scheduled()
         # `atomic_write()` 由来の一時ファイル（``~`` プレフィックス）は残らない
         assert list(paths["base_path"].glob("~*")) == []
+
+    def test_final_path_does_not_exist_during_csv_write(self, paths):
+        """CSV の書き込み処理（``_write_csv`` が呼ばれている間）の時点で、
+        本番の名前のファイルがまだ存在しないことを確認する。
+
+        2026-10 に保存方式を ``os.rename`` ベース（``paths.move_into_place()``）
+        に変えた動機は「**本番の名前の空ファイルを一瞬も作らない**」こと。
+        旧実装の「``_reserve_unique_path()`` で空の予約ファイルを作って、
+        ``os.replace`` で置き換える」は同期フォルダ（Box Drive・OneDrive 等）で
+        空の版に置き戻される競合があった。``_write_csv`` を差し替えて、その
+        時点で最終パス（``{KEY}_{日付}_{時刻}.csv``）が無いことを assert する。
+        """
+        entry = load_master(paths["master_path"])["1001"]
+        table = Table(["名前", "金額"], ROWS)
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        summary_dir.mkdir(exist_ok=True)
+        original_write_csv = service_module._write_csv
+
+        def check_no_final(path, table):
+            # ``_write_csv`` が呼ばれている間、 ``summary_dir`` 配下に本番名
+            # （``1001_*.csv`` の ``~`` 以外）のファイルが**無い**ことを確認する
+            finals = list(summary_dir.glob("1001_*.csv"))
+            assert finals == [], f"CSV 書き込み処理の時点で本番名のファイルが存在する: {finals}"
+            return original_write_csv(path, table)
+
+        with patch.object(
+            service_module,
+            "_write_csv",
+            side_effect=check_no_final,
+        ):
+            path = service_module._save(entry, table)
+        assert path.is_file()
+
+    def test_temp_and_final_files_removed_on_write_error(self, paths):
+        """CSV の書き込み中に例外が出たら、本番のファイルも一時ファイルも残らない。
+
+        ``_write_csv`` を例外を投げる関数に差し替え、 ``_save()`` の ``except``
+        経路で両方が片付けられることを検証する。
+        """
+        entry = load_master(paths["master_path"])["1001"]
+        table = Table(["名前", "金額"], ROWS)
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+
+        def failing_write(path, table):
+            # 一時ファイルは作らない（途中で失敗した状態を模擬）
+            raise OSError("書き込み失敗")
+
+        with patch.object(
+            service_module,
+            "_write_csv",
+            side_effect=failing_write,
+        ):
+            with pytest.raises(OSError):
+                service_module._save(entry, table)
+
+        # 一時ファイルも最終ファイルも残らない（``summary_dir`` は ``mkdir`` で
+        # 作られているが、配下には何もない）
+        assert list(summary_dir.glob("~*")) == []
+        assert list(summary_dir.glob("1001_*.csv")) == []
+
+    def test_existing_file_gets_archive_suffix_not_overwritten(self, paths, monkeypatch):
+        """同名ファイルが既に存在するとき、上書きせず ``_1`` 付きの別ファイルに保存され、
+        既存ファイルの中身が変わらないことを確認する。
+
+        ``os.rename`` ベースの ``move_into_place()`` は移し先が存在すると
+        ``FileExistsError`` を返す（Windows の ``os.rename`` の仕様）ので、それを
+        「次の連番候補へ」の判定に使う。既存ファイルを勝手に上書きしない。
+        """
+        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        summary_dir.mkdir(exist_ok=True)
+        collision = summary_dir / "1001_20260918_0930.csv"
+        collision.write_text("既存", encoding="utf-8")
+
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            saved = download_scheduled()
+
+        # 既存ファイルは上書きされない
+        assert collision.read_text(encoding="utf-8") == "既存"
+        # 別ファイルが連番付きで保存される
+        archive = summary_dir / "1001_20260918_0930_1.csv"
+        assert archive.exists()
+        assert saved[0] == archive
+
+    def test_broken_create_empty_file_first_fails_no_final_during_write(self, paths, monkeypatch):
+        """**壊した版:** 一時的に「書き込み前に最終パスへ空ファイルを作る」動きを
+        戻すと、 ``test_final_path_does_not_exist_during_csv_write`` 相当の
+        assert が落ちる（=新方式が「本番名の空ファイルを作らない」を守っている
+        ことの証拠）。
+
+        ここでは「``_write_csv(tmp_path, ...)`` を呼ぶ前に最終パスの空ファイルが
+        無いこと」を assert する ``_write_csv`` モックを差し、新方式で動かす。
+        新方式はその時点でファイルを作らないので assert は通る（=新方式が
+        「本番名の空ファイルを一瞬も作らない」を守っている）。
+
+        続けて **同じ ``_write_csv`` モック**を、保ったまま ``_save()`` の前に
+        「最終パスの空ファイルを ``open("x").close()`` で作る」処理を挟む
+        壊した ``_save()`` で呼び直す。今度は assert が落ちて、壊した版が
+        「本番名の空ファイルを作ってしまう」ことを検出できる（=このテストが
+        落ちなければ、新方式の assert が緩すぎる／壊した版がちゃんと壊れて
+        いないことになる）。
+
+        最後に壊した版が残した可能性のある空ファイルと一時ファイルを後始末する
+        （次のテストの独立性を保つ）。
+        """
+        entry = load_master(paths["master_path"])["1001"]
+        table = Table(["名前", "金額"], ROWS)
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        summary_dir.mkdir(exist_ok=True)
+        # 出力パスを固定（``clock_now`` で揺れないように）
+        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+        base = _paths_module.output_path(entry, now=fixed_now)
+        original_write_csv = service_module._write_csv
+
+        def check_no_final(path, table):
+            # 新方式では「``_write_csv`` が走る時点で最終ファイルが無い」が
+            # 成立しているはず
+            assert not base.exists(), f"CSV 書き込み処理の時点で本番名のファイルが存在する: {base}"
+            return original_write_csv(path, table)
+
+        # **新方式（修正後）:** assert が通る（最終ファイルはまだ無い）
+        with patch.object(service_module, "_write_csv", side_effect=check_no_final):
+            path = service_module._save(entry, table)
+        assert path.is_file()
+        # 後始末
+        path.unlink()
+
+        # **壊した版（修正前）:** 「``_save()`` の ``_write_csv(tmp_path, ...)``
+        # を呼ぶ前に最終パスの空ファイルを作る」動きを再現する。新方式の
+        # ``_write_csv`` モックは保ったまま、 ``_save()`` の手前で空ファイルを
+        # 作るだけの細い壊し方をする
+        def broken_save_then_check(entry, table, *, schedule_run_time=None, current=None):
+            # **壊した版の動作:** 最終パスに空ファイルを作る（旧 ``_reserve_unique_path`` 相当）
+            base_local = _paths_module.output_path(entry, schedule_run_time, now=current)
+            try:
+                base_local.open("x").close()
+            except FileExistsError:
+                pass
+            return service_module._save(
+                entry,
+                table,
+                schedule_run_time=schedule_run_time,
+                current=current,
+            )
+
+        # ``_write_csv`` モックを保ったまま壊した ``_save`` 相当の呼び出しを
+        # 行う。assert が失敗する（＝新方式の assert が壊した版を検出する）
+        with patch.object(service_module, "_write_csv", side_effect=check_no_final):
+            with pytest.raises(AssertionError) as caught:
+                broken_save_then_check(entry, table)
+            assert "本番名のファイルが存在する" in str(caught.value)
+        # 壊した版が残した可能性のあるファイルを片付ける（テストの独立性を保つ）
+        for stale in summary_dir.glob("1001_*.csv"):
+            stale.unlink()
+        for stale in summary_dir.glob("~*"):
+            stale.unlink()
 
     def test_saves_file_under_base_and_summary_folder(self, paths):
         """ファイルが ``ベース / 概要 / 管理番号_時刻.csv`` に保存される。
@@ -1823,7 +1987,10 @@ class TestDownloadScheduled:
         original_write_csv = service_module._write_csv
 
         def fail_first_write(path, table):
-            if path.name.startswith("1001_"):
+            # ``_save()`` が 2026-10 から一時ファイル（``~`` プレフィックス）に対して
+            # ``_write_csv()`` を呼ぶので、「1001_」を含むパス（最終名・一時ファイル両方）で
+            # 失敗させる
+            if "1001_" in path.name:
                 raise OSError("共有サーバーへ書き込めません")
             original_write_csv(path, table)
 
@@ -3062,18 +3229,21 @@ class TestSavedFileEmpty:
     """
 
     def test_save_raises_when_written_file_is_empty(self, paths, monkeypatch):
-        """``_write_csv`` を何もしない関数に差し替えて ``_save`` を呼ぶと
-        ``SavedFileEmptyError`` が送出される。``_reserve_unique_path()`` が
-        作った予約ファイル（空）は ``_save()`` の ``except Exception`` 経路で
-        ``unlink`` されて残らない。
+        """``_write_csv`` を「空ファイルだけ作る」関数に差し替えて ``_save`` を呼ぶと
+        ``SavedFileEmptyError`` が送出される。最終パスへ ``os.rename`` された
+        空ファイルは ``_save()`` の ``except Exception`` 経路で ``unlink`` されて残らない
+        （一時ファイルも ``rename`` で消えているので ``missing_ok=True`` で安全）。
         """
         entry = load_master(paths["master_path"])["1001"]
         table = Table(["名前", "金額"], ROWS)
 
-        def noop_write(path, table):
-            return None
+        def empty_write(path, table):
+            # ``_write_csv()`` が 2026-10 から一時ファイル（``~`` プレフィックス）
+            # に対して呼ばれる。中身が空のファイルを作る＝「書き込みは成功したが
+            # 0 バイトだった」状態を再現する
+            path.write_bytes(b"")
 
-        with patch.object(service_module, "_write_csv", side_effect=noop_write):
+        with patch.object(service_module, "_write_csv", side_effect=empty_write):
             with pytest.raises(SavedFileEmptyError) as caught:
                 service_module._save(entry, table)
 
@@ -3081,9 +3251,10 @@ class TestSavedFileEmpty:
         message = str(caught.value)
         assert "1001" in message
         assert "0 バイト" in message
-        # 予約した空ファイルは残らない（``_save()`` 内の ``except`` 経路の ``unlink``）
+        # 最終パスも一時ファイルも残らない（``_save()`` の ``except`` 経路の ``unlink``）
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert list(summary_dir.glob("1001_*.csv")) == []
+        assert list(summary_dir.glob("~*")) == []
 
     def test_save_logs_byte_count_on_success(self, paths, caplog):
         """正常に ``_write_csv`` が走ったときは例外にならず、保存バイト数のログが出る。"""
@@ -3104,8 +3275,9 @@ class TestSavedFileEmpty:
         assert path.stat().st_size > 0
 
     def test_history_records_saved_file_empty_error(self, paths):
-        """``download_scheduled()`` 経由で ``_write_csv`` が何もしない状態にすると、
-        ``SavedFileEmptyError`` が履歴に記録され、原因区分は「Salesforce」になる。
+        """``download_scheduled()`` 経由で ``_write_csv`` が「空ファイルだけ作る」
+        状態にすると、 ``SavedFileEmptyError`` が履歴に記録され、原因区分は
+        「Salesforce」になる。
 
         ``DownloaderError`` 系なので ``_failure_row()`` 側で「Salesforce」区分に
         分類される（プログラム扱いにしない）。空のファイルは成功扱いにせず、
@@ -3119,7 +3291,7 @@ class TestSavedFileEmpty:
             patch.object(
                 service_module,
                 "_write_csv",
-                side_effect=lambda path, table: None,
+                side_effect=lambda path, table: path.write_bytes(b""),
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -3135,3 +3307,5 @@ class TestSavedFileEmpty:
         # ``_save()`` の ``except`` 経路で ``unlink`` 済みなので、ファイルは残らない
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert list(summary_dir.glob("1001_*.csv")) == []
+        # 一時ファイル（``~`` プレフィックス）も残らない
+        assert list(summary_dir.glob("~*")) == []

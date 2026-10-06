@@ -86,7 +86,6 @@ from src.exceptions import (
     EmptyReportError,
     ReportFolderNotFoundError,
     ReportNotRegisteredError,
-    ReportReservePathLimitError,
     SavedFileEmptyError,
     ScheduledDownloadFailedError,
 )
@@ -117,11 +116,10 @@ CAUSE_EMPTY_DATA = "データなし"
 CAUSE_FILE = "ファイル"
 CAUSE_PROGRAM = "プログラム"
 
-# ``_reserve_path`` が連番を足して空きファイル名を探索する回数の上限。
-# ``comken.core.dates.WORKDAY_SEARCH_LIMIT`` と同じ理由で、
-# 共有サーバーの同期・権限異常などで ``FileExistsError`` が返り続けると無限
-# ループになるため、必ず上限を切る。
-RESERVE_PATH_LIMIT = 1000
+# ``paths.move_into_place()`` が連番を足して空きファイル名を探索する回数の上限は
+# ``src.paths.RESERVE_PATH_LIMIT`` に集約した（service / runner の両方から
+# 同じ上限を使うため）。テストでは ``monkeypatch.setattr(paths_module,
+# "RESERVE_PATH_LIMIT", ...)`` で差し替える。
 
 # Report API の上限。2000件超で打ち切られたレポートをブラウザで取り直して、
 # この行数以下しか取れなければ全件取れていない（``_fetch_with_auto_fallback()`` で
@@ -942,14 +940,35 @@ def _save(
     ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
 
+    **保存の流れ（2026-10 改定）:**
+    旧版は ``output_path`` が指す本番の名前の空ファイルを ``open("x")`` で
+    予約し、CSV を書いた一時ファイルで ``os.replace`` する 2 段構えだった。
+    2026-10 に会社のファイルサーバー（UNC）で「取得しました」とログが出たのに
+    ファイルが 0 バイトだった（原因は未特定）。予約の空ファイルは書き込みの間
+    ずっと本番の名前で見えているので、その間に他のプロセス（サーバー側の
+    ウイルス対策など）が触る余地をなくす。
+
+    改定後は、
+
+    1. 同じフォルダに **一時ファイル**（ ``~`` プレフィックス + UUID）に CSV を全部書く
+    2. ``os.rename`` で最終パス（または連番 ``_1`` / ``_2`` …）へ移す
+       — ``os.rename`` は Windows で移し先が存在すると ``FileExistsError``
+       になるので、それを「次の連番候補へ」の判定に使い、**上書きしない**
+    3. 失敗時は一時ファイルと（移せていれば）最終ファイルを ``unlink`` で片付ける
+
+    という流れになり、**本番の名前の空ファイルを一瞬も作らない**。
+    連番上限 ``RESERVE_PATH_LIMIT`` まで ``FileExistsError`` が続いたら
+    ``ReportReservePathLimitError``。詳細は ``paths.move_into_place()`` の
+    docstring 参照。
+
     保存先は ``paths.output_path()`` が返す単一のパス
     （``ベース/概要/{管理番号}_{スケジュール時刻}.csv``）。
-    衝突回避は ``_reserve_unique_path()`` で常に（連番 ``_1`` / ``_2`` … を付けて）。
+    衝突回避は ``paths.move_into_place()`` で常に（連番 ``_1`` / ``_2`` … を付けて）。
     同じパスへの上書きは想定しない — 取得済みキャッシュを読む側（`pathlib.Path.glob()`
     で `paths.output_path()` が組み立てたパスを探す運用）は、同じフォルダ内の連番を全部
     候補に含めて新しい順で拾えるので、何度実行しても履歴と当日の最新状態は崩れない。
 
-    **概要のフォルダは保存名の予約前にここで ``mkdir`` する。** ベースフォルダは
+    **概要のフォルダは保存前にここで ``mkdir`` する。** ベースフォルダは
     ``_download()`` 側の ``_require_folder()`` で先に検査済みなので、
     ``parents=False`` で「無ければ失敗する」をそのまま流用できる（ベースが既に
     無い場合はここで ``FileNotFoundError`` が出る。先に ``_require_folder()`` で
@@ -965,21 +984,33 @@ def _save(
 
     **失敗時の後始末について:** 書き込みが例外の原因になった場合は、既存の
     ``_download()`` の ``except Exception`` 経路で ``_Attempt.record_failure()``
-    を経由して ``ScheduledDownloadFailedError`` に変換される。書きかけのファイルも
-    ``unlink(missing_ok=True)`` で後始末する。
+    を経由して ``ScheduledDownloadFailedError`` に変換される。一時ファイル
+    （``move_into_place()`` がまだ移せていない）と最終ファイル（移せたが 0 バイト
+    検査で落とすケース）は ``unlink(missing_ok=True)`` で後始末する。
     """
     base = paths.output_path(entry, schedule_run_time, now=current)
-    # **概要のフォルダは保存名の予約前に ``mkdir`` する。** ベースフォルダは
+    # **概要のフォルダは保存前に ``mkdir`` する。** ベースフォルダは
     # ``_require_folder()`` で先に検査済みなので ``parents=False`` で安全。
     # dry-run 中は作らない（保存もしない運用に合わせた防御）
     if not is_dry_run():
         base.parent.mkdir(exist_ok=True)
-    path = _reserve_unique_path(base, entry.key)
+    # **一時ファイル（~プレフィックス）を作ってそこへ書く。** 本番の名前の
+    # 空ファイルを一瞬も作らない。
+    tmp_path = paths.make_temp_csv_path(base)
+    final_path: Path | None = None
     try:
         # 問い合わせは成功したが明細が無い。**0件あり × なら失敗扱い、○ なら正常終了**
         if not table and not entry.allow_empty:
             raise EmptyReportError(entry.key, entry.summary, entry.url)
-        _write_csv(path, table)
+        # **dry-run は副作用を出さない契約。** ファイルも一時ファイルも作らない。
+        # ``_save()`` の戻り値パスは「保存しようとしたパス」と同じ ``base`` を返す
+        # （連番探索は行わない。dry-run は競合判定まで含めて副作用を出さない運用）
+        if is_dry_run():
+            return base
+        _write_csv(tmp_path, table)
+        # **一時ファイルを最終パスへ ``os.rename``。** 移し先が存在すれば次の連番候補を試す。
+        # 上書きはしない（``os.rename`` の Windows 仕様で ``FileExistsError``）
+        final_path = paths.move_into_place(tmp_path, base, entry.key)
         # **0 バイト保存の検査。** 会社の実行で「取得しました」とログが出たのに
         # ファイルが 0 バイトだった事例があった（コード上は ``_write_csv()`` が
         # ``atomic_write`` + ``CSV.replace`` で一時ファイルへ書いてから置き換えるので
@@ -988,38 +1019,21 @@ def _save(
         # しないための検査を入れる。``table.columns`` が空のときは見出しも無いので
         # 検査しない（書きようが無い）。``is_dry_run()`` 中は ``CSV.__exit__()`` が
         # 書き込みをスキップするため検査しない（dry-run は副作用を出さない契約）
-        if not is_dry_run() and table.columns:
-            size = path.stat().st_size
+        if table.columns:
+            size = final_path.stat().st_size
             if size == 0:
-                raise SavedFileEmptyError(entry.key, entry.summary, path, len(table))
-            logger.info("保存しました: %s（%d バイト）", path, size)
+                raise SavedFileEmptyError(entry.key, entry.summary, final_path, len(table))
+            logger.info("保存しました: %s（%d バイト）", final_path, size)
     except Exception:
-        path.unlink(missing_ok=True)
+        # **失敗時の後始末。** ``final_path`` が決まっていれば（move_into_place が
+        # 成功したあとに 0 バイト検査で落とすケース）削除。``tmp_path`` は
+        # move_into_place に成功していれば既に存在しない（rename で消えた）ので
+        # ``missing_ok=True`` で安全
+        if final_path is not None:
+            final_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
         raise
-    return path
-
-
-def _reserve_unique_path(base_path: Path, report_key: str) -> Path:
-    """排他的な新規作成でパスを予約し、既存ファイルを上書きしない。
-
-    同じフォルダに既存ファイルがあると連番（ ``_1`` / ``_2`` …）を足して別の
-    ファイル名を探す。 ``RESERVE_PATH_LIMIT`` を超えると ``ReportReservePathLimitError``
-    を送出する（権限・同期の異常で ``FileExistsError`` が返り続ける無限ループを
-    避けるため）。 ``WORKDAY_SEARCH_LIMIT`` と同じ考え方で上限を切っている。
-
-    ``report_key`` はエラーメッセージに含めるためだけで、ファイル名の組み立てに
-    は使わない（呼び出し側が ``base_path`` を組み立てる時点で決定済みのため）。
-    """
-    candidate = base_path
-    sequence = 0
-    for _ in range(RESERVE_PATH_LIMIT):
-        try:
-            candidate.open("x").close()
-            return candidate
-        except FileExistsError:
-            sequence += 1
-            candidate = base_path.with_stem(f"{base_path.stem}_{sequence}")
-    raise ReportReservePathLimitError(report_key, base_path, RESERVE_PATH_LIMIT)
+    return final_path
 
 
 def _write_csv(path: Path, table: Table) -> None:
@@ -1027,6 +1041,12 @@ def _write_csv(path: Path, table: Table) -> None:
 
     複数のプロジェクトが同時に呼ぶので、直接書くと**読んでいる最中のファイルが
     半端な状態**になりうる。同じフォルダ内の置き換えは一度に入れ替わる。
+
+    **注意:** ``_save()`` は 2026-10 からこの関数を **一時ファイル**
+    （``paths.make_temp_csv_path()`` が返した ``~`` プレフィックスのパス）に対して
+    呼び、最終パスへの ``os.replace`` は行わない（``paths.move_into_place()``
+    が ``os.rename`` で移す。上書きしない）。``_write_csv()`` の引数は
+    単に「**ここに書く**」パスで、本関数の動作は変えていない。
     """
     with atomic_write(path) as tmp, CSV(tmp) as csv_file:
         csv_file.replace(table)

@@ -310,10 +310,14 @@ class TestSaveSemantics:
 
 
 class TestReservePath:
-    """``_reserve_path()`` の連番制御（``service._reserve_path()`` と同じアルゴリズム）。
+    """``paths.move_into_place()`` の連番制御（``service._save()`` と同じアルゴリズム）。
 
     2026-09 にファイル名から概要を外したので、衝突テストで作る「ベース名」も
     概要を含まない形（``{KEY}_fixed.csv`` / ``{KEY}_limit.csv``）に揃える。
+
+    2026-10 に ``_reserve_path()`` を ``src.paths.move_into_place()`` （``os.rename``
+    ベースの連番探索）に置き換えたので、上限は ``src.paths.RESERVE_PATH_LIMIT``
+    側を差し替える。
     """
 
     def test_existing_file_does_not_get_overwritten(self, folder, monkeypatch):
@@ -333,7 +337,9 @@ class TestReservePath:
 
     def test_limit_exceeded_raises(self, folder, monkeypatch):
         """連番の上限に達したら ``DownloaderError`` に変換する。"""
-        monkeypatch.setattr(runner_module, "RESERVE_PATH_LIMIT", 5)
+        import src.paths as paths_module
+
+        monkeypatch.setattr(paths_module, "RESERVE_PATH_LIMIT", 5)
         _DummyReport.FOLDER = str(folder)
         base_name = f"{_DummyReport.KEY}_limit.csv"
         base = folder / base_name

@@ -46,7 +46,7 @@ class SoqlReport:
         URL: レポートを開いた組織の My Domain の URL。``site_for()`` で
             組織を解決するために使う（``ReportEntry.url`` と同じ運用）。
         FOLDER: 保存先フォルダの絶対パス／UNC 文字列。**フォルダが無いと
-            エラーにする**（``_reserve_path()`` と同じ判断。書き間違いに
+            エラーにする**（``paths.move_into_place()`` と同じ判断。書き間違いに
             気づけるよう、勝手には作らない）。
         ALLOW_EMPTY: ``True`` なら 0 件のときも空 CSV を保存して成功扱い、
             ``False`` なら 0 件を ``EmptyReportError`` として失敗扱いする

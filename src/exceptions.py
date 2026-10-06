@@ -153,11 +153,13 @@ class ReportFolderNotFoundError(DownloaderError):
 class ReportReservePathLimitError(DownloaderError):
     """保存ファイル名の連番が上限に達した
 
-    `_reserve_unique_path()` は同じフォルダに既存ファイルがあると連番を足して別の
-    ファイル名を探す。 上限（ ``RESERVE_PATH_LIMIT`` ）まで試しても確保できない
-    のは権限・同期の異常など、運用側に原因があることが多い。
+    ``paths.move_into_place()`` は ``os.rename`` で一時ファイル（``~``
+    プレフィックス）を最終パスへ移し、 移し先（ ``_1`` / ``_2`` … の連番含む）
+    に既にファイルがあると ``FileExistsError`` を返す。 上限（ ``RESERVE_PATH_LIMIT`` ）
+    まで試しても確保できないのは権限・同期の異常など、 運用側に原因があることが多い。
 
-    発生箇所: download_scheduled() の `_reserve_unique_path()`
+    発生箇所: src.paths の ``move_into_place()`` （``service._save()`` /
+    ``src.soql_reports.runner._save()`` から送出される）
 
     対処:
         保存先フォルダが想定どおりか確認する。 共有フォルダなら、 古い取得
