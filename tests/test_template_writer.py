@@ -66,7 +66,9 @@ class TestCreateTemplateReportEntry:
         # ReportEntry の宣言順。「グループ」「担当者」は ID の直後に置く
         # （参照時にすぐ辿れるよう）。「担当者」「概要」は記録用で出力パスに
         # 使わないので宣言順はこのまま。「個人情報」は「概要」の直後に置く
-        # （=人が見て分かりやすい位置）
+        # （=人が見て分かりやすい位置）。「上書き」は「0件あり」「2000件超」
+        # 「SOQL」と同じ書き方で最後尾に追加（既定 `×`、見出しごと無い既存管理表も
+        # `×` として読める列）
         assert headers == [
             "ID",
             "グループ",
@@ -78,6 +80,7 @@ class TestCreateTemplateReportEntry:
             "0件あり",
             "2000件超",
             "SOQL",
+            "上書き",
         ]
 
     def test_examples_point_at_different_reports(self, tmp_path):
@@ -102,15 +105,17 @@ class TestCreateTemplateReportEntry:
         ws = load_workbook(path)["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
         # ReportEntry の `choices` 列は「個人情報」「有効」「0件あり」「2000件超」
-        # 「SOQL」の 5 つ。宣言順は ID/グループ/担当者/概要/個人情報/Salesforce URL/
-        # 有効/0件あり/2000件超/SOQL の 10 列で、`choices` 付きは 5, 7〜10 列目なので
-        # ドロップダウンは E, G〜J 列に付く（Salesforce URL=6 列目には付かない）。
-        # 最下行は _FIRST_DATA_ROW(2) + 例(2) - 1 + _DATA_VALIDATION_ROWS(1000) = 1003
+        # 「SOQL」「上書き」の 6 つ。宣言順は ID/グループ/担当者/概要/個人情報/
+        # Salesforce URL/有効/0件あり/2000件超/SOQL/上書き の 11 列で、`choices`
+        # 付きは 5, 7〜11 列目なのでドロップダウンは E, G〜K 列に付く（Salesforce
+        # URL=6 列目には付かない）。 最下行は
+        # _FIRST_DATA_ROW(2) + 例(2) - 1 + _DATA_VALIDATION_ROWS(1000) = 1003
         assert "E2:E1003" in ranges  # 個人情報
         assert "G2:G1003" in ranges  # 有効
         assert "H2:H1003" in ranges  # 0件あり
         assert "I2:I1003" in ranges  # 2000件超
         assert "J2:J1003" in ranges  # SOQL
+        assert "K2:K1003" in ranges  # 上書き
 
     def test_template_font_is_noto_sans_jp(self, tmp_path):
         """雛形（表シート・記入方法シートとも）のフォントが Noto Sans JP。"""
@@ -367,14 +372,16 @@ class TestCreateCombinedWorkbook:
         wb = load_workbook(path)
         report_ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         report_ranges = sorted(str(v.sqref) for v in report_ws.data_validations.dataValidation)
-        # `choices` 列は「個人情報」「有効」「0件あり」「2000件超」「SOQL」の 5 つ。
-        # 列宣言順は ID/グループ/担当者/概要/個人情報/Salesforce URL/有効/0件あり/2000件超/SOQL
-        # なのでドロップダウンは E, G〜J 列に付く（Salesforce URL=6 列目には付かない）
+        # `choices` 列は「個人情報」「有効」「0件あり」「2000件超」「SOQL」「上書き」
+        # の 6 つ。 列宣言順は ID/グループ/担当者/概要/個人情報/Salesforce URL/
+        # 有効/0件あり/2000件超/SOQL/上書き なのでドロップダウンは E, G〜K 列に付く
+        # （Salesforce URL=6 列目には付かない）
         assert "E2:E1003" in report_ranges  # 個人情報
         assert "G2:G1003" in report_ranges  # 有効
         assert "H2:H1003" in report_ranges  # 0件あり
         assert "I2:I1003" in report_ranges  # 2000件超
         assert "J2:J1003" in report_ranges  # SOQL
+        assert "K2:K1003" in report_ranges  # 上書き
         schedule_ws = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
         schedule_ranges = sorted(str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
         # スケジュール: 列宣言順は スケジュールキー/レポートキー/取得頻度/取得開始時刻/
@@ -653,22 +660,25 @@ class TestMigrateTemplate:
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in sheet.data_validations.dataValidation)
-        # 新しい宣言順（E列=個人情報, G列=有効, H列=0件あり, I列=2000件超, J列=SOQL）に
-        # ドロップダウン。マイグレーション行=2 なので最終行は 2 + 2 - 1 + 1000 = 1003
+        # 新しい宣言順（E列=個人情報, G列=有効, H列=0件あり, I列=2000件超, J列=SOQL,
+        # K列=上書き）にドロップダウン。マイグレーション行=2 なので最終行は
+        # 2 + 2 - 1 + 1000 = 1003
         assert "E2:E1003" in ranges  # 個人情報
         assert "G2:G1003" in ranges  # 有効
         assert "H2:H1003" in ranges  # 0件あり
         assert "I2:I1003" in ranges  # 2000件超
         assert "J2:J1003" in ranges  # SOQL
+        assert "K2:K1003" in ranges  # 上書き
         # 「記入方法」シートは新列構成で作り直されている
         assert "記入方法" in wb.sheetnames
         guide_text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
-        # 新列（allow_empty, exceeds_row_limit, use_soql, has_personal_info の見出し）も
-        # 記入方法シートに載る
+        # 新列（allow_empty, exceeds_row_limit, use_soql, has_personal_info, overwrite の
+        # 見出し）も記入方法シートに載る
         assert "0件あり" in guide_text
         assert "個人情報" in guide_text
         assert "2000件超" in guide_text
         assert "SOQL" in guide_text
+        assert "上書き" in guide_text
 
     def test_idempotent_when_columns_unchanged(self, tmp_path):
         """列構成が変わらない再呼び出しでは、データは保持されて背景色も付かない。"""

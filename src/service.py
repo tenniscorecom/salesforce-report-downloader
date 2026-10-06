@@ -48,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import logging
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -951,22 +952,31 @@ def _save(
     改定後は、
 
     1. 同じフォルダに **一時ファイル**（ ``~`` プレフィックス + UUID）に CSV を全部書く
-    2. ``os.rename`` で最終パス（または連番 ``_1`` / ``_2`` …）へ移す
-       — ``os.rename`` は Windows で移し先が存在すると ``FileExistsError``
-       になるので、それを「次の連番候補へ」の判定に使い、**上書きしない**
-    3. 失敗時は一時ファイルと（移せていれば）最終ファイルを ``unlink`` で片付ける
+    2. 通常モード（``entry.overwrite`` が ``False``）は ``os.rename`` で最終パス
+       （または連番 ``_1`` / ``_2`` …）へ移す — ``os.rename`` は Windows で
+       移し先が存在すると ``FileExistsError`` になるので、それを「次の連番候補
+       へ」の判定に使い、**上書きしない**
+    3. 上書きモード（``entry.overwrite`` が ``True``）は ``os.replace`` で最終
+       パスへ **毎回上書き** する（Windows でも移し先が存在してよい）。 連番は
+       付けない（時刻・連番なしの固定名 ``{管理番号}.csv``）
+    4. 失敗時は一時ファイルと（移せていれば）最終ファイルを ``unlink`` で片付ける
 
     という流れになり、**本番の名前の空ファイルを一瞬も作らない**。
     連番上限 ``RESERVE_PATH_LIMIT`` まで ``FileExistsError`` が続いたら
     ``ReportReservePathLimitError``。詳細は ``paths.move_into_place()`` の
     docstring 参照。
 
-    保存先は ``paths.output_path()`` が返す単一のパス
-    （``ベース/概要/{管理番号}_{スケジュール時刻}.csv``）。
-    衝突回避は ``paths.move_into_place()`` で常に（連番 ``_1`` / ``_2`` … を付けて）。
-    同じパスへの上書きは想定しない — 取得済みキャッシュを読む側（`pathlib.Path.glob()`
-    で `paths.output_path()` が組み立てたパスを探す運用）は、同じフォルダ内の連番を全部
-    候補に含めて新しい順で拾えるので、何度実行しても履歴と当日の最新状態は崩れない。
+    保存先は ``paths.output_path()`` が返す単一のパス:
+
+    - 通常モード: ``ベース/概要/{管理番号}_{スケジュール時刻}.csv``
+    - 上書きモード: ``ベース/概要/{管理番号}.csv``
+
+    通常モードの衝突回避は ``paths.move_into_place()`` で常に（連番 ``_1`` /
+    ``_2`` … を付けて）。 同じパスへの上書きは想定しない — 取得済みキャッシュを
+    読む側（`pathlib.Path.glob()` で `paths.output_path()` が組み立てたパスを
+    探す運用）は、同じフォルダ内の連番を全部候補に含めて新しい順で拾えるので、
+    何度実行しても履歴と当日の最新状態は崩れない。 上書きモードは ``os.replace``
+    で毎回置き換える（時刻・連番なしの固定名。古いファイルの内容は消える）。
 
     **概要のフォルダは保存前にここで ``mkdir`` する。** ベースフォルダは
     ``_download()`` 側の ``_require_folder()`` で先に検査済みなので、
@@ -981,6 +991,8 @@ def _save(
     ``paths.output_path(now=current)`` に渡すことで、23:59 に始まった実行が日付をまたいで
     終わっても、出力ファイル名が開始日で揃う。``None`` のときは ``paths.output_path()``
     側で ``clock_now()`` にフォールバックする（既存の単体テスト経路を残すため）。
+    上書きモードは固定名なので ``current`` はファイル名に影響しない（テストの
+    出力パス固定のために ``schedule_run_time`` / ``now`` を渡しても安全）。
 
     **失敗時の後始末について:** 書き込みが例外の原因になった場合は、既存の
     ``_download()`` の ``except Exception`` 経路で ``_Attempt.record_failure()``
@@ -1008,9 +1020,19 @@ def _save(
         if is_dry_run():
             return base
         _write_csv(tmp_path, table)
-        # **一時ファイルを最終パスへ ``os.rename``。** 移し先が存在すれば次の連番候補を試す。
-        # 上書きはしない（``os.rename`` の Windows 仕様で ``FileExistsError``）
-        final_path = paths.move_into_place(tmp_path, base, entry.key)
+        if entry.overwrite:
+            # **上書きモード:** ``{管理番号}.csv`` の固定名で毎回置き換える。
+            # ``os.replace`` は Windows でも移し先が存在するとそのまま上書きする
+            # （``os.rename`` と違い ``FileExistsError`` にならない）。 書き込みは
+            # 既に ``_write_csv(tmp_path, table)`` で終わっているので、ここが失敗
+            # したら既存ファイルはそのまま残る契約（``except`` 経路で ``tmp_path``
+            # だけ片付ける）。 連番探索は行わない
+            os.replace(tmp_path, base)
+            final_path = base
+        else:
+            # **一時ファイルを最終パスへ ``os.rename``。** 移し先が存在すれば次の連番候補を試す。
+            # 上書きはしない（``os.rename`` の Windows 仕様で ``FileExistsError``）
+            final_path = paths.move_into_place(tmp_path, base, entry.key)
         # **0 バイト保存の検査。** 保存先（ファイルサーバー）のクォータが足りないと、
         # 書き込みはエラーにならずに中身だけが捨てられ、0 バイトのファイルが残る
         # （2026-10 の実例）。空のファイルを成功扱いにしないための検査。

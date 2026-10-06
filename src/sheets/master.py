@@ -69,6 +69,7 @@ EXAMPLES = [
         "allow_empty": False,  # 普段はデータがあるが、念のため「×」（既定）
         "exceeds_row_limit": False,  # 2000行に収まる通常のレポート（既定）
         "use_soql": False,  # Report API のまま（既定）
+        "overwrite": False,  # 毎回新しいファイルにする既定（×）
     },
     {
         "key": "1002",
@@ -81,6 +82,7 @@ EXAMPLES = [
         "allow_empty": True,  # 「該当データ無し」が普通に起きるレポートの例
         "exceeds_row_limit": False,
         "use_soql": False,
+        "overwrite": False,
     },
 ]
 
@@ -188,6 +190,20 @@ class ReportEntry(MasterRow):
         help="SOQL化済みで、同じ管理番号のSOQL定義が"
         "src.soql_reports に登録されているなら「○」。"
         "取得実行側はSOQL経由に切り替えます（「2000件超」列より優先）",
+    )
+    # **既定値 `×`（=毎回新しいファイルを作る）。** 書き忘れると従来どおり
+    # ``{管理番号}_{YYYYmmdd_HHMM}.csv`` + 連番で保存される。 「○」にすると
+    # ``{管理番号}.csv`` の固定名で毎回上書きする（同名ファイルを毎回置き換える
+    # ため、過去の取得は上書きで消える）。保存先は「ベース / 概要 /
+    # {管理番号}.csv」になる（時刻や連番は付かない）。1 日に何度も最新が必要
+    # で、過去の履歴をファイルとして残す必要が無いレポート向け。空欄は `×`。
+    # 既定値を持つので、**見出しごと無い既存の管理表でも `×` として読める**。
+    overwrite: bool = column(
+        "上書き",
+        choices=("○", "×"),
+        default=False,
+        help="「○」にすると、毎回同じ名前（{管理番号}.csv）で上書き保存します。"
+        "「×」は取得ごとに日時付きの別ファイルを作ります",
     )
 
     @property

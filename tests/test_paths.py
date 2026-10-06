@@ -46,7 +46,7 @@ HEADERS = [
     "概要",
     "Salesforce URL",
     "有効",
-    "備考",
+    "上書き",
 ]
 
 GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
@@ -230,6 +230,84 @@ class TestOutputPath:
             output_path(entry, schedule_run_time=dt.time(9, 0))
         assert "未知グループ" in str(caught.value)
         assert "営業本部" in str(caught.value)
+
+    def test_overwrite_returns_fixed_filename_without_timestamp(self, paths):
+        """``entry.overwrite`` が ``True`` のとき、ファイル名は ``{管理番号}.csv`` の
+        固定名で、時刻やスケジュール時刻を一切混ぜない。
+
+        ``schedule_run_time`` / ``now`` を渡してもパスに影響しない（上書きモードは
+        時刻をファイル名に入れない）。"""
+        from dataclasses import replace
+
+        entry = replace(load_master(paths["master_path"])["1001"], overwrite=True)
+        run_time = dt.time(9, 0)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        path = output_path(entry, run_time, now=fixed_now)
+        # 時刻・スケジュール時刻を一切含まない
+        assert path == paths["base_path"] / paths["summary_folder_1001"] / "1001.csv"
+
+    def test_overwrite_false_uses_timestamped_filename(self, paths):
+        """``entry.overwrite`` が ``False``（既定）のときは従来どおり
+        ``{管理番号}_{YYYYmmdd_HHMM}.csv``。``schedule_run_time`` を反映する。"""
+        entry = load_master(paths["master_path"])["1001"]
+        run_time = dt.time(9, 0)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        path = output_path(entry, run_time, now=fixed_now)
+        assert path == (
+            paths["base_path"] / paths["summary_folder_1001"] / "1001_20260918_0900.csv"
+        )
+
+
+class TestOverwriteColumnMissing:
+    """管理表に「上書き」列が無い（=既定値を持つ列の見出しごと無い）場合の挙動。
+
+    既存管理表が壊れずに動き続けるよう、 ``default=False`` の列は見出しごと
+    無くても ``False`` として読める（ ``_require_headers`` の仕組み）。
+    """
+
+    def test_master_without_overwrite_column_reads_as_false(self, tmp_path, monkeypatch):
+        """「上書き」列が無い既存の管理表でも ``overwrite=False`` として読める。
+
+        列追加で既存の管理表が読めなくなると業務が止まる（共有サーバーへ
+        伝播する）ため、 ``default=False`` で見出しごと無くても埋まる契約。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        # HEADERS に「上書き」を**含めない** Excel を作る
+        legacy_headers = ["ID", "グループ", "担当者", "概要", "Salesforce URL", "有効"]
+        legacy_row = [
+            dict(
+                zip(
+                    legacy_headers,
+                    ["1001", "営業本部", "山田", SUMMARY_1001, URL_A, "○"],
+                    strict=True,
+                )
+            )
+        ]
+        from comken.core.table.model import Table as CoreTable
+        from comken.toolbox.excel import Excel
+
+        master_path = tmp_path / "legacy_master.xlsx"
+        with Excel(master_path) as book:
+            book.create_data_sheet("管理表").create_table(
+                "管理表", CoreTable(legacy_headers, legacy_row)
+            )
+            book.create_data_sheet("設定").create_table(
+                "設定",
+                CoreTable(
+                    ["グループ", "ベースURL"],
+                    [{"グループ": "営業本部", "ベースURL": str(base_path)}],
+                ),
+            )
+        monkeypatch.setattr(paths_module, "MASTER_PATH", master_path)
+
+        entry = load_master(master_path)["1001"]
+        # 上書き列が無くても ``False`` として読める
+        assert entry.overwrite is False
+        # 出力パスも ``_1`` 形式の従来どおり
+        fixed_now = dt.datetime(2026, 9, 18, 9, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        path = output_path(entry, now=fixed_now)
+        assert path.name == "1001_20260918_0900.csv"
 
 
 class TestGroupSettingsLoading:

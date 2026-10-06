@@ -53,6 +53,7 @@ HEADERS = [
     "0件あり",
     "2000件超",
     "SOQL",
+    "上書き",
 ]
 # 設定シートの見出し。`make_master()` の `settings_rows` 引数で使う
 GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
@@ -73,6 +74,7 @@ _OLD_MASTER_HEADER_ORDER = [
     "0件あり",
     "2000件超",
     "SOQL",
+    "上書き",
 ]
 _OLD_TO_NEW_INDEX = tuple(_OLD_MASTER_HEADER_ORDER.index(h) for h in HEADERS)
 
@@ -2669,6 +2671,7 @@ def make_master_with_schedule(
         "0件あり",
         "2000件超",
         "SOQL",
+        "上書き",
     ]
     schedule_headers = [
         "スケジュールキー",
@@ -3310,3 +3313,101 @@ class TestSavedFileEmpty:
         assert list(summary_dir.glob("1001_*.csv")) == []
         # 一時ファイル（``~`` プレフィックス）も残らない
         assert list(summary_dir.glob("~*")) == []
+
+
+# ── 上書きモード（管理表の「上書き」列が ○）─────────────────────────────
+class TestOverwriteMode:
+    """``entry.overwrite`` が ``True`` のときの保存挙動。
+
+    固定名 ``ベース/概要/{管理番号}.csv`` に毎回 ``os.replace`` で上書きする。
+    連番は付けない、時刻もファイル名に含めない（``output_path()`` 側の契約）。
+    """
+
+    def _entry(self, paths, *, overwrite: bool):
+        """``paths`` fixture の ``1001`` を ``overwrite`` フラグだけ差し替えて返す。"""
+        from dataclasses import replace
+
+        return replace(load_master(paths["master_path"])["1001"], overwrite=overwrite)
+
+    def test_overwrite_saves_to_fixed_filename(self, paths):
+        """上書き ○ のときは ``{管理番号}.csv`` の固定名に保存される（連番・時刻無し）。"""
+        entry = self._entry(paths, overwrite=True)
+        table = Table(["名前", "金額"], ROWS)
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            saved = service_module._save(entry, table)
+        # 出力パスの末尾が ``1001.csv``（時刻・連番無し）
+        assert saved.name == "1001.csv"
+        # 概要フォルダ配下に置かれる
+        assert saved.parent == paths["base_path"] / paths["summary_folder_1001"]
+        # 時刻付きファイル名ではない
+        assert "_" not in saved.stem
+
+    def test_overwrite_two_saves_produce_a_single_file(self, paths):
+        """2 回保存しても ``{管理番号}.csv`` が 1 つだけで、中身が 2 回目のものになる。
+        連番ファイルも作らない。
+        """
+        first_rows = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "200"}]
+        second_rows = [{"名前": "佐藤", "金額": "999"}]
+        entry = self._entry(paths, overwrite=True)
+
+        with patch("src.service.site_for", return_value=fake_salesforce(first_rows)):
+            service_module._save(entry, Table(["名前", "金額"], first_rows))
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        # 1 回目は ``1001.csv`` が 1 つ
+        first_files = list(summary_dir.glob("1001*.csv"))
+        assert len(first_files) == 1
+        assert first_files[0].name == "1001.csv"
+
+        with patch("src.service.site_for", return_value=fake_salesforce(second_rows)):
+            second_path = service_module._save(entry, Table(["名前", "金額"], second_rows))
+        # 2 回目のあと、 ``1001.csv`` 1 件だけが残る（連番や旧ファイルは作られない）
+        after_files = sorted(summary_dir.glob("1001*.csv"))
+        assert [p.name for p in after_files] == ["1001.csv"]
+        assert second_path.name == "1001.csv"
+        # 中身が 2 回目の内容に置き換わっている
+        with CSV(second_path, read_only=True) as csv_file:
+            assert csv_file.read().to_rows() == second_rows
+
+    def test_overwrite_does_not_leave_temp_files(self, paths):
+        """上書きモードで正常終了したとき、 ``~`` で始まる一時ファイルは残らない。"""
+        entry = self._entry(paths, overwrite=True)
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            service_module._save(entry, Table(["名前", "金額"], ROWS))
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        assert list(summary_dir.glob("~*")) == []
+
+    def test_overwrite_existing_file_content_preserved_when_write_raises(self, paths):
+        """上書きモードで ``_write_csv`` が例外を出したとき、既存の ``{管理番号}.csv``
+        の中身が変わらず、 ``~`` プレフィックスの一時ファイルも残らない。
+
+        ``os.replace`` は書き込み成功後に動くので、書き込み失敗では既存ファイルは
+        触らない。 ``_save()`` の ``except`` 経路が一時ファイルを ``unlink`` する。
+        """
+        entry = self._entry(paths, overwrite=True)
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        summary_dir.mkdir(exist_ok=True)
+        existing = summary_dir / "1001.csv"
+        existing.write_text("既存の中身", encoding="utf-8")
+        existing_bytes = existing.read_bytes()
+
+        def failing_write(path, table):
+            raise OSError("書き込み失敗")
+
+        with patch.object(service_module, "_write_csv", side_effect=failing_write):
+            with pytest.raises(OSError):
+                service_module._save(entry, Table(["名前", "金額"], ROWS))
+
+        # 既存ファイルはそのまま残っている
+        assert existing.read_bytes() == existing_bytes
+        # 一時ファイル（``~`` プレフィックス）は残らない
+        assert list(summary_dir.glob("~*")) == []
+
+    def test_overwrite_false_uses_timestamped_filename(self, paths):
+        """上書き ×（既定）のときは従来どおり時刻付きファイル名になる（既存挙動）。"""
+        entry = self._entry(paths, overwrite=False)
+        with patch("src.service.site_for", return_value=fake_salesforce()):
+            saved = service_module._save(entry, Table(["名前", "金額"], ROWS))
+        # 時刻・連番付きファイル名（``1001_*.csv``）
+        assert saved.name.startswith("1001_")
+        assert saved.name.endswith(".csv")
+        assert "_" in saved.stem
