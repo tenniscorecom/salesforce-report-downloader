@@ -9,6 +9,7 @@ MASTER_PATH / HISTORY_PATH は `monkeypatch.setattr` で一時ディレクトリ
 
 import csv
 import datetime as dt
+import logging
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -32,6 +33,7 @@ from src.exceptions import (
     MasterDuplicateValueError,
     MasterRowValueError,
     ReportNotRegisteredError,
+    SavedFileEmptyError,
     ScheduledDownloadFailedError,
 )
 from src.service import download_scheduled
@@ -3045,3 +3047,91 @@ class TestCommandLine:
         )
         assert cli(["check", str(master)]) == 1
         assert "エラー:" in capsys.readouterr().err
+
+
+# ── 保存ファイルが 0 バイトだったケースの検査 ─────────────────────────────
+class TestSavedFileEmpty:
+    """``_save()`` が ``_write_csv()`` の直後にファイルサイズを検査し、
+    列があるのに 0 バイトなら ``SavedFileEmptyError`` で失敗させる。会社の実行で
+    「ログ上は取得成功」なのにファイルが 0 バイトだった事例への防御。
+
+    コード上は ``_write_csv()`` が ``atomic_write`` + ``CSV.replace`` で
+    一時ファイルへ書いてから置き換えるので 0 バイトにはならないはずだが、
+    原因はツールの外（保存先の同期・セキュリティソフト等）の可能性があるため、
+    検査で抜けた分を空で返さない。
+    """
+
+    def test_save_raises_when_written_file_is_empty(self, paths, monkeypatch):
+        """``_write_csv`` を何もしない関数に差し替えて ``_save`` を呼ぶと
+        ``SavedFileEmptyError`` が送出される。``_reserve_unique_path()`` が
+        作った予約ファイル（空）は ``_save()`` の ``except Exception`` 経路で
+        ``unlink`` されて残らない。
+        """
+        entry = load_master(paths["master_path"])["1001"]
+        table = Table(["名前", "金額"], ROWS)
+
+        def noop_write(path, table):
+            return None
+
+        with patch.object(service_module, "_write_csv", side_effect=noop_write):
+            with pytest.raises(SavedFileEmptyError) as caught:
+                service_module._save(entry, table)
+
+        # メッセージに管理番号・保存パス・行数・対処のいずれかが入っている
+        message = str(caught.value)
+        assert "1001" in message
+        assert "0 バイト" in message
+        # 予約した空ファイルは残らない（``_save()`` 内の ``except`` 経路の ``unlink``）
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        assert list(summary_dir.glob("1001_*.csv")) == []
+
+    def test_save_logs_byte_count_on_success(self, paths, caplog):
+        """正常に ``_write_csv`` が走ったときは例外にならず、保存バイト数のログが出る。"""
+        entry = load_master(paths["master_path"])["1001"]
+        table = Table(["名前", "金額"], ROWS)
+
+        with caplog.at_level(logging.INFO, logger="src.service"):
+            path = service_module._save(entry, table)
+
+        # 戻り値は ``_save()`` が組み立てた保存パス
+        assert path.is_file()
+        # ログにバイト数が出る
+        assert any(
+            "バイト" in record.getMessage() and "保存しました" in record.getMessage()
+            for record in caplog.records
+        ), "保存しました（... バイト）のログが出ていない"
+        # ファイルサイズが 0 より大きい（= 実際に書けている）
+        assert path.stat().st_size > 0
+
+    def test_history_records_saved_file_empty_error(self, paths):
+        """``download_scheduled()`` 経由で ``_write_csv`` が何もしない状態にすると、
+        ``SavedFileEmptyError`` が履歴に記録され、原因区分は「Salesforce」になる。
+
+        ``DownloaderError`` 系なので ``_failure_row()`` 側で「Salesforce」区分に
+        分類される（プログラム扱いにしない）。空のファイルは成功扱いにせず、
+        ``ScheduledDownloadFailedError`` で呼び出し側へ失敗が伝わる。
+        """
+        with (
+            patch(
+                "src.service.site_for",
+                return_value=fake_salesforce(),
+            ),
+            patch.object(
+                service_module,
+                "_write_csv",
+                side_effect=lambda path, table: None,
+            ),
+            pytest.raises(ScheduledDownloadFailedError),
+        ):
+            download_scheduled()
+
+        # 履歴に失敗が記録される（成行=失敗 / エラーコード=SavedFileEmptyError /
+        # 原因区分=Salesforce）。``DownloaderError`` 系なので ``_failure_row()`` 側で
+        # 「Salesforce」区分に分類される（プログラム扱いにしない）
+        row = _history_rows(paths)[-1]
+        assert row["成否"] == "失敗"
+        assert row["エラーコード"] == "SavedFileEmptyError"
+        assert row["原因区分"] == "Salesforce"
+        # ``_save()`` の ``except`` 経路で ``unlink`` 済みなので、ファイルは残らない
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        assert list(summary_dir.glob("1001_*.csv")) == []

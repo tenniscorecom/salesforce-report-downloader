@@ -766,10 +766,13 @@ class LargeSalesReport(SoqlReport):
 `GroupNotRegisteredError` / `MasterDuplicateValueError` /
 `MasterRowValueError` / `CachedReportNotFoundError` / `EmptyReportError` /
 `ReportFolderNotFoundError` / `ScheduledDownloadFailedError` /
-`BrowserFallbackFailedError` / `BrowserFallbackIncompleteError`（いずれも
-`comken/exceptions/downloader.py` もしくは `src/exceptions.py`）。
-`BrowserFallbackIncompleteError` は自動切替してもブラウザで 2000 行以下しか取れなかった
-ときに送出される（[自動切替](#自動切替2026-10-追加) 参照）。
+`BrowserFallbackFailedError` / `BrowserFallbackIncompleteError` /
+`SavedFileEmptyError`（いずれも `comken/exceptions/downloader.py` もしくは
+`src/exceptions.py`）。`BrowserFallbackIncompleteError` は自動切替しても
+ブラウザで 2000 行以下しか取れなかったときに送出される
+（[自動切替](#自動切替2026-10-追加) 参照）。`SavedFileEmptyError` は
+ファイル書き出し後に 0 バイトだったとき（保存先の同期・セキュリティ
+ソフト等の影響が疑われる）に送出される。
 
 定期取得で 1 件以上失敗した場合は **取得できたものを保存したうえで**例外で知らせる
 （`DownloaderError` が SOQL 経路向けに担う。`SalesforceError` 経由で

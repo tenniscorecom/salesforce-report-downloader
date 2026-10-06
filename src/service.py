@@ -87,6 +87,7 @@ from src.exceptions import (
     ReportFolderNotFoundError,
     ReportNotRegisteredError,
     ReportReservePathLimitError,
+    SavedFileEmptyError,
     ScheduledDownloadFailedError,
 )
 from src.history import record
@@ -979,6 +980,19 @@ def _save(
         if not table and not entry.allow_empty:
             raise EmptyReportError(entry.key, entry.summary, entry.url)
         _write_csv(path, table)
+        # **0 バイト保存の検査。** 会社の実行で「取得しました」とログが出たのに
+        # ファイルが 0 バイトだった事例があった（コード上は ``_write_csv()`` が
+        # ``atomic_write`` + ``CSV.replace`` で一時ファイルへ書いてから置き換えるので
+        # 0 バイトにはならないはず）。原因はツールの外（保存先の同期・セキュリティ
+        # ソフト等）の可能性がある。原因が分かるまで、空のファイルを成功扱いに
+        # しないための検査を入れる。``table.columns`` が空のときは見出しも無いので
+        # 検査しない（書きようが無い）。``is_dry_run()`` 中は ``CSV.__exit__()`` が
+        # 書き込みをスキップするため検査しない（dry-run は副作用を出さない契約）
+        if not is_dry_run() and table.columns:
+            size = path.stat().st_size
+            if size == 0:
+                raise SavedFileEmptyError(entry.key, entry.summary, path, len(table))
+            logger.info("保存しました: %s（%d バイト）", path, size)
     except Exception:
         path.unlink(missing_ok=True)
         raise

@@ -24,6 +24,7 @@ __all__ = [
     "ScheduledDownloadFailedError",
     "BrowserFallbackFailedError",
     "BrowserFallbackIncompleteError",
+    "SavedFileEmptyError",
     "MasterTableError",
     "MasterRowValueError",
     "MasterDuplicateValueError",
@@ -274,6 +275,36 @@ class BrowserFallbackIncompleteError(BrowserFallbackFailedError):
         # への転写と、外側 ``except BrowserFallbackFailedError`` の ``exc.route`` 参照
         # で使われる）
         self.route = ROUTE_BROWSER_FALLBACK_TRUNCATED
+
+
+class SavedFileEmptyError(DownloaderError):
+    """保存したはずのファイルが 0 バイトだった
+
+    会社の実行で「取得しました: <パス>（243493 行 / 76 秒）」とログが出たのに
+    同じパスのファイルが 0 バイトだった事例があった。コード上は ``_save()`` →
+    ``_write_csv()`` （comken の ``atomic_write`` + ``CSV.replace``）で
+    一時ファイルへ書いてから置き換えるので 0 バイトにはならないはずで、原因
+    はツールの外（保存先の同期ソフト・セキュリティソフト等）の可能性がある。
+    原因が分かるまで、空のファイルを成功扱いにしないための検査を入れる。**この
+    例外は ``DownloaderError`` 系なので、 ``_failure_row()`` 側で「Salesforce」
+    区分に分類される**（プログラム扱いにしない）。
+
+    発生箇所: ``src/service.py`` の ``_save()``
+
+    対処:
+        保存先フォルダの同期ソフト（Box Drive・OneDrive 等）やセキュリティ
+        ソフトがファイルを書き換えていないか確認し、 Salesforce の画面から
+        手動でエクスポートしてください。
+    """
+
+    def __init__(self, report_key: str, summary: str, path: Path, row_count: int) -> None:
+        super().__init__(
+            f"保存したファイルが 0 バイトでした（{row_count} 行を書き込んだはず）: "
+            f"{report_key}（{summary}） {path}\n"
+            "対処: 保存先フォルダの同期ソフト（Box Drive・OneDrive 等）や"
+            "セキュリティソフトがファイルを書き換えていないか確認し、"
+            "Salesforce の画面から手動でエクスポートしてください。"
+        )
 
 
 class MasterTableError(ComkenError):
