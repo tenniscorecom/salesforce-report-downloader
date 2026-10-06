@@ -89,7 +89,6 @@ from src.exceptions import (
     ScheduledDownloadFailedError,
 )
 from src.history import record
-from src.notification import write_notification
 from src.sheets.master import (
     ReportEntry,
     load_master,
@@ -428,19 +427,14 @@ class _Attempt:
         rows: Table,
         *,
         route: str,
-        notify_fallback: bool,
-        fallback_kind: str,
-        cause: str,
-        error_code: str,
-        error_message: str,
         executed_at: dt.datetime | None,
     ) -> None:
-        """成功履歴の記録（自動切替で経路を上書きして通知も出す）。
+        """成功履歴の記録（自動切替で経路を上書きする）。
 
         ``record_success()`` と ``record_failure()`` のどちらにも該当しない、
         「ブラウザに切り替えて成功」専用の経路。 ``HistoryRow.route`` に
-        ``ROUTE_BROWSER_FALLBACK_*`` を入れて記録し、Box 通知ファイルを
-        ``kind="自動切替"`` で書き出す（SOQL 化や管理表修正を促す）。
+        ``ROUTE_BROWSER_FALLBACK_*`` を入れて記録する（SOQL 化や管理表の修正が
+        要るレポートを履歴から拾えるようにするため）。
         """
         seconds = time.perf_counter() - self._started
         row = HistoryRow(
@@ -468,19 +462,6 @@ class _Attempt:
             executed_at=executed_at,
             folder=path.parent,
         )
-        if notify_fallback:
-            write_notification(
-                report_key=self._entry.key,
-                summary=self._entry.summary,
-                url=self._entry.url,
-                kind=fallback_kind,
-                route=route,
-                cause=cause,
-                error_code=error_code,
-                error_message=error_message,
-                row_count=len(rows),
-                executed_at=executed_at or clock_now(),
-            )
 
 
 def _download(
@@ -580,11 +561,6 @@ def _download(
                         path,
                         browser_table,
                         route=ROUTE_BROWSER_FALLBACK_EMPTY,
-                        notify_fallback=True,
-                        fallback_kind="自動切替",
-                        cause="",
-                        error_code="",
-                        error_message="",
                         executed_at=current,
                     )
                     return path
@@ -603,14 +579,6 @@ def _download(
                 CSVError,
             ) as history_exc:
                 raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
-            _write_failure_notification(
-                entry=entry,
-                project=project,
-                schedule_key=schedule_key,
-                route=route,
-                exc=exc,
-                current=current,
-            )
             raise
         except Exception as exc:
             # ``BrowserFallbackFailedError`` は外側の ``except BrowserFallbackFailedError``
@@ -625,20 +593,12 @@ def _download(
                     CSVError,
                 ) as history_exc:
                     raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
-                _write_failure_notification(
-                    entry=entry,
-                    project=project,
-                    schedule_key=schedule_key,
-                    route=route,
-                    exc=exc,
-                    current=current,
-                )
             raise
     except BrowserFallbackFailedError as exc:
         # 0 件取り直しのブラウザ失敗は ``except EmptyReportError`` 内で ``raise`` される。
         # ``except`` 内で ``raise`` した例外は同じ ``try`` の別の ``except`` には飛ばず
         # 外側に素通りするため（Python 仕様）、外側の段で受けて ``record_failure`` /
-        # 通知 / 再 ``raise`` を行う。``_fetch_with_auto_fallback()`` が ``2000件超`` で
+        # 再 ``raise`` を行う。``_fetch_with_auto_fallback()`` が ``2000件超`` で
         # 投げた ``BrowserFallbackFailedError`` もここで受けて ``route`` を揃える
         if exc.route and route != exc.route:
             route = exc.route
@@ -650,33 +610,8 @@ def _download(
             CSVError,
         ) as history_exc:
             raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
-        _write_failure_notification(
-            entry=entry,
-            project=project,
-            schedule_key=schedule_key,
-            route=route,
-            exc=exc,
-            current=current,
-        )
         raise
     attempt.record_success(path, table, route=route)
-    # 自動切替で成功したときは通知も書く（SOQL 化や管理表修正を促すため）。
-    # Report API 経路で ``SalesforceReportTruncatedError`` → ブラウザで取り直し、
-    # という新仕様特有の経路。``_fetch_with_auto_fallback()`` がこの ``route``
-    # を返したケースのみ
-    if route in (ROUTE_BROWSER_FALLBACK_TRUNCATED, ROUTE_BROWSER_FALLBACK_EMPTY):
-        write_notification(
-            report_key=entry.key,
-            summary=entry.summary,
-            url=entry.url,
-            kind="自動切替",
-            route=route,
-            cause="",
-            error_code="",
-            error_message="",
-            row_count=len(table),
-            executed_at=current or clock_now(),
-        )
     return path
 
 
@@ -747,37 +682,6 @@ def _fetch_with_auto_fallback(
                 entry.key, entry.summary, "2000件超", ROUTE_BROWSER_FALLBACK_TRUNCATED
             ) from browser_exc
         return ROUTE_BROWSER_FALLBACK_TRUNCATED, browser_table
-
-
-def _write_failure_notification(
-    *,
-    entry: ReportEntry,
-    project: str,
-    schedule_key: str,
-    route: str,
-    exc: BaseException,
-    current: dt.datetime | None,
-) -> None:
-    """失敗時の Box 通知ファイル書き出し（取得処理は止めない）。"""
-    failure_row = _failure_row(
-        exc,
-        seconds=0.0,
-        schedule_key=schedule_key,
-        route=route,
-    )
-    write_notification(
-        report_key=entry.key,
-        summary=entry.summary,
-        url=entry.url,
-        kind="失敗",
-        route=route,
-        cause=failure_row.cause,
-        error_code=type(exc).__name__,
-        error_message=str(exc),
-        row_count=None,
-        executed_at=current or clock_now(),
-    )
-    _ = project  # 現状未使用だが将来拡張時のために引数として残す
 
 
 def _require_folder(entry: ReportEntry) -> None:

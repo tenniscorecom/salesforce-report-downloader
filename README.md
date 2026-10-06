@@ -184,17 +184,6 @@ comken と同じ「共有サーバー直接参照（PYTHONPATH）」方式を使
 - 定期実行の登録（何時間おきに呼ぶか）は WinActor（社内RPA基盤）側の設定で行う。
   このリポジトリには持たせない
 
-## 通知（Teams）
-
-**Teams への通知は Box 通知ファイル経由**。詳細は
-`docs/salesforce-downloader.md` の「Box 通知ファイル」を参照。
-
-- 失敗時 / 自動切替成功時に 1 件 1 ファイルを `~/Box/Salesforceレポートダウンローダー通知/`
-  に書く（=`src.paths.NOTIFICATION_FOLDER`）
-- Power Automate の Box コネクタ（ファイル作成時トリガー）で拾って Teams に投稿する
-- 配置時に書き換えるファイル: **`src/paths.py`** の `NOTIFICATION_FOLDER`
-  （既定では `Path.home() / "Box" / "..."`）。運用環境のパスへ書き換える
-
 ## ドキュメント
 
 - このリポジトリの `docs/salesforce-downloader.md` — 利用ガイド・配置・履歴の仕様

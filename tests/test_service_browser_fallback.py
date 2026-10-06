@@ -10,25 +10,15 @@
 - SOQL / 最初からブラウザ経路では自動切替しない
 - 同じ実行で自動切替が 2 件起きても、ブラウザは 1 回だけ開いて使い回す
 
-Box 通知ファイル（``src.notification``）も同時に検証する。
-1 件 1 ファイルで ``~/Box/Salesforceレポートダウンローダー通知`` に置かれ、
-失敗時と自動切替成功時に書かれる。``src.paths.NOTIFICATION_FOLDER`` は
-テストで ``monkeypatch.setattr`` で ``tmp_path`` 配下に直接差し替え、
-本物のホームには絶対に書かない（``src.paths`` の「``paths.MASTER_PATH``
-を ``monkeypatch.setattr`` で ``tmp_path`` に差し替えて運用する」と同じ
-流儀に揃えた）。
-
 ``test_service.py`` 側は既存の挙動テスト、
 ``test_service_browser_fetch.py`` 側はブラウザ経由の単体テスト、
 ``test_service_soql_fetch.py`` 側は SOQL 経由の単体テスト、
-``test_service_browser_fallback.py``（=このファイル）は「自動切替」と
-「Box 通知」のオーケストレーションを集約する。
+``test_service_browser_fallback.py``（=このファイル）は自動切替の
+オーケストレーションを集約する。
 """
 
 import csv
 import datetime as dt
-import json
-import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -45,7 +35,6 @@ from src.exceptions import (
     BrowserFallbackFailedError,
     ScheduledDownloadFailedError,
 )
-from src.notification import write_notification
 from src.service import download_scheduled
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
@@ -124,26 +113,6 @@ def _make_master(path: Path, master_rows, *, settings_rows) -> Path:
     return path
 
 
-@pytest.fixture
-def home_dir(tmp_path, monkeypatch):
-    """``src.paths.NOTIFICATION_FOLDER`` を ``tmp_path`` 配下に差し替える。
-
-    ``src.paths`` のコメント「テストでは ``paths.MASTER_PATH`` を
-    ``monkeypatch.setattr`` で ``tmp_path`` に差し替えて運用する」に揃えた
-    形。 ``NOTIFICATION_FOLDER`` の親（``~/Box``）相当も ``tmp_path`` 配下に
-    作っておく（``write_notification()`` が「親があるか」を検査する仕様のため）。
-    本物の ``C:\\Users\\oguri\\Box`` には絶対に書かない。
-    """
-    box_root = tmp_path / "Box"
-    box_root.mkdir()
-    monkeypatch.setattr(
-        _paths_module,
-        "NOTIFICATION_FOLDER",
-        box_root / "Salesforceレポートダウンローダー通知",
-    )
-    return box_root
-
-
 # ──────────────────────────────────────────────────────────────────────
 # 自動切替のオーケストレーション
 # ──────────────────────────────────────────────────────────────────────
@@ -151,11 +120,10 @@ class TestAutoFallbackOnTruncated:
     """``SalesforceReportTruncatedError`` → ブラウザに自動切替して成功。
 
     Report API 経路で ``SalesforceReportTruncatedError`` が来たら、自動で
-    ブラウザ経由に取り直す。成功時の ``route`` は ``ROUTE_BROWSER_FALLBACK_TRUNCATED``、
-    Box 通知ファイルが 1 件作られる（``kind=自動切替``）。
+    ブラウザ経由に取り直す。成功時の ``route`` は ``ROUTE_BROWSER_FALLBACK_TRUNCATED``。
     """
 
-    def test_truncated_falls_back_to_browser_and_succeeds(self, tmp_path, monkeypatch, home_dir):
+    def test_truncated_falls_back_to_browser_and_succeeds(self, tmp_path, monkeypatch):
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = _make_master(
@@ -194,19 +162,11 @@ class TestAutoFallbackOnTruncated:
             assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
             assert row["取得件数"] == str(len(ROWS))
 
-        # 通知: 自動切替で 1 ファイル
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert len(notif_files) == 1
-        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
-        assert payload["管理番号"] == "9001"
-        assert payload["種類"] == "自動切替"
-        assert payload["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
-
 
 class TestAutoFallbackOnEmpty:
     """0 行 + ``allow_empty=False`` → ブラウザに自動切替して成功 / 失敗。"""
 
-    def test_browser_has_rows_succeeds_with_empty_fallback(self, tmp_path, monkeypatch, home_dir):
+    def test_browser_has_rows_succeeds_with_empty_fallback(self, tmp_path, monkeypatch):
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = _make_master(
@@ -240,14 +200,7 @@ class TestAutoFallbackOnEmpty:
             assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
             assert row["取得件数"] == str(len(ROWS))
 
-        # 通知: 自動切替で 1 ファイル
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert len(notif_files) == 1
-        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
-        assert payload["種類"] == "自動切替"
-        assert payload["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
-
-    def test_browser_also_empty_fails_with_empty_report(self, tmp_path, monkeypatch, home_dir):
+    def test_browser_also_empty_fails_with_empty_report(self, tmp_path, monkeypatch):
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = _make_master(
@@ -280,14 +233,7 @@ class TestAutoFallbackOnEmpty:
             assert row["取得経路"] == history.ROUTE_API
             assert row["エラーコード"] == "EmptyReportError"
 
-        # 通知: 失敗で 1 ファイル
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert len(notif_files) == 1
-        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
-        assert payload["種類"] == "失敗"
-        assert payload["取得経路"] == history.ROUTE_API
-
-    def test_allow_empty_yes_does_not_call_browser(self, tmp_path, monkeypatch, home_dir):
+    def test_allow_empty_yes_does_not_call_browser(self, tmp_path, monkeypatch):
         """``allow_empty=True`` のときは 0 行で正常終了し、ブラウザを呼ばない。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -322,15 +268,11 @@ class TestAutoFallbackOnEmpty:
             assert row["取得件数"] == "0"
             assert row["原因区分"] == ""
 
-        # 通知: 書かれない（成功時）
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert notif_files == []
-
 
 class TestNoFallbackForSoqlAndBrowserRoutes:
     """SOQL / 最初からブラウザ経路では自動切替しない。"""
 
-    def test_soql_route_does_not_fall_back_to_browser(self, tmp_path, monkeypatch, home_dir):
+    def test_soql_route_does_not_fall_back_to_browser(self, tmp_path, monkeypatch):
         from src.soql_reports import _registry
         from src.soql_reports.base import SoqlReport
 
@@ -382,15 +324,8 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
         # ブラウザ側の site_for が ``AssertionError`` を投げるアサーションを
         # 仕込んであるので、呼ばれたら即座にテストが落ちる構造
         # （``patch`` の ``side_effect`` で検証）
-        # 失敗時は「失敗」通知が 1 件だけ作られる（=自動切替ではないので
-        # 「自動切替」通知ではない）
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert len(notif_files) == 1
-        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
-        assert payload["種類"] == "失敗"
-        assert payload["取得経路"] == history.ROUTE_SOQL
 
-    def test_truncated_route_does_not_fall_back_to_browser(self, tmp_path, monkeypatch, home_dir):
+    def test_truncated_route_does_not_fall_back_to_browser(self, tmp_path, monkeypatch):
         """「2000件超」列が真のレポート（最初からブラウザ経由）は、ブラウザ取得中に
         エラーが起きても自動切替しない（取り直し先が無い）。"""
         base_path = tmp_path / "ベース"
@@ -436,7 +371,7 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
 class TestBrowserReusedAcrossReports:
     """同じ実行で自動切替が 2 件起きても、ブラウザは 1 回だけ開いて使い回す。"""
 
-    def test_two_fallbacks_share_one_browser_instance(self, tmp_path, monkeypatch, home_dir):
+    def test_two_fallbacks_share_one_browser_instance(self, tmp_path, monkeypatch):
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = _make_master(
@@ -484,10 +419,6 @@ class TestBrowserReusedAcrossReports:
             history.ROUTE_BROWSER_FALLBACK_TRUNCATED,
         ]
 
-        # 通知: 自動切替 2 件分
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert len(notif_files) == 2
-
 
 # ──────────────────────────────────────────────────────────────────────
 # ブラウザ取り直しが失敗したケース
@@ -499,8 +430,7 @@ class TestBrowserFallbackFails:
     シグネチャに合わせて ``raise SalesforceReportTruncatedError("…")`` と
     文字列 1 つで ``raise`` していたため ``TypeError`` になり、原因区分が
     「プログラム」化けていた。新実装では ``BrowserFallbackFailedError``
-    （``DownloaderError`` 系）で表現するため、原因区分は「Salesforce」になり、
-    ``Box 通知ファイル（種類=失敗）`` が 1 件作られる。
+    （``DownloaderError`` 系）で表現するため、原因区分は「Salesforce」になる。
 
     0 件取り直し（``_download()`` の ``except EmptyReportError``）経路も同じ
     ``BrowserFallbackFailedError`` で表現する（テスト1本で確認する）。
@@ -518,10 +448,10 @@ class TestBrowserFallbackFails:
         return MagicMock(return_value=instance)
 
     def test_truncated_then_browser_fails_raises_browser_fallback_error(
-        self, tmp_path, monkeypatch, home_dir
+        self, tmp_path, monkeypatch
     ):
         """Report API が ``SalesforceReportTruncatedError`` → ブラウザ取り直しも失敗
-        → ``BrowserFallbackFailedError`` で「Salesforce」区分、通知 1 件（kind=失敗）。"""
+        → ``BrowserFallbackFailedError`` で「Salesforce」区分。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = _make_master(
@@ -564,17 +494,7 @@ class TestBrowserFallbackFails:
             # 取得経路は「ブラウザ（自動切替：2000件超）」（=ブラウザに切り替えたが失敗）
             assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
 
-        # 通知: 失敗で 1 ファイル
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert len(notif_files) == 1
-        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
-        assert payload["種類"] == "失敗"
-        assert payload["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
-        assert payload["原因区分"] == "Salesforce"
-
-    def test_empty_then_browser_fails_raises_browser_fallback_error(
-        self, tmp_path, monkeypatch, home_dir
-    ):
+    def test_empty_then_browser_fails_raises_browser_fallback_error(self, tmp_path, monkeypatch):
         """Report API が 0 行 → ブラウザ取り直しも失敗 → 同じ ``BrowserFallbackFailedError``。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -611,265 +531,6 @@ class TestBrowserFallbackFails:
             assert row["原因区分"] == "Salesforce"
             # 取得経路は「ブラウザ（自動切替：0件）」（=ブラウザに切り替えたが失敗）
             assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
-
-        # 通知: 失敗で 1 ファイル
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert len(notif_files) == 1
-        payload = json.loads(notif_files[0].read_text(encoding="utf-8"))
-        assert payload["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Box 通知ファイル
-# ──────────────────────────────────────────────────────────────────────
-class TestNotificationFolderMissing:
-    """``NOTIFICATION_FOLDER`` の親フォルダが無いとき、警告ログだけで取得は成功扱い。"""
-
-    def test_no_box_folder_warns_and_does_not_raise(self, tmp_path, monkeypatch, caplog):
-        """``NOTIFICATION_FOLDER`` の親（``~/Box`` 相当）が無い状態で
-        ``write_notification()`` を呼んでも、例外を外へ出さず ``None`` を返す。
-        ``src.paths`` の「``paths.NOTIFICATION_FOLDER`` を ``monkeypatch.setattr``
-        で ``tmp_path`` に差し替えて運用する」流儀に合わせ、親フォルダが **無い**
-        tmp 配下を指すように差し替える。"""
-        # ``tmp_path / Box`` は作らない（=NOTIFICATION_FOLDER の親フォルダが存在しない）。
-        # 親を ``tmp_path / 親不在`` にすることで「親が無い」状態を再現する
-        monkeypatch.setattr(
-            _paths_module,
-            "NOTIFICATION_FOLDER",
-            tmp_path / "親不在" / "Salesforceレポートダウンローダー通知",
-        )
-        with caplog.at_level(logging.WARNING, logger="src.notification"):
-            result = write_notification(
-                report_key="9999",
-                summary="missing box",
-                url=URL_A,
-                kind="失敗",
-                route=history.ROUTE_API,
-                cause="Salesforce",
-                error_code="X",
-                error_message="失敗",
-                row_count=None,
-                executed_at=dt.datetime(2026, 9, 30, 10, 0),  # noqa: DTZ001
-            )
-        assert result is None
-        assert any("Box 通知フォルダの親" in record.message for record in caplog.records), (
-            caplog.records
-        )
-
-
-class TestNotificationIsolatedFileNames:
-    """同時刻の 2 件でファイルが衝突しないこと（排他的新規作成）。"""
-
-    def test_same_timestamp_two_files(self, tmp_path, monkeypatch, home_dir):
-        executed_at = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        p1 = write_notification(
-            report_key="9001",
-            summary="a",
-            url=URL_A,
-            kind="失敗",
-            route=history.ROUTE_API,
-            cause="",
-            error_code="X",
-            error_message="",
-            row_count=None,
-            executed_at=executed_at,
-        )
-        p2 = write_notification(
-            report_key="9002",
-            summary="b",
-            url=URL_B,
-            kind="失敗",
-            route=history.ROUTE_API,
-            cause="",
-            error_code="X",
-            error_message="",
-            row_count=None,
-            executed_at=executed_at,
-        )
-        assert p1 is not None and p2 is not None
-        assert p1 != p2
-        assert p1.exists()
-        assert p2.exists()
-
-
-class TestNotificationDryRun:
-    """``comken.runtime.is_dry_run()`` が真のときは書かない。"""
-
-    def test_dry_run_does_not_write(self, tmp_path, monkeypatch, home_dir):
-        # ``is_dry_run`` は ``comken.runtime`` の内部状態（``_dry_run``）を読む。
-        # ``notification`` 側で ``from comken.runtime import is_dry_run`` のように
-        # ローカル束縛しているので、両方を差し替える
-        from comken import runtime
-
-        monkeypatch.setattr(runtime, "_dry_run", True)
-        result = write_notification(
-            report_key="9001",
-            summary="dry",
-            url=URL_A,
-            kind="失敗",
-            route=history.ROUTE_API,
-            cause="",
-            error_code="X",
-            error_message="",
-            row_count=None,
-            executed_at=dt.datetime(2026, 9, 30, 10, 0),  # noqa: DTZ001
-        )
-        assert result is None
-        # ファイルも作られていない
-        notif_files = list(home_dir.glob("Salesforceレポートダウンローダー通知/*.json"))
-        assert notif_files == []
-
-
-class TestNotificationPayloadKeys:
-    """通知 JSON の中身に必要なキーが揃っている。"""
-
-    def test_payload_has_expected_keys(self, tmp_path, monkeypatch, home_dir):
-        executed_at = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        path = write_notification(
-            report_key="9001",
-            summary="テスト",
-            url=URL_A,
-            kind="自動切替",
-            route=history.ROUTE_BROWSER_FALLBACK_EMPTY,
-            cause="",
-            error_code="",
-            error_message="0 件\nが返った",
-            row_count=2,
-            executed_at=executed_at,
-        )
-        assert path is not None
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        for key in (
-            "実行日時",
-            "管理番号",
-            "概要",
-            "URL",
-            "種類",
-            "取得経路",
-            "原因区分",
-            "エラーコード",
-            "エラー内容",
-            "件数",
-        ):
-            assert key in payload, key
-        assert payload["実行日時"] == "2026-09-30 10:00:00"
-        assert payload["管理番号"] == "9001"
-        assert payload["種類"] == "自動切替"
-        assert payload["取得経路"] == history.ROUTE_BROWSER_FALLBACK_EMPTY
-        assert payload["件数"] == 2
-        # 改行はスペースに置換して 1 行で書く（Teams 側で読みやすく）
-        assert "\n" not in payload["エラー内容"]
-
-
-class TestNotificationOSErrorIsSwallowed:
-    """OSError（書き込めない等）は握りつぶすが、それ以外の例外は外へ出す。"""
-
-    def test_oserror_is_swallowed(self, tmp_path, monkeypatch, caplog):
-        """ファイル書込みを ``OSError`` で失敗させても ``write_notification()``
-        は ``None`` を返して外へ例外を出さない。"""
-        # ``src.paths`` の「``paths.NOTIFICATION_FOLDER`` を ``monkeypatch.setattr``
-        # で ``tmp_path`` に差し替えて運用する」流儀に合わせて ``NOTIFICATION_FOLDER``
-        # を直接差し替える
-        box_root = tmp_path / "Box"
-        box_root.mkdir()
-        monkeypatch.setattr(
-            _paths_module,
-            "NOTIFICATION_FOLDER",
-            box_root / "Salesforceレポートダウンローダー通知",
-        )
-        # ``tempfile.mkstemp`` を OSError で失敗させる
-        import tempfile
-
-        def _raise_oserror(*a, **kw):
-            raise OSError("disk full")
-
-        with (
-            monkeypatch.context() as ctx,
-            caplog.at_level(logging.WARNING, logger="src.notification"),
-        ):
-            ctx.setattr(tempfile, "mkstemp", _raise_oserror)
-            result = write_notification(
-                report_key="9001",
-                summary="x",
-                url=URL_A,
-                kind="失敗",
-                route=history.ROUTE_API,
-                cause="",
-                error_code="X",
-                error_message="",
-                row_count=None,
-                executed_at=dt.datetime(2026, 9, 30, 10, 0),  # noqa: DTZ001
-            )
-        assert result is None
-        assert any("書き出しに失敗" in record.message for record in caplog.records), caplog.records
-
-    def test_non_oserror_propagates(self, tmp_path, monkeypatch):
-        """``TypeError``（バグ）は握りつぶさず外へ伝える。"""
-        # ``NOTIFICATION_FOLDER`` を ``tmp_path`` 配下に差し替える（``src.paths`` の
-        # 「``paths.NOTIFICATION_FOLDER`` を ``monkeypatch.setattr`` で ``tmp_path``
-        # に差し替えて運用する」流儀に揃える）
-        box_root = tmp_path / "Box"
-        box_root.mkdir()
-        monkeypatch.setattr(
-            _paths_module,
-            "NOTIFICATION_FOLDER",
-            box_root / "Salesforceレポートダウンローダー通知",
-        )
-        import tempfile
-
-        def _raise_typeerror(*a, **kw):
-            raise TypeError("bug")
-
-        with monkeypatch.context() as ctx:
-            ctx.setattr(tempfile, "mkstemp", _raise_typeerror)
-            with pytest.raises(TypeError, match="bug"):
-                write_notification(
-                    report_key="9001",
-                    summary="x",
-                    url=URL_A,
-                    kind="失敗",
-                    route=history.ROUTE_API,
-                    cause="",
-                    error_code="X",
-                    error_message="",
-                    row_count=None,
-                    executed_at=dt.datetime(2026, 9, 30, 10, 0),  # noqa: DTZ001
-                )
-
-
-class TestNotificationFolderConstant:
-    """``src.paths.NOTIFICATION_FOLDER`` の構造と、テストで ``monkeypatch`` した
-    値がそのまま書き出し先に反映されることの確認。"""
-
-    def test_default_folder_layout(self):
-        """``NOTIFICATION_FOLDER`` は ``~/Box/Salesforceレポートダウンローダー通知``
-        という ``Path.home()`` 配下の固定パスとして組み立てられている。"""
-        assert _paths_module.NOTIFICATION_FOLDER.parts[-1] == "Salesforceレポートダウンローダー通知"
-        # ``Box`` の手前までが ``Path.home()`` と一致する（=ホーム配下にある）
-        assert "Box" in _paths_module.NOTIFICATION_FOLDER.parts
-
-    def test_runtime_folder_reflects_monkeypatched_constant(self, tmp_path, monkeypatch, home_dir):
-        """``write_notification()`` は呼ばれた時点の ``src.paths.NOTIFICATION_FOLDER``
-        をそのまま使うため、``home_dir`` フィクスチャで ``NOTIFICATION_FOLDER``
-        を ``tmp_path`` 配下に差し替えれば、書き出し先も ``tmp_path`` 配下に
-        なる（本物の ``C:\\Users\\oguri\\Box`` には絶対に触らない）。"""
-        result = write_notification(
-            report_key="9001",
-            summary="home-relative",
-            url=URL_A,
-            kind="失敗",
-            route=history.ROUTE_API,
-            cause="",
-            error_code="X",
-            error_message="",
-            row_count=None,
-            executed_at=dt.datetime(2026, 9, 30, 10, 0),  # noqa: DTZ001
-        )
-        assert result is not None
-        # ``NOTIFICATION_FOLDER`` が ``tmp_path`` 配下に差し替わっているので、
-        # 書き出し先も ``tmp_path`` 配下になる（本物の ``C:\\Users\\oguri\\Box``
-        # には触らない）
-        assert str(result).startswith(str(tmp_path))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -913,9 +574,7 @@ class TestNoSkipOnSameDay:
             )
         )
 
-    def test_second_call_still_calls_salesforce_and_falls_back(
-        self, tmp_path, monkeypatch, home_dir
-    ):
+    def test_second_call_still_calls_salesforce_and_falls_back(self, tmp_path, monkeypatch):
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = _make_master(
