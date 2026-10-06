@@ -117,6 +117,33 @@ class TestCreateTemplateReportEntry:
         assert "J2:J1003" in ranges  # SOQL
         assert "K2:K1003" in ranges  # 上書き
 
+    def test_examples_have_enabled_set_to_batsu(self, tmp_path):
+        """雛形の記入例は「有効」が ×（消し忘れても取得の対象にならない）。"""
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        ws = load_workbook(path)["PY_管理表"]
+        # 「有効」列は G 列（ReportEntry の宣言順に基づく）。
+        # 記入例は 1001=2 行目, 1002=3 行目に置かれる
+        assert ws["G2"].value == "×"
+        assert ws["G3"].value == "×"
+
+    def test_examples_load_with_enabled_false(self, tmp_path):
+        """雛形を読み込むと、記入例の enabled が False で取れる。"""
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        entries = load_master(path)
+        assert entries["1001"].enabled is False
+        assert entries["1002"].enabled is False
+
+    def test_group_column_dropdown_skipped_when_settings_sheet_missing(self, tmp_path):
+        """設定シートが無いブック（管理表の単独雛形）では「グループ」列のドロップダウンは
+        付かず、処理も例外で止まらない。"""
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        ws = load_workbook(path)["PY_管理表"]
+        ranges = {str(v.sqref) for v in ws.data_validations.dataValidation}
+        # 「グループ」列は B 列。設定シートが無いので B 列向けのドロップダウンは付かない
+        assert "B2:B1003" not in ranges
+        # 既存の `choices` 列には引き続きドロップダウンが付く（回帰確認）
+        assert "E2:E1003" in ranges
+
     def test_template_font_is_noto_sans_jp(self, tmp_path):
         """雛形（表シート・記入方法シートとも）のフォントが Noto Sans JP。"""
         path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
@@ -394,6 +421,46 @@ class TestCreateCombinedWorkbook:
         # GroupSetting には choices 列が無い
         settings_ws = wb[f"PY_{GroupSetting.SHEET_NAME}"]
         assert list(settings_ws.data_validations.dataValidation) == []
+
+    def test_report_group_column_dropdown_references_settings(self, tmp_path):
+        """管理表シートの「グループ」列に、設定シートの「グループ」列を参照する
+        リスト型入力規則が付く（formula1 が ``'PY_設定'!$A$2:$A$1002``）。"""
+        path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
+        wb = load_workbook(path)
+        ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
+        validations = {str(v.sqref): v for v in ws.data_validations.dataValidation}
+        # 「グループ」列は B 列（宣言順で ID の次）
+        assert "B2:B1003" in validations, sorted(validations)
+        v = validations["B2:B1003"]
+        assert v.type == "list"
+        # 設定シートの実シート名（`PY_設定`）+ 「グループ」列（A 列）のデータ範囲
+        # 最終行は _FIRST_DATA_ROW(2) + _DATA_VALIDATION_ROWS(1000) = 1002（将来の
+        # 行追加ぶんまで含める）
+        assert v.formula1 == "'PY_設定'!$A$2:$A$1002"
+        # 候補以外は入力できない（エラー表示=stop）
+        assert v.errorTitle == "書き方が違います"
+        assert v.showErrorMessage is True
+        assert "設定シート" in (v.error or "")
+        assert v.showInputMessage is True
+        assert "設定シート" in (v.prompt or "")
+        # スケジュール・設定シートにはグループ列ドロップダウンは付かない
+        schedule_ws = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
+        assert all("B2" not in str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
+        settings_ws = wb[f"PY_{GroupSetting.SHEET_NAME}"]
+        assert list(settings_ws.data_validations.dataValidation) == []
+
+    def test_report_group_column_dropdown_also_applied_via_create_template(self, tmp_path):
+        """`create_combined_workbook` 以外の経路でも、設定シート付きブックの
+        管理表なら「グループ」列に設定シート参照ドロップダウンが付く。"""
+        # 設定シートだけ先に作ってあるブックに、続けて管理表の雛形を生成
+        path = tmp_path / "管理表.xlsx"
+        create_template(path, GroupSetting, GROUP_SETTING_EXAMPLES)
+        create_template(path, ReportEntry, EXAMPLES)
+        wb = load_workbook(path)
+        ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
+        validations = {str(v.sqref): v for v in ws.data_validations.dataValidation}
+        assert "B2:B1003" in validations, sorted(validations)
+        assert validations["B2:B1003"].formula1 == "'PY_設定'!$A$2:$A$1002"
 
     def test_does_not_leave_default_sheet(self, tmp_path):
         path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")

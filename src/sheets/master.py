@@ -65,7 +65,8 @@ EXAMPLES = [
         "summary": "顧客一覧",
         "has_personal_info": True,  # 氏名・電話・住所を含む例
         "url": f"{_DOMAIN}/00O5g00000ABCDE/view",
-        "enabled": True,
+        # 記入例なので ×。消し忘れても取得の対象にならない
+        "enabled": False,
         "allow_empty": False,  # 普段はデータがあるが、念のため「×」（既定）
         "exceeds_row_limit": False,  # 2000行に収まる通常のレポート（既定）
         "use_soql": False,  # Report API のまま（既定）
@@ -78,7 +79,8 @@ EXAMPLES = [
         "summary": "売上実績",
         "has_personal_info": False,  # 集計値のみで個人を特定する情報が無い例
         "url": f"{_DOMAIN}/00O5g00000FGHIJ/view",
-        "enabled": True,
+        # 記入例なので ×。消し忘れても取得の対象にならない
+        "enabled": False,
         "allow_empty": True,  # 「該当データ無し」が普通に起きるレポートの例
         "exceeds_row_limit": False,
         "use_soql": False,

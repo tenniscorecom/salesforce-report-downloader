@@ -185,6 +185,13 @@ def create_template(
     # 十分な行数ぶんの範囲に適用し、あとから行を足しても効くようにする
     _apply_choice_validations(sheet, specs, len(rows))
 
+    # 管理表シートの場合、同じブックに「設定」シートがあれば「グループ」列に
+    # 「設定」シートの「グループ」列を参照するドロップダウンを追加で付ける
+    # （スケジュール・設定シート単体の雛形では `row_cls` が違うので適用されない）
+    if row_cls is ReportEntry:
+        group_last_row = _FIRST_DATA_ROW + len(rows) - 1 + _DATA_VALIDATION_ROWS
+        _apply_group_validation(book, sheet, group_last_row)
+
     # 「スケジュール」シートの場合、「取得頻度」と矛盾する「曜日」「日付」を
     # 赤く塗る条件付き書式を付ける（編集時点で気づかせるため）
     if row_cls is ScheduleRule:
@@ -299,6 +306,7 @@ def create_combined_workbook(path: str | Path) -> Path:
         specs_report,
         REPORT_ENTRY_EXAMPLES,
         mark_as_example=existing_report is None,
+        row_cls=ReportEntry,
     )
     _finalize_sheet(
         book,
@@ -314,6 +322,7 @@ def create_combined_workbook(path: str | Path) -> Path:
         specs_settings,
         GROUP_SETTING_EXAMPLES,
         mark_as_example=existing_settings is None,
+        row_cls=GroupSetting,
     )
 
     _write_combined_guide(
@@ -581,6 +590,10 @@ def _finalize_sheet(
     example_count = len(examples)
     _apply_template_font(sheet, example_count + _DATA_VALIDATION_ROWS)
     _apply_choice_validations(sheet, specs, example_count)
+    # 管理表シートだけに、設定シート参照の「グループ」列ドロップダウンを付ける
+    if row_cls is ReportEntry:
+        group_last_row = _FIRST_DATA_ROW + example_count - 1 + _DATA_VALIDATION_ROWS
+        _apply_group_validation(book, sheet, group_last_row)
     if row_cls is ScheduleRule:
         # ドロップダウンと同じ最終行まで（=``_DATA_VALIDATION_ROWS`` ぶん余裕）
         schedule_last_row = _FIRST_DATA_ROW + example_count - 1 + _DATA_VALIDATION_ROWS
@@ -628,7 +641,11 @@ def _write_class_guide(
     last = header_row + len(specs) + 2
     sheet.cell(row=last, column=1, value="注意")
     sheet.cell(row=last, column=2, value="1行目の見出しは変えないでください（列名で読みます）")
-    sheet.cell(row=last + 1, column=2, value="記入例の行は、実際に使うときに消してください")
+    sheet.cell(
+        row=last + 1,
+        column=2,
+        value="記入例は『有効』が × なので、消し忘れても取得されません（不要なら消してください）",
+    )
     for column in range(1, 4):
         sheet.cell(row=header_row, column=column).font = Font(bold=True)
     _auto_width(sheet, max_width=80)
@@ -685,7 +702,7 @@ def _write_combined_guide(
     # 注意書き
     sheet.cell(row=current_row, column=1, value="注意").font = Font(bold=True)
     note1 = "1行目の見出しは変えないでください（列名で読みます）"
-    note2 = "記入例の行は、実際に使うときに消してください"
+    note2 = "記入例は『有効』が × なので、消し忘れても取得されません（不要なら消してください）"
     sheet.cell(row=current_row + 1, column=2, value=note1)
     sheet.cell(row=current_row + 2, column=2, value=note2)
     _auto_width(sheet, max_width=80)
@@ -741,6 +758,81 @@ def _apply_choice_validations(
         len(specs),
         last_row,
     )
+
+
+def _apply_group_validation(workbook: Workbook, report_sheet: Worksheet, last_row: int) -> bool:
+    """管理表シートの「グループ」列に、設定シートの「グループ」列を参照する
+    リスト型入力規則を付ける。
+
+    ワークブック内に ``PY_設定`` が無い（管理表のみの単独雛形など）、あるいは
+    いずれかのシートに該当の列が無い場合は何もしない。**雛形側が原因不明の
+    不在で黙って付けないのは混乱を招くため、設定シートが無いケース（=雛形の
+    正常系）だけを静かにスキップし、「グループ」列が無いケースは実装バグと
+    みなして ``ValueError`` で気づかせる**。
+
+    Args:
+        workbook: 雛形を書き込んでいるワークブック全体（設定シート探索に使う）。
+        report_sheet: 管理表シート（「グループ」列を持つ側）。
+        last_row: ドロップダウンを適用する最終行（データ行の終端）。
+
+    Returns:
+        ドロップダウンを付けたら ``True``、付けなかったら ``False``。
+    """
+    settings_sheet_name = f"PY_{GroupSetting.SHEET_NAME}"
+    if settings_sheet_name not in workbook.sheetnames:
+        logger.debug(
+            "雛形: 設定シート未存在のため『グループ』列ドロップダウンをスキップ: sheet=%s",
+            settings_sheet_name,
+        )
+        return False
+
+    settings_sheet: Worksheet = workbook[settings_sheet_name]
+    group_header = ReportEntry.header("group")
+    settings_group_header = GroupSetting.header("group")
+
+    def _column_letter(sheet: Worksheet, header: str) -> str:
+        """シート1行目から見出しを探して、列記号（get_column_letter 由来）を返す。"""
+        for index in range(1, sheet.max_column + 1):
+            cell = sheet.cell(row=1, column=index)
+            if cell.value is not None and str(cell.value) == header:
+                return get_column_letter(index)
+        raise ValueError(
+            f"{sheet.title} に「{header}」列が見つかりません。雛形に列が無いのは実装バグです"
+        )
+
+    group_letter = _column_letter(report_sheet, group_header)
+    settings_group_letter = _column_letter(settings_sheet, settings_group_header)
+
+    settings_last_row = _FIRST_DATA_ROW + _DATA_VALIDATION_ROWS
+    # 設定シートのシート名は Excel の命名規則上、引用符で囲む必要がある
+    # （先頭が `PY_` で英字始まりなら省略しても動くが、`設定` のように
+    # 日本語を含む場合は必ず引用符で囲む）
+    formula1 = (
+        f"'{settings_sheet_name}'!${settings_group_letter}${_FIRST_DATA_ROW}:"
+        f"${settings_group_letter}${settings_last_row}"
+    )
+    validation = DataValidation(
+        type="list",
+        formula1=formula1,
+        allow_blank=True,  # 「グループ」列は空欄でも許容
+        showDropDown=False,
+        showErrorMessage=True,
+        errorTitle="書き方が違います",
+        error="設定シートの「グループ」に書いた名前から選んでください",
+        showInputMessage=True,
+        promptTitle=group_header,
+        prompt="設定シートの「グループ」に書いた名前から選んでください",
+    )
+    validation.add(f"{group_letter}{_FIRST_DATA_ROW}:{group_letter}{last_row}")
+    report_sheet.add_data_validation(validation)
+    logger.debug(
+        "雛形: 管理表『グループ』列に『設定』シート参照ドロップダウンを適用:"
+        " sheet=%s, 列=%s, formula1=%s",
+        report_sheet.title,
+        group_letter,
+        formula1,
+    )
+    return True
 
 
 def _apply_schedule_conditional_formatting(
