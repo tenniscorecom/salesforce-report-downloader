@@ -59,6 +59,11 @@ WinActor からの呼び出しが前回実行と重なった場合（前回の�
 SOQL経由は同じ管理番号の `SoqlReport` が `src.soql_reports` に登録されている必要がある
 （詳しくは `_fetch_via_soql()` を参照）。
 
+**自動切替でも全件取れなければエラーで止める。** `SalesforceReportTruncatedError`
+（2000件超）→ ブラウザに切り替えても 2000 行以下しか取れなければ、
+`BrowserFallbackIncompleteError` で失敗する（「0件あり」が ○ でも空ファイルは保存しない）。
+対処は Salesforce の画面からレポートを手動でエクスポートする。
+
 ## 使い方
 
 ```bat

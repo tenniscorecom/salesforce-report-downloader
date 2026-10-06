@@ -498,6 +498,13 @@ Report API 経路（`2000件超` × かつ `SOQL` ×）では、失敗時に自�
 「当日中に 2000件超で失敗したレポートは再問い合わせしない」旧挙動は廃止された。
 自動切替で取れるため、同じ日の 2 回目以降も毎回 Salesforce へ問い合わせが走る。
 
+**ブラウザで取り直しても 2000 行以下しか取れなければ `BrowserFallbackIncompleteError`
+で止める。** 2026-10 に追加。`SalesforceReportTruncatedError` から自動でブラウザに
+切り替えたあと、その結果が 2000 行以下（0 行も含む）だった場合は、ツールのブラウザ取得で
+全件取れていない（2000件超のはず）のでエラー扱いにする。**管理表の `0件あり` が `○` でも
+空ファイルは作らない**（空ファイルが残ると利用側が「データが無い日」と「取得失敗」を
+区別できなくなるため）。対処は Salesforce の画面からレポートを手動でエクスポートする。
+
 ---
 
 ## 履歴（CSV）
@@ -758,8 +765,11 @@ class LargeSalesReport(SoqlReport):
 `ReportNotRegisteredError` / `SoqlReportNotRegisteredError` /
 `GroupNotRegisteredError` / `MasterDuplicateValueError` /
 `MasterRowValueError` / `CachedReportNotFoundError` / `EmptyReportError` /
-`ReportFolderNotFoundError` / `ScheduledDownloadFailedError`（いずれも
-`comken/exceptions/downloader.py`）。
+`ReportFolderNotFoundError` / `ScheduledDownloadFailedError` /
+`BrowserFallbackFailedError` / `BrowserFallbackIncompleteError`（いずれも
+`comken/exceptions/downloader.py` もしくは `src/exceptions.py`）。
+`BrowserFallbackIncompleteError` は自動切替してもブラウザで 2000 行以下しか取れなかった
+ときに送出される（[自動切替](#自動切替2026-10-追加) 参照）。
 
 定期取得で 1 件以上失敗した場合は **取得できたものを保存したうえで**例外で知らせる
 （`DownloaderError` が SOQL 経路向けに担う。`SalesforceError` 経由で

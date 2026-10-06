@@ -82,6 +82,7 @@ from comken.toolbox.salesforce.sites import site_for
 from src import paths
 from src.exceptions import (
     BrowserFallbackFailedError,
+    BrowserFallbackIncompleteError,
     EmptyReportError,
     ReportFolderNotFoundError,
     ReportNotRegisteredError,
@@ -120,6 +121,11 @@ CAUSE_PROGRAM = "プログラム"
 # 共有サーバーの同期・権限異常などで ``FileExistsError`` が返り続けると無限
 # ループになるため、必ず上限を切る。
 RESERVE_PATH_LIMIT = 1000
+
+# Report API の上限。2000件超で打ち切られたレポートをブラウザで取り直して、
+# この行数以下しか取れなければ全件取れていない（``_fetch_with_auto_fallback()`` で
+# 判定して ``BrowserFallbackIncompleteError`` に流す）
+_REPORT_API_ROW_LIMIT = 2000
 
 
 def _history_path() -> Path:
@@ -681,6 +687,28 @@ def _fetch_with_auto_fallback(
             raise BrowserFallbackFailedError(
                 entry.key, entry.summary, "2000件超", ROUTE_BROWSER_FALLBACK_TRUNCATED
             ) from browser_exc
+        # ブラウザ取得は成功したが、その結果も Report API の上限以下しか取れなかった
+        # 場合は、全件取れていない（2000件超のはずなので）。
+        # 空ファイル（``allow_empty=True``）でも取り返さずにエラー扱い（空ファイルを
+        # 残すと利用側が「データが無い日」と「取得失敗」を区別できなくなるため）。
+        # ``except`` の外で判定・送出する（上の ``except Exception as browser_exc`` で
+        # ``BrowserFallbackFailedError`` に化けないように）
+        if len(browser_table) <= _REPORT_API_ROW_LIMIT:
+            browser_row_count = len(browser_table)
+            logger.warning(
+                "Report API では 2000 件超でしたが、ブラウザで取り直した結果も %d 行でした。"
+                "全件取れていないため失敗にします: %s（%s）",
+                browser_row_count,
+                entry.key,
+                entry.summary,
+            )
+            # 直接の原因は「ブラウザの取得件数が少なかった」というデータ起因の状態。
+            # ``SalesforceReportTruncatedError`` を ``__cause__`` に乗せると
+            # 「ブラウザ取り直しで例外が起きた」ように見えるので、 ``from None`` で
+            # 切り離す（=この例外は自動切替の判定結果であって、原因例外は無い）
+            raise BrowserFallbackIncompleteError(
+                entry.key, entry.summary, browser_row_count
+            ) from None
         return ROUTE_BROWSER_FALLBACK_TRUNCATED, browser_table
 
 
@@ -764,10 +792,10 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     ``download_soql_reports()``（管理表を経由しない独立した経路）専用の値
     だからここでは読まない。
 
-    取得は ``SalesforceBase.bulk_query()`` で行う。Bulk API 2.0 の
-    ジョブで長時間データをサーバ側で処理できるため、件数が多い
-    SOQL レポートでの往復回数を抑えられる。集計関数・``GROUP BY`` 等
-    Bulk API 2.0 が受け付けない SOQL はこの経路では使えない。
+    取得は ``SalesforceBase.bulk_query()`` で行う。サーバ側で
+    データを処理する非同期ジョブのため、件数が多い SOQL レポートでの
+    往復回数を抑えられる。集計関数・``GROUP BY`` 等 ``bulk_query()``
+    が受け付けない SOQL はこの経路では使えない。
     """
     report_cls = soql_report_for(entry.key)
     instance = report_cls()

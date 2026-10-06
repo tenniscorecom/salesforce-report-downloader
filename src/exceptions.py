@@ -10,6 +10,9 @@ DownloaderError`` を直接書いてください）。
 from pathlib import Path
 
 from comken.exceptions import ComkenError, DownloaderError
+from comken.services.salesforce_downloader.history import (
+    ROUTE_BROWSER_FALLBACK_TRUNCATED,
+)
 
 __all__ = [
     "ReportNotRegisteredError",
@@ -20,6 +23,7 @@ __all__ = [
     "ReportReservePathLimitError",
     "ScheduledDownloadFailedError",
     "BrowserFallbackFailedError",
+    "BrowserFallbackIncompleteError",
     "MasterTableError",
     "MasterRowValueError",
     "MasterDuplicateValueError",
@@ -230,6 +234,46 @@ class BrowserFallbackFailedError(DownloaderError):
         # 属性。``ROUTE_BROWSER_FALLBACK_TRUNCATED`` / ``ROUTE_BROWSER_FALLBACK_EMPTY``
         # のいずれか（自動切替を試みたが失敗した、という意味での値）
         self.route = route
+
+
+class BrowserFallbackIncompleteError(BrowserFallbackFailedError):
+    """Report API では2000件超だったのに、ブラウザで取り直した結果も2000行以下だった
+
+    Report API 経路（``2000件超`` × かつ ``SOQL`` ×）で ``SalesforceReportTruncatedError``
+    が出たため、自動でブラウザ経由に取り直したが、**ブラウザでも Report API の
+    上限（2000行）以下しか取れなかった**場合に送出する。2000件超のはずなので、
+    全件取れていない。**管理表の「0件あり」が ○ でも
+    空ファイルは作らずエラー扱いする**（空ファイルが保存されると、利用側は
+    「データが無い日」と「取得が失敗した日」を区別できなくなるため）。
+
+    引数で受けるのは ``report_key`` / ``summary`` / ``row_count`` （ブラウザで取れた
+    行数 ``int``）。 ``self.route`` には ``ROUTE_BROWSER_FALLBACK_TRUNCATED``
+    （自動切替を試みたが取り切れなかった、という意味での値）を入れる。 **親
+    ``BrowserFallbackFailedError.__init__`` の文言（"Report API で...だったため
+    ブラウザで取り直したが**失敗**しました"）は「ブラウザ取得自体が失敗」用なので、
+    ここでは合わないため呼ばず、 ``DownloaderError.__init__`` に自前の文言を直接渡す**。
+    ``route`` の値は comken の ``history`` モジュールから取る（循環 import にならない
+    ことは ``src.exceptions`` を import するときに ``history`` 側の依存が無いことで
+    確認済み）。
+
+    発生箇所: ``src/service.py`` の ``_fetch_with_auto_fallback()``
+
+    対処:
+        Salesforce の画面からレポートを手動でエクスポートしてください。
+    """
+
+    def __init__(self, report_key: str, summary: str, row_count: int) -> None:
+        DownloaderError.__init__(
+            self,
+            "Report API では 2000 件超だったのに、ブラウザで取り直した結果が"
+            f" {row_count} 行でした。全件取れていません: {report_key}（{summary}）\n"
+            "対処: Salesforce の画面からレポートを手動でエクスポートしてください。",
+        )
+        # 親 ``BrowserFallbackFailedError`` の ``__init__`` を呼ばないので ``self.route``
+        # はここで必ず自分で入れる（``_download()`` 側の ``record_failure(route=...)``
+        # への転写と、外側 ``except BrowserFallbackFailedError`` の ``exc.route`` 参照
+        # で使われる）
+        self.route = ROUTE_BROWSER_FALLBACK_TRUNCATED
 
 
 class MasterTableError(ComkenError):

@@ -33,6 +33,7 @@ import src.paths as _paths_module
 from src import service as service_module
 from src.exceptions import (
     BrowserFallbackFailedError,
+    BrowserFallbackIncompleteError,
     ScheduledDownloadFailedError,
 )
 from src.service import download_scheduled
@@ -41,6 +42,11 @@ URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/0
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
 ROWS = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "200"}]
 ROWS_B = [{"名前": "佐藤", "金額": "300"}]
+# Report API の上限（2000行）より大きい行数。``SalesforceReportTruncatedError`` からの
+# 自動切替で**成功扱い**にしたいテストは、ブラウザモックにこれを渡す
+# （``BrowserFallbackIncompleteError`` の境界・2001 行の正常系で再利用）
+ROWS_OVER_LIMIT = [{"名前": f"名{i}", "金額": str(i)} for i in range(2001)]
+ROWS_EXACT_LIMIT = [{"名前": f"名{i}", "金額": str(i)} for i in range(2000)]
 
 
 def _fake_salesforce(rows=None, side_effect=None):
@@ -140,7 +146,7 @@ class TestAutoFallbackOnTruncated:
         api_site = _fake_salesforce(
             side_effect=SalesforceReportTruncatedError("00O5g00000ABCDE", 2000)
         )
-        browser_site = _fake_browser_site(ROWS)
+        browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
         with (
             patch("src.service.site_for", return_value=api_site),
             patch(
@@ -160,7 +166,7 @@ class TestAutoFallbackOnTruncated:
             row = csv_file.read()[-1]
             assert row["成否"] == "成功"
             assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
-            assert row["取得件数"] == str(len(ROWS))
+            assert row["取得件数"] == str(len(ROWS_OVER_LIMIT))
 
 
 class TestAutoFallbackOnEmpty:
@@ -392,7 +398,7 @@ class TestBrowserReusedAcrossReports:
         api_site = _fake_salesforce(
             side_effect=SalesforceReportTruncatedError("00O5g00000ABCDE", 2000)
         )
-        browser_site = _fake_browser_site(ROWS)
+        browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
 
         with (
             patch("src.service.site_for", return_value=api_site),
@@ -594,7 +600,7 @@ class TestNoSkipOnSameDay:
         api_site = _fake_salesforce(
             side_effect=SalesforceReportTruncatedError("00O5g00000ABCDE", 2000)
         )
-        browser_site = _fake_browser_site(ROWS)
+        browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
         with (
             patch("src.service.site_for", return_value=api_site),
             patch(
@@ -608,3 +614,177 @@ class TestNoSkipOnSameDay:
         assert api_site.return_value.__enter__.return_value.report.get.call_count == 1
         # 自動切替で成功し、2 件の保存（=昨日の失敗履歴 + 今日の成功行）
         assert len(saved) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 自動切替しても上限以下しか取れなかったケース（2026-10 追加）
+# ──────────────────────────────────────────────────────────────────────
+class TestBrowserFallbackIncomplete:
+    """``SalesforceReportTruncatedError`` → ブラウザで取り直したが、ブラウザでも
+    Report API の上限（2000行）以下しか取れなかったケース。
+
+    Report API が 2000 件超で打ち止められた後、自動でブラウザ経由に取り直す。
+    ブラウザでも 2000 行以下しか取れないなら、全件取れていない。
+    **空ファイル（``allow_empty=True``）でも取り返さずにエラー扱いする**（空ファイルが残ると、利用側は「データが無い日」と
+    「取得が失敗した日」を区別できなくなるため）。
+
+    境界:
+    - 2000 行ちょうども「Report API の上限以下」なので失敗
+      （``_fetch_with_auto_fallback()`` の ``<= _REPORT_API_ROW_LIMIT`` の判定で
+      カバーされる）
+    - 2001 行は成功
+
+    0 行の自動切替（``ROUTE_BROWSER_FALLBACK_EMPTY``）は別経路で、 ``EmptyReportError``
+    で失敗扱いに変わりない（既存挙動）。このクラスの対象は ``ROUTE_BROWSER_FALLBACK_TRUNCATED``
+    経路。
+    """
+
+    @staticmethod
+    def _make_master_row(*, key: str, summary: str, allow_empty: str) -> list[str]:
+        """0件あり列だけ ``allow_empty`` の値が違う行を返すヘルパー。"""
+        return [key, summary, URL_A, "営業本部", "山田", "○", allow_empty, "", ""]
+
+    def _assert_incomplete_failure(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        browser_rows,
+        allow_empty: str,
+        expect_row_count: int,
+    ):
+        """共通の「ブラウザが取れたが上限以下 → ``BrowserFallbackIncompleteError``」
+        アサーション。``browser_rows`` が ``browser_table`` の行数になり、
+        ``expect_row_count`` がメッセージに含まるべき行数。"""
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = _make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [self._make_master_row(key="9001", summary="案件集計", allow_empty=allow_empty)],
+            settings_rows=[["営業本部", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+
+        api_site = _fake_salesforce(
+            side_effect=SalesforceReportTruncatedError("00O5g00000ABCDE", 2000)
+        )
+        browser_site = _fake_browser_site(browser_rows)
+        with (
+            patch("src.service.site_for", return_value=api_site),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
+            ),
+            pytest.raises(ScheduledDownloadFailedError) as caught,
+        ):
+            download_scheduled("案件集計")
+
+        # ``ScheduledDownloadFailedError`` の ``__cause__`` から ``BrowserFallbackIncompleteError``
+        # に到達できる（既存の ``BrowserFallbackFailedError`` テストと同じ辿り方）
+        assert isinstance(caught.value.__cause__, BrowserFallbackIncompleteError)
+        # 文言に行数と「手動でエクスポート」のヒントが入る
+        assert str(expect_row_count) in str(caught.value.__cause__)
+        assert "手動でエクスポート" in str(caught.value.__cause__)
+        assert caught.value.__cause__.route == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
+
+        # 履歴: 失敗・原因区分=「Salesforce」（``ComkenError`` 系）・取得経路=自動切替（2000件超）
+        with CSV(history_path) as csv_file:
+            row = csv_file.read()[-1]
+            assert row["成否"] == "失敗"
+            assert row["エラーコード"] == "BrowserFallbackIncompleteError"
+            assert row["原因区分"] == "Salesforce"
+            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
+            # エラー内容の文字列にも行数と「手動でエクスポート」のヒントが入る
+            assert str(expect_row_count) in row["エラー内容"]
+            assert "手動でエクスポート" in row["エラー内容"]
+        # 空ファイル（ヘッダファイル）すら保存されていないこと（管理表の 0件あり に
+        # かかわらず、明示的なエラーで止まる）
+        saved_files = list(base_path.glob("**/*.csv"))
+        assert saved_files == [], f"空ファイルが残っています: {saved_files}"
+        return caught.value.__cause__
+
+    def test_truncated_then_browser_returns_zero_rows_fails(self, tmp_path, monkeypatch):
+        """2000件超 → ブラウザが 0 行 → ``BrowserFallbackIncompleteError``。"""
+        self._assert_incomplete_failure(
+            tmp_path,
+            monkeypatch,
+            browser_rows=[],
+            allow_empty="×",
+            expect_row_count=0,
+        )
+
+    def test_truncated_then_browser_returns_under_limit_fails_even_with_allow_empty(
+        self, tmp_path, monkeypatch
+    ):
+        """同じ条件で管理表の「0件あり」が ○ でも同じく失敗し、空ファイルが保存されない。"""
+        self._assert_incomplete_failure(
+            tmp_path,
+            monkeypatch,
+            browser_rows=[],
+            allow_empty="○",
+            expect_row_count=0,
+        )
+
+    def test_truncated_then_browser_returns_exactly_limit_fails(self, tmp_path, monkeypatch):
+        """ブラウザが 2000 行ちょうど（``_REPORT_API_ROW_LIMIT``）→ 失敗
+        （境界）。``<=`` の判定でカバーされる。"""
+        self._assert_incomplete_failure(
+            tmp_path,
+            monkeypatch,
+            browser_rows=ROWS_EXACT_LIMIT,
+            allow_empty="×",
+            expect_row_count=2000,
+        )
+
+    def test_truncated_then_browser_returns_over_limit_succeeds(self, tmp_path, monkeypatch):
+        """ブラウザが 2001 行（``_REPORT_API_ROW_LIMIT`` + 1）→ 成功
+        （既存の ``test_truncated_falls_back_to_browser_and_succeeds`` と同じ扱い）。"""
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = _make_master(
+            tmp_path / "レポート管理表.xlsx",
+            [self._make_master_row(key="9001", summary="案件集計", allow_empty="×")],
+            settings_rows=[["営業本部", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+
+        api_site = _fake_salesforce(
+            side_effect=SalesforceReportTruncatedError("00O5g00000ABCDE", 2000)
+        )
+        browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
+        with (
+            patch("src.service.site_for", return_value=api_site),
+            patch(
+                "comken.toolbox.browser.sites.salesforce.site_for",
+                return_value=browser_site,
+            ),
+        ):
+            saved = download_scheduled("案件集計")
+
+        assert len(saved) == 1
+        # 履歴: 成功・route=自動切替（2000件超）
+        with CSV(history_path) as csv_file:
+            row = csv_file.read()[-1]
+            assert row["成否"] == "成功"
+            assert row["取得経路"] == history.ROUTE_BROWSER_FALLBACK_TRUNCATED
+            assert row["取得件数"] == str(len(ROWS_OVER_LIMIT))
+
+    def test_truncated_then_browser_returns_some_but_few_rows_fails(self, tmp_path, monkeypatch):
+        """ブラウザが 1999 行など Report API の上限未満の普通の数 → 失敗
+        （空でも 2000 ちょうどでもなく、明らかに途中で打ち切られたケース）。"""
+        rows_few = [{"名前": f"名{i}", "金額": str(i)} for i in range(1999)]
+        self._assert_incomplete_failure(
+            tmp_path,
+            monkeypatch,
+            browser_rows=rows_few,
+            allow_empty="×",
+            expect_row_count=1999,
+        )
