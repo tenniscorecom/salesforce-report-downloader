@@ -25,6 +25,7 @@ from comken.toolbox.excel import Color, Excel
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -400,7 +401,7 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
         choices = choices_by_header.get(header)
         if choices is None:
             continue
-        letter = _column_letter(column_index)
+        letter = get_column_letter(column_index)
         validation = DataValidation(
             type="list",
             formula1=f'"{",".join(choices)}"',
@@ -712,7 +713,7 @@ def _apply_choice_validations(
     for offset, (_, spec, _, default) in enumerate(specs, start=1):
         if not spec.choices:
             continue  # `choices` を宣言していない列には付けない
-        letter = _column_letter(offset)
+        letter = get_column_letter(offset)
         choices_text = "、".join(f"「{choice}」" for choice in spec.choices)
         prompt = f"{spec.help}\n書き方: {choices_text}".strip()
         error = f"『{'』か『'.join(spec.choices)}』のいずれかを入力してください。"
@@ -778,7 +779,7 @@ def _apply_schedule_conditional_formatting(
     weekday_header = row_cls.header("raw_weekday")
     day_header = row_cls.header("raw_day_of_month")
     header_to_letter = {
-        str(cell.value): _column_letter(index)
+        str(cell.value): get_column_letter(index)
         for index, cell in enumerate(next(sheet.iter_rows(min_row=1, max_row=1)), start=1)
         if cell.value is not None
     }
@@ -881,15 +882,6 @@ def _to_cell(value: Any, spec: ColumnSpec, value_type: Any) -> Any:
     return value
 
 
-def _column_letter(index: int) -> str:
-    """1 -> A, 27 -> AA。"""
-    letters = ""
-    while index > 0:
-        index, remainder = divmod(index - 1, 26)
-        letters = chr(ord("A") + remainder) + letters
-    return letters
-
-
 def _set_template_font(cell: Any) -> None:
     """セルに雛形用のフォント名（Noto Sans JP）を当てる。
 
@@ -909,8 +901,6 @@ def _set_template_font(cell: Any) -> None:
 
 def _auto_width(sheet: Worksheet, *, max_width: int | None = None) -> None:
     """セル内容に合わせて列幅を設定する。"""
-    from openpyxl.utils import get_column_letter
-
     for column_index, cells in enumerate(sheet.iter_cols(), start=1):
         width = max((len(str(cell.value or "")) for cell in cells), default=0) + 2
         if max_width is not None:
