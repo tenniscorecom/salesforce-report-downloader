@@ -615,8 +615,9 @@ class TestDownloadScheduledRecord:
         2026-10 に保存方式を ``os.rename`` ベース（``paths.move_into_place()``）
         に変えた動機は「**本番の名前の空ファイルを一瞬も作らない**」こと。
         旧実装の「``_reserve_unique_path()`` で空の予約ファイルを作って、
-        ``os.replace`` で置き換える」は同期フォルダ（Box Drive・OneDrive 等）で
-        空の版に置き戻される競合があった。``_write_csv`` を差し替えて、その
+        ``os.replace`` で置き換える」形では、書き込みの間ずっと本番の名前の
+        空ファイルが見えていた（会社のファイルサーバーで成功ログなのに 0 バイト
+        になった件の対策）。``_write_csv`` を差し替えて、その
         時点で最終パス（``{KEY}_{日付}_{時刻}.csv``）が無いことを assert する。
         """
         entry = load_master(paths["master_path"])["1001"]
