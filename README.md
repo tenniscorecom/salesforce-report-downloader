@@ -177,7 +177,7 @@ comken から import する。
 ダウンローダーは「管理表の行から履歴に書く値を組み立てる `record()`」だけを
 持ち、書き込み自体は comken の `append_history()` を使う。境界を履歴にしたので、
 履歴の列や読み取り関数を 2 箇所で二重に持たない（`comken.services.salesforce_downloader.history`
-の `COLUMNS` / `HistoryRow` / `read_history()` / `latest_report()` などを共有）。
+の `COLUMNS` / `HistoryRow` / `read_history()` / `report_path()` / `read_report()` などを共有）。
 
 ## 業務での配置
 
