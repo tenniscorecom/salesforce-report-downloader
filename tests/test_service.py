@@ -113,13 +113,68 @@ def make_master(
     各 ``row`` は ``_row(*row)`` で ``HEADERS`` の 9 列に揃える（既定値を持つ
     ``0件あり`` / ``2000件超`` / ``SOQL`` は空文字で埋めても読み込み側で
     ``False`` 既定として扱われる）。
+
+    **「スケジュール」シートも同梱する**（``ScheduleRule`` の 9 列）。``rows`` の
+    「有効」列が ``○`` の各管理番号に対し ``S{管理番号}`` のスケジュールキーを
+    持つ「毎日・取得開始時刻および取得時刻を空欄」のスケジュール行を 1 件ずつ
+    当てる。空欄の ``start_time`` / ``desired_time`` は ``ScheduleRule.is_due()``
+    / ``output_path()`` で「時刻条件なし / 現在時刻にフォールバック」として
+    扱われるため、 ``clock_now`` を上書きしないテストでも対象のレポートが
+    取得される。 ``download_scheduled()`` が「スケジュール」シート無しでは
+    有効なレポートを取得しない動作になったので、 ``make_master`` を直接呼ぶ
+    既存テストが「スケジュール」前提の新しい挙動でも動くよう、ここで
+    スケジュール行を自動生成する。
     """
+    schedule_headers = [
+        "スケジュールキー",
+        "レポートキー",
+        "取得頻度",
+        "取得開始時刻",
+        "取得時刻",
+        "曜日",
+        "日付",
+        "祝日対応",
+        "有効",
+    ]
     table_rows = [
         dict(zip(HEADERS, _reorder_master_row_to_new_order(_row(*row)), strict=True))
         for row in rows
     ]
+    # ``rows`` のうち「有効」が ○ の各管理番号に「毎日・空欄時刻」のスケジュール行を
+    # 1 件ずつ当てる。 _row() の戻り値の 6 番目（``HEADERS`` での「有効」列）が ○ の
+    # 行だけが対象となる。 ○ 以外（× または空欄）の行は対象外
+    schedule_table_rows: list[dict[str, str]] = []
+    for row in rows:
+        if len(row) < 6:
+            continue  # 「有効」列まで届かない短縮形 → 対象外
+        if row[5] != "○":
+            continue
+        key = str(row[0])
+        schedule_table_rows.append(
+            dict(
+                zip(
+                    schedule_headers,
+                    [
+                        f"S{key}",
+                        key,
+                        "毎日",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "取得しない",
+                        "○",
+                    ],
+                    strict=True,
+                )
+            )
+        )
     with Excel(path) as book:
         book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
+        if schedule_table_rows:
+            book.create_data_sheet("スケジュール").create_table(
+                "スケジュール", Table(schedule_headers, schedule_table_rows)
+            )
         if settings_rows is not None:
             settings_table_rows = [
                 dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
@@ -143,6 +198,12 @@ def paths(tmp_path, monkeypatch):
     `1002`（=有効）は Excel 出力テストが直接管理表を作る側で検証するため、
     ここでは**無効**にして対象外にしている。`1003` も無効。
 
+    **「スケジュール」シートも同梱し、「1001**」に S001（S001=毎日・9:00・有効）
+    のスケジュールを1件当てる。``1001`` はスケジュール無しだと取られない
+    （=``download_scheduled()`` が警告だけ出して終わる）ため、``paths`` フィクスチャを
+    使うテストが「1001 を取得してファイルが残る」契約にロックインされないよう、
+    スケジュール行を足した形にする。
+
     出力先フォルダは設定シート（`グループ` → ベースパス）のみで組み立てる。
     2026-09 に「担当者 / 概要」のフォルダ階層は廃止されたが、定期取得と SOQL の
     共通化で「ベース / 概要」の 2 階層に戻した（人が業務ごとに探しやすくする
@@ -151,7 +212,7 @@ def paths(tmp_path, monkeypatch):
     """
     base_path = tmp_path / "ベース"
     base_path.mkdir()
-    master = make_master(
+    master = make_master_with_schedule(
         tmp_path / "レポート管理表.xlsx",
         [
             [
@@ -178,6 +239,16 @@ def paths(tmp_path, monkeypatch):
                 "山田",
                 "×",
             ],
+        ],
+        schedule_rows=[
+            # 1001 に「毎日・有効」のスケジュールを当てる。
+            # 「取得開始時刻」と「取得時刻」を両方空欄にすると、
+            # ``ScheduleRule.is_due()`` が時刻条件なしで True を返し、
+            # ``output_path()`` 側は ``now=current`` をそのまま使うため、
+            # ``clock_now`` を上書きしない ``paths`` フィクスチャを使う
+            # テストでも 1001 が必ず取得され、ファイル名は ``now`` 由来になる
+            # （=「スケジュール」シート無しでは取られなくなった動作の代替）
+            ["S001", "1001", "毎日", "", "", "", "", "取得しない", "○"],
         ],
         settings_rows=[
             ["営業事務グループ", str(base_path)],
@@ -453,14 +524,10 @@ class TestDownloadScheduledRecord:
             assert csv_file.path == paths["history_path"]
 
     def test_fetches_again_even_if_already_downloaded_today(self, paths):
-        """`paths` fixture の管理表には「スケジュール」シートが無い。
-
-        スケジュール行が無いレポートは ``downloaded_today()`` ベースで
-        1 日 1 回までに制限される（後方互換）。よって 2 回目はスキップされ、
+        """`paths` fixture の管理表には「スケジュール」シートがあり、 ``1001`` に
+        S001（毎日）が当たっている。 2 回 ``download_scheduled()`` を呼ぶと、
+        ``schedule_succeeded_today()`` の dedup 判定で 2 回目がスキップされ、
         Salesforce へ問い合わせない。
-
-        出力は ``{ベースパス}/{管理番号}_{日付}_{時刻}.csv`` の単一ファイルに
-        1本化されたので、ファイル数は 1 件だけ存在する。
         """
         site = fake_salesforce()
         with patch("src.service.site_for", return_value=site):
@@ -870,6 +937,7 @@ class TestDownloadScheduledRecord:
         from dataclasses import replace
 
         from src.sheets.master import load_master
+        from src.sheets.schedule import ScheduleRule, load_schedule
 
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001
         # ``paths`` fixture と同じベース/履歴を使い、両方とも同じ概要に揃える
@@ -883,6 +951,26 @@ class TestDownloadScheduledRecord:
         monkeypatch.setattr(service_module, "load_master", lambda _master_path: all_entries)
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
+        # ``1002`` にはスケジュール行が無いので、 ``1002`` 用のスケジュール行を
+        # 追加した新しいリストを返す ``load_schedule`` に差し替える
+        # （無いと「スケジュール」シート無しと同じ判定になり、取られない）
+        existing_rule = load_schedule(paths["master_path"])[0]
+        schedule_for_1002 = ScheduleRule(
+            schedule_key="S002",
+            report_key="1002",
+            frequency=existing_rule.frequency,
+            start_time=existing_rule.start_time,
+            desired_time=existing_rule.desired_time,
+            raw_weekday=existing_rule.raw_weekday,
+            raw_day_of_month=existing_rule.raw_day_of_month,
+            holiday_policy=existing_rule.holiday_policy,
+            enabled=True,
+        )
+        monkeypatch.setattr(
+            service_module,
+            "load_schedule",
+            lambda _master_path: [existing_rule, schedule_for_1002],
+        )
 
         with patch("src.service.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
@@ -2075,35 +2163,71 @@ class TestDownloadScheduled:
         assert _history_rows(paths)[-1]["プロジェクト"] == "定期実行"
 
     # ── スケジュール管理表と組み合わせた判定 ──────────────────────────────
-    def test_schedule_sheet_missing_keeps_backward_compatible_behavior(self, tmp_path, monkeypatch):
-        """「スケジュール」シートが無い管理表は、これまで通り毎回対象になる（後方互換）。
+    def test_schedule_sheet_missing_excludes_report_with_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """「スケジュール」シートが無い管理表のレポートは取得しない（警告が出る）。
 
-        この機能追加を境に既存のレポートが突然取得されなくなる事故を防ぐ。
+        旧仕様（「スケジュール」シートが無いときも「有効」だけで毎回対象）の
+        後方互換は廃止された。 代わりに「スケジュール」シート無いレポートは
+        取得されず、警告ログが出る。 詳細は ``TestUnscheduledReportIsSkipped``
+        側を参照。 ここでは「``make_master`` 経由でも schedule 行が自動で
+        当たらないシナリオを再現したとき、 警告ログに ``1001`` が出る」こと
+        を 1 本テストに固定する。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
-        master = make_master(
-            tmp_path / "管理表.xlsx",
-            [
-                [
-                    "1001",
-                    "顧客一覧",
-                    URL_A,
-                    "営業事務グループ",
-                    "山田",
-                    "○",
-                ]
-            ],
-            settings_rows=[["営業事務グループ", str(base_path)]],
-        )
+        # ``make_master_with_schedule`` を経由せず、 ``make_master`` だけ使うと
+        # スケジュール行が自動で付くため、 「スケジュール」シート無しを再現するには
+        # ``Excel`` を直接組み立てる。 ここは「スケジュール」シート無しシナリオの
+        # 警告回帰テストの位置づけ（ ``TestUnscheduledReportIsSkipped`` が
+        # 機能テスト、 ここでは「``make_master`` を経由しない経路でも警告が出る」
+        # という表現テスト）。
+        from comken.core.table import Table
+        from comken.toolbox.excel import Excel
+
+        master = tmp_path / "管理表.xlsx"
+        table_rows = [
+            dict(
+                zip(
+                    HEADERS,
+                    _reorder_master_row_to_new_order(
+                        _row("1001", "顧客一覧", URL_A, "営業事務グループ", "山田", "○")
+                    ),
+                    strict=True,
+                )
+            )
+        ]
+        settings_table_rows = [
+            dict(
+                zip(
+                    GROUP_SETTINGS_HEADERS,
+                    ["営業事務グループ", str(base_path)],
+                    strict=True,
+                )
+            )
+        ]
+        with Excel(master) as book:
+            book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
+            book.create_data_sheet("設定").create_table(
+                "設定", Table(GROUP_SETTINGS_HEADERS, settings_table_rows)
+            )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        # 「今」を月曜 09:00 に固定してもスケジュール判定には影響しない
         fixed_now = dt.datetime(2026, 1, 5, 9, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with (
+            caplog.at_level(logging.WARNING, logger="src.service"),
+            patch("src.service.site_for", return_value=fake_salesforce()),
+        ):
             saved = download_scheduled()
-        assert [path.name.split("_")[0] for path in saved] == ["1001"]
+        # スケジュール行が無いので取らない
+        assert saved == []
+        # 警告ログに 1001 が出る
+        warning_messages = [
+            r.message for r in caplog.records if "スケジュール行が無いため取得しません" in r.message
+        ]
+        assert any("1001" in m for m in warning_messages)
 
     def test_schedule_rule_not_due_excludes_report(self, tmp_path, monkeypatch):
         """スケジュール行が「今は要らない (False)」を返したレポートは対象から外れる。"""
@@ -2540,6 +2664,185 @@ class TestScheduleDedup:
         assert keys == ["S_MON", "S_WED"]
 
 
+# ── 「スケジュール」シートに紐付かないレポートの取得しない挙動 ───────────
+class TestUnscheduledReportIsSkipped:
+    """「スケジュール」シートに対象レポートの行が無い（=後方互換の旧挙動）と
+    き、 ``download_scheduled()`` は取得しない。 「スケジュール」シート自体が無い
+    Excel を作り、警告ログと Salesforce への問い合わせ有無を確かめる。
+    ``make_master()`` はスケジュール行も自動生成するため、ここでは ``Excel``
+    直接で「スケジュール」シートを作らない管理表を作る。
+    """
+
+    def _make_master_without_schedule(self, path: Path, rows, *, settings_rows) -> Path:
+        """「スケジュール」シートを作らずに「管理表」と「設定」シートだけ持つ
+        ブックを作る。 ``make_master()`` はスケジュール行を自動生成するため、
+        このテストクラスでは直接 ``Excel`` を組み立てる。
+        """
+        from comken.core.table import Table
+        from comken.toolbox.excel import Excel
+
+        table_rows = [
+            dict(zip(HEADERS, _reorder_master_row_to_new_order(_row(*row)), strict=True))
+            for row in rows
+        ]
+        settings_table_rows = [
+            dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
+        ]
+        with Excel(path) as book:
+            book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
+            book.create_data_sheet("設定").create_table(
+                "設定", Table(GROUP_SETTINGS_HEADERS, settings_table_rows)
+            )
+        return path
+
+    def test_managed_report_with_no_schedule_row_is_skipped(self, tmp_path, monkeypatch):
+        """「有効」な管理番号にスケジュール行が無い → 取得されない、警告ログに
+        管理番号が出る、 ``download_scheduled()`` は例外にならない。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        # 「スケジュール」シート無しで 1001 を有効にする
+        master = self._make_master_without_schedule(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        site = fake_salesforce()
+        with patch("src.service.site_for", return_value=site):
+            saved = download_scheduled()
+
+        # 何も取られない
+        assert saved == []
+        # Salesforce へ問い合わせない
+        assert site.return_value.__enter__.return_value.report.get.call_count == 0
+        # 履歴にも追記されない
+        assert not history_path.exists()
+        # ファイルも作られない
+        assert list(base_path.glob("**/*.csv")) == []
+
+    def test_warning_lists_each_unscheduled_enabled_report(self, tmp_path, monkeypatch, caplog):
+        """「スケジュール」シートが無いとき、複数の「有効」な管理番号が
+        警告ログにカンマ区切りで並ぶ（=1 実行 1 件のログで全部列挙）。
+
+        雰囲気（順序は問わない）: ``"スケジュール行が無いため取得しません: 1001, 1002"``
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = self._make_master_without_schedule(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                ["1001", "顧客一覧", URL_A, "営業事務グループ", "山田", "○"],
+                ["1002", "売上実績", URL_B, "経理グループ", "佐藤", "○"],
+            ],
+            settings_rows=[
+                ["営業事務グループ", str(base_path)],
+                ["経理グループ", str(base_path)],
+            ],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="src.service"),
+            patch("src.service.site_for", return_value=fake_salesforce()),
+        ):
+            download_scheduled()
+
+        # 警告ログが出ている
+        warning_records = [
+            r for r in caplog.records if "スケジュール行が無いため取得しません" in r.message
+        ]
+        # 1 件のログに両方の管理番号が入っている
+        assert len(warning_records) == 1
+        message = warning_records[0].message
+        assert "1001" in message
+        assert "1002" in message
+        # 「スケジュール」シートへ行を追加するよう案内している
+        assert "スケジュール" in message and "追加してください" in message
+
+    def test_disabled_reports_are_not_listed_in_warning(self, tmp_path, monkeypatch, caplog):
+        """「有効」が ``×`` のレポートは警告に出ない。警告対象は「有効」かつ
+        スケジュール行が無いものだけ。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = self._make_master_without_schedule(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                # 1001=有効（=警告対象）、1002=無効（=警告対象外）
+                ["1001", "顧客一覧", URL_A, "営業事務グループ", "山田", "○"],
+                ["1002", "停止中", URL_B, "営業事務グループ", "佐藤", "×"],
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="src.service"),
+            patch("src.service.site_for", return_value=fake_salesforce()),
+        ):
+            download_scheduled()
+
+        warning_records = [
+            r for r in caplog.records if "スケジュール行が無いため取得しません" in r.message
+        ]
+        # 1 件のログに 1001 だけが出る（1002 は出ない）
+        assert len(warning_records) == 1
+        message = warning_records[0].message
+        assert "1001" in message
+        assert "1002" not in message
+
+    def test_unscheduled_report_does_not_break_other_targets(self, tmp_path, monkeypatch):
+        """スケジュール行が無いレポートと有るレポートが混在していても、
+        有るレポートは普通に取得される（=他への波及なし）。
+
+        「スケジュール」シートに 1002 用の行だけ置き、 1001 はスケジュール行が
+        無い状態を作る。 ``download_scheduled()`` は 1002 を取り、 1001 は
+        警告だけ出してスキップする。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = make_master_with_schedule(
+            tmp_path / "レポート管理表.xlsx",
+            [
+                ["1001", "顧客一覧", URL_A, "営業事務グループ", "山田", "○"],
+                ["1002", "売上実績", URL_B, "経理グループ", "佐藤", "○"],
+            ],
+            schedule_rows=[
+                # 1002 だけスケジュール行を当てる（1001 は無い）
+                ["S002", "1002", "毎日", "", "", "", "", "取得しない", "○"],
+            ],
+            settings_rows=[
+                ["営業事務グループ", str(base_path)],
+                ["経理グループ", str(base_path)],
+            ],
+        )
+        history_path = tmp_path / "ダウンロード履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        site = fake_salesforce()
+        with patch("src.service.site_for", return_value=site):
+            saved = download_scheduled()
+
+        # 1002 だけが取得される（1001 は警告だけ出してスキップ）
+        assert [path.name.split("_")[0] for path in saved] == ["1002"]
+        # Salesforce には 1002 の 1 回だけ問い合わせが走る
+        assert site.return_value.__enter__.return_value.report.get.call_count == 1
+
+
 # ── 同時起動対策 ─────────────────────────────────────────────────────────
 class TestRunLock:
     """``download_scheduled()`` がプロセス間ロックで多重実行を抑止する。"""
@@ -2595,20 +2898,17 @@ class TestRunLock:
 
     def test_propagates_lock_timeout_from_download_body(self, tmp_path, monkeypatch):
         """実行ロックは取得できるが、本体（``_download_scheduled_locked()`` 内の
-        ``history.downloaded_today()`` または ``history.schedule_succeeded_today()``）
-        で ``HistoryLockTimeoutError`` が出ると、``download_scheduled()`` は空リスト
-        を返さず**例外をそのまま送出する**。
+        ``history.schedule_succeeded_today()``）で ``HistoryLockTimeoutError`` が出ると、
+        ``download_scheduled()`` は空リスト を返さず**例外をそのまま送出する**。
 
         旧実装ではロック取得と本体の両方をまとめて ``except`` していたため、
         履歴CSV 用ロックの本当の障害が「他プロセスが進行中」として隠れて
         しまっていた。修正後はロック取得部分だけを ``except`` するため、
         本体側の ``HistoryLockTimeoutError`` はそのまま外へ伝播する。
 
-        このテストでは「スケジュール」シートを足さずに ``history.downloaded_today()``
-        を経由する経路を再現している（``history.downloaded_today`` /
-        ``history.schedule_succeeded_today`` のどちらを差し替えても守られる
-        振る舞いは同じなので、テスト用に使う関数は「現在も本体から呼ばれている
-        履歴関数」ならどちらでもよい）。
+        「スケジュール」シートが有る現在の実装では ``schedule_succeeded_today()``
+        が本体から呼ばれるので、こちらを差し替えて同じ振る舞い（=履歴ロック
+        障害が外へ出る）を確かめる。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -2630,16 +2930,11 @@ class TestRunLock:
         _patch_master_path(monkeypatch, master, history_path)
 
         def _raise_lock_timeout(*args, **kwargs):
-            # ``history.downloaded_today()`` の呼び出しすべてで擬似的に
+            # ``history.schedule_succeeded_today()`` の呼び出しすべてで擬似的に
             # 履歴ロック取得失敗を発生させる（=履歴ロックの本当の障害）。
-            # 旧テストは ``history.truncated_today`` を monkeypatch していたが、
-            # 2026-10 の自動切替導入で ``_matched_schedule_key()`` から
-            # ``truncated_today`` を呼ぶ経路は無くなった。今も本体が呼ぶ
-            # ``downloaded_today`` / ``schedule_succeeded_today`` のどちらかに
-            # 差し替えれば同じ振る舞い（=履歴ロック障害が外へ出る）を守れる
             raise HistoryLockTimeoutError(history_path, 10.0)
 
-        monkeypatch.setattr(service_module.history, "downloaded_today", _raise_lock_timeout)
+        monkeypatch.setattr(service_module.history, "schedule_succeeded_today", _raise_lock_timeout)
 
         with (
             patch("src.service.site_for", return_value=fake_salesforce()),
@@ -2731,6 +3026,12 @@ class TestFixedCurrentAcrossExecution:
         旧実装（``record()`` が ``now()`` を毎回呼ぶ）では、ファイル名は
         ``clock_now()`` 由来の翌日になり、履歴は ``now()`` 由来の実時間で
         書かれるため、開始日で揃わない。
+
+        2026-09-16（水曜）→ 2026-09-17（木曜）を使う。秋分の日（2026-09-23）や
+        国民の休日（2026-09-22）のような祝日を避け、 ``make_master()`` が
+        作るスケジュール（毎日・取得しない）が ``is_due=True`` を返す平日を
+        選ぶ。 ``desired_time`` が空欄なので ``output_path()`` 側は
+        ``now=current`` の方を使う（=開始日で揃う経路）。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -2750,12 +3051,9 @@ class TestFixedCurrentAcrossExecution:
         )
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
-        # 「スケジュール」シート無し（後方互換: 空 schedule で毎回対象）。
-        # この場合 ``output_path()`` は ``now=current`` の方を使うため、
-        # 開始日で揃う経路も検証できる。
 
-        start_dt = dt.datetime(2026, 9, 23, 23, 59, 50)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        next_day_dt = dt.datetime(2026, 9, 24, 0, 1, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        start_dt = dt.datetime(2026, 9, 16, 23, 59, 50)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        next_day_dt = dt.datetime(2026, 9, 17, 0, 1, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
 
         # 1 回目は開始時刻、以降は翌日 00:01 を返す。
         # ``current`` への固定（service.py）と ``output_path`` 内の
@@ -2773,18 +3071,18 @@ class TestFixedCurrentAcrossExecution:
         with patch("src.service.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
 
-        # 出力ファイル名の日付は開始日（20260923）
+        # 出力ファイル名の日付は開始日（20260916）
         assert len(saved) == 1
         filename = saved[0].name
-        assert filename.startswith("1001_20260923_"), (
-            f"出力ファイル名が開始日 (20260923) で始まっていない: {filename}"
+        assert filename.startswith("1001_20260916_"), (
+            f"出力ファイル名が開始日 (20260916) で始まっていない: {filename}"
         )
 
-        # 履歴の「実行日時」は開始時刻（2026-09-23 23:59:50）で固定されている
+        # 履歴の「実行日時」は開始時刻（2026-09-16 23:59:50）で固定されている
         with CSV(history_path) as csv_file:
             rows = csv_file.read()
         assert len(rows) == 1
-        assert rows[0]["実行日時"] == "2026-09-23 23:59:50", (
+        assert rows[0]["実行日時"] == "2026-09-16 23:59:50", (
             f"履歴の実行日時が開始時刻ではない: {rows[0]['実行日時']!r}"
         )
 
@@ -3319,8 +3617,9 @@ class TestSavedFileEmpty:
 class TestOverwriteMode:
     """``entry.overwrite`` が ``True`` のときの保存挙動。
 
-    固定名 ``ベース/概要/{管理番号}.csv`` に毎回 ``os.replace`` で上書きする。
-    連番は付けない、時刻もファイル名に含めない（``output_path()`` 側の契約）。
+    ``ベース/概要/{管理番号}_{HHMM}.csv`` のファイル名で ``os.replace`` を
+    かける。同じ ``HHMM`` なら同じパスになり、翌日の同時刻に上書きされる。
+    連番は付けない、日付はファイル名に含めない（``output_path()`` 側の契約）。
     """
 
     def _entry(self, paths, *, overwrite: bool):
@@ -3329,64 +3628,123 @@ class TestOverwriteMode:
 
         return replace(load_master(paths["master_path"])["1001"], overwrite=overwrite)
 
-    def test_overwrite_saves_to_fixed_filename(self, paths):
-        """上書き ○ のときは ``{管理番号}.csv`` の固定名に保存される（連番・時刻無し）。"""
+    def test_overwrite_saves_to_hhmm_filename(self, paths):
+        """上書き ○ のときは ``{管理番号}_{HHMM}.csv`` の名前で保存される（日付無し）。
+
+        ``schedule_run_time`` / ``now`` を ``_save`` に渡してファイル名を固定する
+        （渡さないと ``clock_now()`` の値で揺れ、HHMM がテストのたびに変わる）。
+        """
         entry = self._entry(paths, overwrite=True)
         table = Table(["名前", "金額"], ROWS)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001
+        run_time = dt.time(9, 30)
         with patch("src.service.site_for", return_value=fake_salesforce()):
-            saved = service_module._save(entry, table)
-        # 出力パスの末尾が ``1001.csv``（時刻・連番無し）
-        assert saved.name == "1001.csv"
+            saved = service_module._save(
+                entry,
+                table,
+                schedule_run_time=run_time,
+                current=fixed_now,
+            )
+        # 出力パスは ``1001_0930.csv``（HHMM のみ。日付・連番は付かない）
+        assert saved.name == "1001_0930.csv"
         # 概要フォルダ配下に置かれる
         assert saved.parent == paths["base_path"] / paths["summary_folder_1001"]
-        # 時刻付きファイル名ではない
-        assert "_" not in saved.stem
 
-    def test_overwrite_two_saves_produce_a_single_file(self, paths):
-        """2 回保存しても ``{管理番号}.csv`` が 1 つだけで、中身が 2 回目のものになる。
-        連番ファイルも作らない。
+    def test_overwrite_two_saves_with_same_hhmm_overwrite_same_file(self, paths):
+        """同じ ``HHMM`` で 2 回保存すると、 ``{管理番号}_{HHMM}.csv`` 1 件だけになり、
+        中身が 2 回目のものになる。連番ファイルも作らない。
         """
         first_rows = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "200"}]
         second_rows = [{"名前": "佐藤", "金額": "999"}]
         entry = self._entry(paths, overwrite=True)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001
+        run_time = dt.time(9, 30)
 
         with patch("src.service.site_for", return_value=fake_salesforce(first_rows)):
-            service_module._save(entry, Table(["名前", "金額"], first_rows))
+            service_module._save(
+                entry,
+                Table(["名前", "金額"], first_rows),
+                schedule_run_time=run_time,
+                current=fixed_now,
+            )
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
-        # 1 回目は ``1001.csv`` が 1 つ
+        # 1 回目は ``1001_0930.csv`` が 1 つ
         first_files = list(summary_dir.glob("1001*.csv"))
         assert len(first_files) == 1
-        assert first_files[0].name == "1001.csv"
+        assert first_files[0].name == "1001_0930.csv"
 
         with patch("src.service.site_for", return_value=fake_salesforce(second_rows)):
-            second_path = service_module._save(entry, Table(["名前", "金額"], second_rows))
-        # 2 回目のあと、 ``1001.csv`` 1 件だけが残る（連番や旧ファイルは作られない）
+            second_path = service_module._save(
+                entry,
+                Table(["名前", "金額"], second_rows),
+                schedule_run_time=run_time,
+                current=fixed_now,
+            )
+        # 2 回目のあと、 ``1001_0930.csv`` 1 件だけが残る（連番や旧ファイルは作られない）
         after_files = sorted(summary_dir.glob("1001*.csv"))
-        assert [p.name for p in after_files] == ["1001.csv"]
-        assert second_path.name == "1001.csv"
+        assert [p.name for p in after_files] == ["1001_0930.csv"]
+        assert second_path.name == "1001_0930.csv"
         # 中身が 2 回目の内容に置き換わっている
         with CSV(second_path, read_only=True) as csv_file:
             assert csv_file.read().to_rows() == second_rows
 
+    def test_overwrite_two_saves_with_different_hhmm_keep_two_files(self, paths):
+        """``HHMM`` が違う 2 行（例: 09:30 と 18:00）を保存すると、 2 ファイル残る。
+        時刻違いなので両方のファイルが履歴として残せる
+        （=翌日の同時刻に上書きされるファイルが変わる）。
+        """
+        first_rows = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "200"}]
+        second_rows = [{"名前": "佐藤", "金額": "999"}]
+        entry = self._entry(paths, overwrite=True)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
+
+        with patch("src.service.site_for", return_value=fake_salesforce(first_rows)):
+            service_module._save(
+                entry,
+                Table(["名前", "金額"], first_rows),
+                schedule_run_time=dt.time(9, 30),
+                current=fixed_now,
+            )
+        with patch("src.service.site_for", return_value=fake_salesforce(second_rows)):
+            service_module._save(
+                entry,
+                Table(["名前", "金額"], second_rows),
+                schedule_run_time=dt.time(18, 0),
+                current=fixed_now,
+            )
+        summary_dir = paths["base_path"] / paths["summary_folder_1001"]
+        files = sorted(p.name for p in summary_dir.glob("1001*.csv"))
+        # 09:30 と 18:00 の 2 ファイルが残る（連番は付かない）
+        assert files == ["1001_0930.csv", "1001_1800.csv"]
+
     def test_overwrite_does_not_leave_temp_files(self, paths):
         """上書きモードで正常終了したとき、 ``~`` で始まる一時ファイルは残らない。"""
         entry = self._entry(paths, overwrite=True)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
         with patch("src.service.site_for", return_value=fake_salesforce()):
-            service_module._save(entry, Table(["名前", "金額"], ROWS))
+            service_module._save(
+                entry,
+                Table(["名前", "金額"], ROWS),
+                schedule_run_time=dt.time(9, 0),
+                current=fixed_now,
+            )
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert list(summary_dir.glob("~*")) == []
 
     def test_overwrite_existing_file_content_preserved_when_write_raises(self, paths):
-        """上書きモードで ``_write_csv`` が例外を出したとき、既存の ``{管理番号}.csv``
-        の中身が変わらず、 ``~`` プレフィックスの一時ファイルも残らない。
+        """上書きモードで ``_write_csv`` が例外を出したとき、既存の同名ファイル
+        （``{管理番号}_{HHMM}.csv``）の中身が変わらず、 ``~`` プレフィックスの
+        一時ファイルも残らない。
 
         ``os.replace`` は書き込み成功後に動くので、書き込み失敗では既存ファイルは
         触らない。 ``_save()`` の ``except`` 経路が一時ファイルを ``unlink`` する。
         """
         entry = self._entry(paths, overwrite=True)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
+        run_time = dt.time(9, 0)
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         summary_dir.mkdir(exist_ok=True)
-        existing = summary_dir / "1001.csv"
+        existing = summary_dir / "1001_0900.csv"
         existing.write_text("既存の中身", encoding="utf-8")
         existing_bytes = existing.read_bytes()
 
@@ -3395,7 +3753,12 @@ class TestOverwriteMode:
 
         with patch.object(service_module, "_write_csv", side_effect=failing_write):
             with pytest.raises(OSError):
-                service_module._save(entry, Table(["名前", "金額"], ROWS))
+                service_module._save(
+                    entry,
+                    Table(["名前", "金額"], ROWS),
+                    schedule_run_time=run_time,
+                    current=fixed_now,
+                )
 
         # 既存ファイルはそのまま残っている
         assert existing.read_bytes() == existing_bytes
@@ -3403,11 +3766,17 @@ class TestOverwriteMode:
         assert list(summary_dir.glob("~*")) == []
 
     def test_overwrite_false_uses_timestamped_filename(self, paths):
-        """上書き ×（既定）のときは従来どおり時刻付きファイル名になる（既存挙動）。"""
+        """上書き ×（既定）のときは従来どおり ``YYYYMMDD_HHMM`` 付きのファイル名
+        （既存挙動）。"""
         entry = self._entry(paths, overwrite=False)
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
+        run_time = dt.time(9, 0)
         with patch("src.service.site_for", return_value=fake_salesforce()):
-            saved = service_module._save(entry, Table(["名前", "金額"], ROWS))
-        # 時刻・連番付きファイル名（``1001_*.csv``）
-        assert saved.name.startswith("1001_")
-        assert saved.name.endswith(".csv")
-        assert "_" in saved.stem
+            saved = service_module._save(
+                entry,
+                Table(["名前", "金額"], ROWS),
+                schedule_run_time=run_time,
+                current=fixed_now,
+            )
+        # ``1001_20260918_0900.csv``（日付+HHMM。連番や上書きはしない）
+        assert saved.name == "1001_20260918_0900.csv"

@@ -240,16 +240,17 @@ def output_path(
     フォルダは ``report_folder()``（ベースパス）/ ``summary_folder_name(entry.summary)``
     （概要のフォルダ名）の 2 階層。ファイル名は次のどちらか:
 
-    - ``entry.overwrite`` が ``False``（既定）: ``{管理番号}_{時刻:%Y%m%d_%H%M}.csv``
+    - ``entry.overwrite`` が ``False``（既定）: ``{管理番号}_{YYYYMMDD}_{HHMM}.csv``
       （毎回新しいファイル名。衝突時は呼び出し側 ``service._save()`` が連番で別名にする）
-    - ``entry.overwrite`` が ``True``: ``{管理番号}.csv``（固定名。呼び出し側
-      ``service._save()`` が ``os.replace`` で同名ファイルを毎回上書きする）
+    - ``entry.overwrite`` が ``True``: ``{管理番号}_{HHMM}.csv``（同じ ``HHMM`` なら
+      翌日に同じファイル名で上書きされる。時刻だけ。日付はファイル名に入らない）
 
-    ``overwrite`` が ``False`` のとき、時刻は ``schedule_run_time``（今回の取得の根拠に
-    なったスケジュール行の「取得時刻」、 ``ScheduleRule.desired_time`` の値。記録用の
-    希望時刻）を優先し、 ``None`` （スケジュール行が無いレポート、後方互換）のときは
-    ``now``（省略時は現在時刻）をそのまま使う。 ``overwrite`` が ``True`` のときは
-    時刻をファイル名に含めない（固定名なので時刻は無関係）。
+    どちらも時刻の組み立て方は同じ。``schedule_run_time``（今回の取得の根拠になった
+    スケジュール行の「取得時刻」、``ScheduleRule.desired_time`` の値。記録用の希望時刻）
+    があれば今日の日付と合成、無ければ ``now``（省略時は現在時刻）を使う。
+    上書きモードはこの値から ``HHMM`` だけ取り出してファイル名にする。
+    **スケジュール行が無いレポートは取得しない**（``service.download_scheduled()``）
+    ので、上書きモードのときは ``schedule_run_time`` が必ず渡る。
 
     **概要のフォルダは保存時に呼び出し側が ``mkdir`` で作る**（この関数は作らない）。
     ベースのフォルダは作らないし検査もしない（検査は ``service._require_folder`` の責務）。
@@ -257,16 +258,17 @@ def output_path(
     ``overwrite`` が ``False`` のときは常に新規ファイルとして扱う（同じパスへの上書きは
     想定しない。衝突回避は呼び出し側 ``service._save()`` の ``move_into_place`` の責務）。
     ``move_into_place()`` は書き終えた一時ファイルを ``os.rename`` で移すので、
-    本番の名前の空ファイルは作らない）。
-    ``overwrite`` が ``True`` のときは固定名で毎回置き換える（``service._save()`` が
-    ``os.replace`` で同名ファイルを上書きする。時刻・連番は付かない）。
+    本番の名前の空ファイルは作らない。
+    ``overwrite`` が ``True`` のときは ``HHMM`` 単位で上書きする（``service._save()``
+    が ``os.replace`` で同名ファイルを上書きする。連番は付かない）。
 
     Args:
         entry: レポート管理表の1行。
         schedule_run_time: 今回の取得の根拠になったスケジュール行の「取得時刻」
             （``ScheduleRule.desired_time``）。判定には使われない記録用の希望時刻で、
-            ファイル名に ``%H%M`` として埋め込む（``overwrite=False`` のときだけ）。
-            無ければ ``now`` にフォールバックする。
+            ファイル名の ``HHMM`` 部（``overwrite=True`` のとき）または
+            ``YYYYMMDD_HHMM`` 部（``overwrite=False`` のとき）に使う。無ければ
+            ``now`` にフォールバックする。
         now: ``schedule_run_time`` が無いときに使う時刻。省略時は現在時刻
             （``comken.core.dates.now()`` を使う）。
 
@@ -274,16 +276,21 @@ def output_path(
         GroupNotRegisteredError: 設定シートにないグループ名の場合（``report_folder()`` 経由）。
     """
     folder = base_folder(entry)
-    if entry.overwrite:
-        # **上書きモードは固定名。** 時刻・連番はファイル名に含めない。
-        # 実際に同じパスへ上書きするかどうかは呼び出し側 ``service._save()`` が
-        # ``os.replace`` で行う（置き換える前に失敗したら既存ファイルが残る）
-        return folder / summary_folder_name(entry.summary) / f"{entry.key}.csv"
     current = now if now is not None else clock_now()
     if schedule_run_time is not None:
         base_dt = dt.datetime.combine(current.date(), schedule_run_time)
     else:
         base_dt = current
+    if entry.overwrite:
+        # **上書きモード:** ``{管理番号}_{HHMM}.csv`` の名前で ``os.replace`` を
+        # かける（=同じ ``HHMM`` なら同じパスになり、翌日の同時刻に上書きされる）。
+        # 連番は付けない。呼び出し側 ``service._save()`` が ``os.replace`` で
+        # 同名ファイルを上書きする。日付はファイル名に入らない
+        return (
+            folder
+            / summary_folder_name(entry.summary)
+            / f"{entry.key}_{base_dt.strftime('%H%M')}.csv"
+        )
     return (
         folder
         / summary_folder_name(entry.summary)

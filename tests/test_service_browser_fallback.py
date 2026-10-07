@@ -91,7 +91,14 @@ def _patch_master_path(monkeypatch, master: Path, history_path: Path) -> None:
 
 
 def _make_master(path: Path, master_rows, *, settings_rows) -> Path:
-    """``test_service.py`` の ``make_master`` 相当の最小実装。"""
+    """``test_service.py`` の ``make_master`` 相当の最小実装。
+
+    「スケジュール」シートも同梱する。 ``master_rows`` の「有効」が ``○`` の
+    各管理番号に対し ``S{key}`` のスケジュールキーを持つ「毎日・取得開始時刻/
+    取得時刻を空欄」のスケジュール行を 1 件ずつ当てる。 ``download_scheduled()``
+    が「スケジュール」シート無しでは有効なレポートを取得しないため、テストで
+    ``_make_master`` 経由で取得対象を作る時点でスケジュール行も自動生成する。
+    """
     from comken.core.table import Table
     from comken.toolbox.excel import Excel
 
@@ -106,10 +113,51 @@ def _make_master(path: Path, master_rows, *, settings_rows) -> Path:
         "2000件超",
         "SOQL",
     ]
+    SCHEDULE_HEADERS = [
+        "スケジュールキー",
+        "レポートキー",
+        "取得頻度",
+        "取得開始時刻",
+        "取得時刻",
+        "曜日",
+        "日付",
+        "祝日対応",
+        "有効",
+    ]
     GROUP_SETTINGS_HEADERS = ["グループ", "ベースURL"]
     table_rows = [dict(zip(HEADERS, row, strict=True)) for row in master_rows]
+    schedule_table_rows: list[dict[str, str]] = []
+    for row in master_rows:
+        if len(row) < 6:
+            continue
+        if row[5] != "○":
+            continue
+        key = str(row[0])
+        schedule_table_rows.append(
+            dict(
+                zip(
+                    SCHEDULE_HEADERS,
+                    [
+                        f"S{key}",
+                        key,
+                        "毎日",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "取得しない",
+                        "○",
+                    ],
+                    strict=True,
+                )
+            )
+        )
     with Excel(path) as book:
         book.create_data_sheet("管理表").create_table("管理表", Table(HEADERS, table_rows))
+        if schedule_table_rows:
+            book.create_data_sheet("スケジュール").create_table(
+                "スケジュール", Table(SCHEDULE_HEADERS, schedule_table_rows)
+            )
         settings_table_rows = [
             dict(zip(GROUP_SETTINGS_HEADERS, row, strict=True)) for row in settings_rows
         ]

@@ -170,9 +170,9 @@ def download_scheduled(
     取得中に例外が出たブラウザはその場で閉じて dict から外し、次のレポートでは
     新しいブラウザを開き直す（壊れた状態のブラウザを次のレポートへ引き継がない）。
 
-    **「スケジュール」シート**にこのレポートの行が無いときは、
-    「有効」だけで毎回対象にする（後方互換）。
-    この機能追加を境に既存のレポートが突然取得されなくなる事故を防ぐため。
+    **「スケジュール」シート**にこのレポートの行が無いレポートは取得しない。
+    1 回の実行につき、取らなかった管理番号を並べた警告を 1 件出す（黙って取らなくなると
+    気づけないため）。管理表で「有効」が `×` のレポートは対象外。
 
     **同時起動の扱い:** WinActor からの呼び出しが重なったり、前回の取得が
     長引いて 2 回目のポーリングが食い違うと、同じレポートを 2 プロセスが
@@ -346,9 +346,9 @@ class _Attempt:
     例外の型だけから決める）。
 
     ``schedule_key`` はスケジュール行に紐付く取得で値が入り、スケジュール行が無い
-    レポートの取得（後方互換）は空文字。``_matched_schedule_key()`` が
-    戻り値の第2要素として返した値をそのまま受け取り、``HistoryRow.schedule_key``
-    に詰めて履歴へ書く。
+    レポートはそもそも取得されない（``_matched_schedule_key()`` が ``(False, "")``
+    を返す）。``_matched_schedule_key()`` が戻り値の第2要素として返した値を
+    そのまま受け取り、``HistoryRow.schedule_key`` に詰めて履歴へ書く。
     """
 
     def __init__(
@@ -486,8 +486,8 @@ def _download(
     ``schedule_run_time`` は唯一の出力ファイル名にスケジュール時刻を埋め込むために
     ``_save()`` まで運ぶ（``paths.output_path(entry, schedule_run_time)`` で
     ``%Y%m%d_%H%M`` のタイムスタンプ値として使われる）。
-    スケジュール行が無いレポート（後方互換、``schedule_key == ""``）は ``None``
-    のままでよく、``_save()`` 側で現在時刻にフォールバックする。
+    ``_select_targets()`` が ``ScheduleRule`` を ``None`` 以外に揃えてから
+    ``_download()`` を呼ぶので、 ``schedule_run_time`` も必ず渡る。
 
     ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``
     の値。``_save()`` 経由で ``paths.output_path(now=current)`` に渡し、
@@ -958,7 +958,8 @@ def _save(
        へ」の判定に使い、**上書きしない**
     3. 上書きモード（``entry.overwrite`` が ``True``）は ``os.replace`` で最終
        パスへ **毎回上書き** する（Windows でも移し先が存在してよい）。 連番は
-       付けない（時刻・連番なしの固定名 ``{管理番号}.csv``）
+       付けない（``{管理番号}_{HHMM}.csv``。同じ ``HHMM`` なら同じ名前になり、
+       翌日の同時刻に上書きされる）
     4. 失敗時は一時ファイルと（移せていれば）最終ファイルを ``unlink`` で片付ける
 
     という流れになり、**本番の名前の空ファイルを一瞬も作らない**。
@@ -968,15 +969,15 @@ def _save(
 
     保存先は ``paths.output_path()`` が返す単一のパス:
 
-    - 通常モード: ``ベース/概要/{管理番号}_{スケジュール時刻}.csv``
-    - 上書きモード: ``ベース/概要/{管理番号}.csv``
+    - 通常モード: ``ベース/概要/{管理番号}_{YYYYMMDD}_{HHMM}.csv``
+    - 上書きモード: ``ベース/概要/{管理番号}_{HHMM}.csv``
 
     通常モードの衝突回避は ``paths.move_into_place()`` で常に（連番 ``_1`` /
     ``_2`` … を付けて）。 同じパスへの上書きは想定しない — 取得済みキャッシュを
     読む側（`pathlib.Path.glob()` で `paths.output_path()` が組み立てたパスを
     探す運用）は、同じフォルダ内の連番を全部候補に含めて新しい順で拾えるので、
     何度実行しても履歴と当日の最新状態は崩れない。 上書きモードは ``os.replace``
-    で毎回置き換える（時刻・連番なしの固定名。古いファイルの内容は消える）。
+    で ``HHMM`` 単位で毎回置き換える（古いファイルの内容は消える）。
 
     **概要のフォルダは保存前にここで ``mkdir`` する。** ベースフォルダは
     ``_download()`` 側の ``_require_folder()`` で先に検査済みなので、
@@ -991,8 +992,9 @@ def _save(
     ``paths.output_path(now=current)`` に渡すことで、23:59 に始まった実行が日付をまたいで
     終わっても、出力ファイル名が開始日で揃う。``None`` のときは ``paths.output_path()``
     側で ``clock_now()`` にフォールバックする（既存の単体テスト経路を残すため）。
-    上書きモードは固定名なので ``current`` はファイル名に影響しない（テストの
-    出力パス固定のために ``schedule_run_time`` / ``now`` を渡しても安全）。
+    上書きモードは ``HHMM`` 単位なので ``current`` は ``schedule_run_time`` と
+    合成する**日付**にしか影響しない（テストの出力パス固定のために
+    ``schedule_run_time`` / ``now`` を渡しても安全）。
 
     **失敗時の後始末について:** 書き込みが例外の原因になった場合は、既存の
     ``_download()`` の ``except Exception`` 経路で ``_Attempt.record_failure()``
@@ -1021,7 +1023,8 @@ def _save(
             return base
         _write_csv(tmp_path, table)
         if entry.overwrite:
-            # **上書きモード:** ``{管理番号}.csv`` の固定名で毎回置き換える。
+            # **上書きモード:** ``{管理番号}_{HHMM}.csv`` の名前で毎回置き換える。
+            # 同じ ``HHMM`` なら同じパスになり、翌日の同時刻に上書きされる。
             # ``os.replace`` は Windows でも移し先が存在するとそのまま上書きする
             # （``os.rename`` と違い ``FileExistsError`` にならない）。 書き込みは
             # 既に ``_write_csv(tmp_path, table)`` で終わっているので、ここが失敗
@@ -1094,13 +1097,14 @@ def _matched_schedule_key(
 
     戻り値は ``(取得すべきか, スケジュールキー)``。スケジュールキーは、
     取得すべきだった場合に「どのスケジュール行が根拠になったか」を表し、
-    履歴の ``スケジュールキー`` 列にそのまま記録する。スケジュール行が無い
-    レポート（後方互換）の取得時は空文字を返す。
+    履歴の ``スケジュールキー`` 列にそのまま記録する。取得しないときは
+    ``(False, "")`` を返す。
 
     判定ロジック:
 
-    - スケジュール行が無いレポートは ``downloaded_today()`` ベースで「今日まだ
-      取れていなければ」取得（後方互換）
+    - スケジュール行が無いレポートは取得しない（``(False, "")`` を返す）。
+      「スケジュール」シートに紐付かないレポートは黙って取らない（気づけるよう、
+      ``_select_targets()`` 側で 1 実行 1 回のログを出す）
     - スケジュール行がある場合、いずれかの行が ``is_due()`` True で、かつ
       ``schedule_succeeded_today()`` が False（=今日まだ成功していない）なら取得。
       複数の行が True を返す場合は取得時刻が一番遅い行のキーを採用（それより早い
@@ -1116,15 +1120,11 @@ def _matched_schedule_key(
     を渡し、スケジュール判定と履歴チェックが同じ「日」を見るようにする
     （23:59 をまたぐ実行で「判定は開始日・履歴は翌日」となる事故を防ぐ）。
     """
-    rules = rules_by_report.get(entry.key)
-    if not rules:
-        # スケジュール行が無いレポート: ``downloaded_today()`` で 1 日 1 回までに
-        # 制限する（後方互換）。戻り値のキーは空文字
-        history_path = _history_path()
-        return not history.downloaded_today(history_path, entry.key, date=current.date()), ""
+    # スケジュール行が無いレポートは ``due_rules`` が空になり、取らない。警告ログは
+    # ``_select_targets()`` 側で出す
     due_rules = [
         rule
-        for rule in rules
+        for rule in rules_by_report.get(entry.key, ())
         if rule.is_due(current)
         and not history.schedule_succeeded_today(
             _history_path(), rule.schedule_key, date=current.date()
@@ -1157,11 +1157,18 @@ def _select_targets(
     Salesforce への問い合わせを行う。
     戻り値の ``already_failed`` は常に空リスト。
 
+    **「スケジュール」シートに行が無いレポートは取得しない。**
+    ``_matched_schedule_key()`` が ``(False, "")`` を返し、ここでは対象外になる。
+    ただし「有効」なレポートのうちスケジュール行が 1 つも無いものがあれば、
+    1 回の実行につき警告ログを 1 件出す（黙って取らなくなると気づけないため）。
+    対象は「有効」なレポートだけ（``enabled=False`` は対象外）。
+
     戻り値の ``targets`` は ``(ReportEntry, schedule_key, ScheduleRule | None)``
     の3要素タプル。``ScheduleRule`` を一緒に運ぶのは、唯一の出力ファイル名に
-    スケジュール時刻を埋め込むために ``start_time`` が必要だから。``ScheduleRule`` が
-    ``None`` のときはスケジュール行が無いレポート（後方互換）で、その場合は
-    ``paths.output_path()`` 側で現在時刻にフォールバックする。
+    スケジュール時刻を埋め込むために ``start_time`` が必要だから。
+    ``_matched_schedule_key()`` が ``True`` を返すケースは
+    ``rules_by_report`` に 1 つ以上の ``ScheduleRule`` があるときだけなので、
+    この関数が作る ``targets`` の ``ScheduleRule`` は必ず ``None`` 以外。
 
     Returns:
         ``(targets, already_failed)``。``targets`` は実際に取得を試みる
@@ -1170,22 +1177,32 @@ def _select_targets(
         シグネチャを保つために残してある）。
     """
     targets: list[tuple[ReportEntry, str, ScheduleRule | None]] = []
+    unscheduled_enabled: list[str] = []
     for entry in entries.values():
         if not entry.enabled:
+            continue
+        rules = rules_by_report.get(entry.key)
+        if not rules:
+            # 「有効」だがスケジュール行が無い → 取らないが、気づけるよう集める
+            unscheduled_enabled.append(entry.key)
             continue
         is_due, schedule_key = _matched_schedule_key(entry, rules_by_report, current)
         if not is_due:
             continue
         # ``schedule_key`` は取得後に履歴へ記録し、``schedule_succeeded_today()``
-        # が再判定に使う。スケジュール行が無いレポート（後方互換）は空文字 +
-        # ``ScheduleRule = None``
+        # が再判定に使う
         matched_rule: ScheduleRule | None = None
-        if schedule_key:
-            for rule in rules_by_report.get(entry.key, ()):
-                if rule.schedule_key == schedule_key:
-                    matched_rule = rule
-                    break
+        for rule in rules:
+            if rule.schedule_key == schedule_key:
+                matched_rule = rule
+                break
         targets.append((entry, schedule_key, matched_rule))
+    if unscheduled_enabled:
+        logger.warning(
+            "スケジュール行が無いため取得しません: %s"
+            "（管理表の「スケジュール」シートに行を追加してください）",
+            "、".join(unscheduled_enabled),
+        )
     return targets, []
 
 

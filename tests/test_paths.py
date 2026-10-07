@@ -170,7 +170,7 @@ class TestOutputPath:
         )
 
     def test_falls_back_to_now_when_schedule_run_time_is_none(self, paths):
-        """スケジュール行が無いレポート（後方互換）は ``now`` をそのまま使う。"""
+        """``schedule_run_time`` が ``None`` のときは ``now`` をそのまま使う。"""
         entry = load_master(paths["master_path"])["1001"]
         fixed_now = dt.datetime(2026, 1, 7, 13, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         path = output_path(entry, None, now=fixed_now)
@@ -231,20 +231,38 @@ class TestOutputPath:
         assert "未知グループ" in str(caught.value)
         assert "営業本部" in str(caught.value)
 
-    def test_overwrite_returns_fixed_filename_without_timestamp(self, paths):
-        """``entry.overwrite`` が ``True`` のとき、ファイル名は ``{管理番号}.csv`` の
-        固定名で、時刻やスケジュール時刻を一切混ぜない。
+    def test_overwrite_uses_hhmm_filename_with_schedule_run_time(self, paths):
+        """``entry.overwrite`` が ``True`` のとき、ファイル名は ``{管理番号}_{HHMM}.csv``。
 
-        ``schedule_run_time`` / ``now`` を渡してもパスに影響しない（上書きモードは
-        時刻をファイル名に入れない）。"""
+        ``schedule_run_time`` が指定されていれば、その ``HHMM`` 部だけファイル名に
+        反映する（日付は入らない）。 ``now`` 引数の日付は無関係（``HHMM`` だけが
+        ファイル名を決める）。
+        """
         from dataclasses import replace
 
         entry = replace(load_master(paths["master_path"])["1001"], overwrite=True)
-        run_time = dt.time(9, 0)
+        run_time = dt.time(9, 30)
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
         path = output_path(entry, run_time, now=fixed_now)
-        # 時刻・スケジュール時刻を一切含まない
-        assert path == paths["base_path"] / paths["summary_folder_1001"] / "1001.csv"
+        # スケジュール時刻の HHMM だけが反映される（日付は入らない）
+        assert path == (paths["base_path"] / paths["summary_folder_1001"] / "1001_0930.csv")
+
+    def test_overwrite_uses_now_hhmm_when_schedule_run_time_is_none(self, paths):
+        """``entry.overwrite`` が ``True`` で ``schedule_run_time`` が ``None`` の
+        とき、ファイル名は ``{管理番号}_{nowのHHMM}.csv``（``now`` の ``HHMM`` 部）。
+
+        「スケジュール」シートが無いレポートは取らない実装だが、 ``output_path()``
+        単体としては ``schedule_run_time=None`` で ``now`` だけ渡されたケースを
+        受けて組み立てられる契約（``_resolved_folder()`` などの履歴側経路で
+        ``schedule_run_time`` が空のまま呼ばれることが無くなった場合でも、
+        関数自体は安全なファイル名を返す）。
+        """
+        from dataclasses import replace
+
+        entry = replace(load_master(paths["master_path"])["1001"], overwrite=True)
+        fixed_now = dt.datetime(2026, 9, 18, 13, 45)  # noqa: DTZ001
+        path = output_path(entry, None, now=fixed_now)
+        assert path == (paths["base_path"] / paths["summary_folder_1001"] / "1001_1345.csv")
 
     def test_overwrite_false_uses_timestamped_filename(self, paths):
         """``entry.overwrite`` が ``False``（既定）のときは従来どおり

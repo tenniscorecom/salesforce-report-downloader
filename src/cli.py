@@ -176,7 +176,7 @@ def _print_summary(
 def _print_reference_notes(entries: dict[str, ReportEntry], rules: list[ScheduleRule]) -> None:
     """参考情報の表示（エラーではないが気づけるように出す行）。
 
-    - 有効な管理番号のうち、スケジュール行が1つもないもの（毎回取得される後方互換）
+    - 有効な管理番号のうち、スケジュール行が1つもないもの（実行時は取得されず警告が出る）
     - 有効なスケジュール行が、無効化されたレポートを指しているもの（実行時にスキップ）
     """
     referenced_keys: set[str] = set()
@@ -198,7 +198,7 @@ def _print_reference_notes(entries: dict[str, ReportEntry], rules: list[Schedule
         print()
         print(
             f"有効な管理番号 {len(unscheduled)} 件はスケジュール行が登録されていません"
-            "（毎回取得される後方互換の挙動です。意図と合っているか確認してください）:"
+            "（実行時に取得されず警告が出ます。意図と合っているか確認してください）:"
         )
         for key in unscheduled:
             print(f"  {key}（{entries[key].summary}）")
