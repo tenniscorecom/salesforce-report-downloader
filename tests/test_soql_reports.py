@@ -10,6 +10,7 @@ import importlib
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,7 +25,7 @@ from src.exceptions import SoqlReportNotRegisteredError
 from src.soql_reports import _registry, soql_report_for
 from src.soql_reports import runner as runner_module
 from src.soql_reports.base import SoqlReport
-from src.soql_reports.runner import download_soql_reports
+from src.soql_reports.runner import _apply_column_names, download_soql_reports
 
 URL = "https://example.my.salesforce.com"
 ROWS = [{"Id": "001", "Name": "山田"}, {"Id": "002", "Name": "鈴木"}]
@@ -145,6 +146,8 @@ class TestSoqlReportBase:
         assert SoqlReport.URL == ""
         assert SoqlReport.FOLDER == ""
         assert SoqlReport.ALLOW_EMPTY is False
+        # ``COLUMN_NAMES`` の既定値は空辞書（``runner`` 側で何もしない）
+        assert SoqlReport.COLUMN_NAMES == {}
 
 
 class TestDownloadSoqlReports:
@@ -545,3 +548,297 @@ class TestSoqlReportFor:
                 return_value=(_DummyReport,),
             ):
                 assert soql_report_for("9001") is _DummyReport
+
+
+# ``COLUMN_NAMES`` 用のテスト用レポート。 ``_DummyReport`` を上書きすると
+# 他のテストへの影響が出るので別クラスにする。
+class _ColumnNamesReport(SoqlReport):
+    """``COLUMN_NAMES`` のテスト用ダミー実装。"""
+
+    KEY = "9010"
+    SUMMARY = "COLUMN_NAMESテスト（テスト用）"
+    URL = URL
+    FOLDER = ""  # テストで上書きする
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {
+        "Name": "名前",
+        "Amount": "金額",
+    }
+
+    def soql(self) -> str:
+        return "SELECT Id, Name, Amount FROM Opportunity"
+
+
+class _ColumnNamesEmptyReport(SoqlReport):
+    """``COLUMN_NAMES`` が空のときのテスト用ダミー実装。"""
+
+    KEY = "9011"
+    SUMMARY = "COLUMN_NAMES空テスト（テスト用）"
+    URL = URL
+    FOLDER = ""
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {}
+
+    def soql(self) -> str:
+        return "SELECT Id, Name FROM Account"
+
+
+class _ColumnNamesOverlapReport(SoqlReport):
+    """``COLUMN_NAMES`` で同じ見出しに 2 列割り当てたテスト用ダミー実装。"""
+
+    KEY = "9012"
+    SUMMARY = "COLUMN_NAMES衝突テスト（テスト用）"
+    URL = URL
+    FOLDER = ""
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {
+        "Name": "名称",
+        "Account.Name": "名称",
+    }
+
+    def soql(self) -> str:
+        return "SELECT Id, Name, Account.Name FROM Opportunity"
+
+
+class _ColumnNamesExtraReport(SoqlReport):
+    """``COLUMN_NAMES`` に結果に無い列があるテスト用ダミー実装。"""
+
+    KEY = "9013"
+    SUMMARY = "COLUMN_NAMES余分テスト（テスト用）"
+    URL = URL
+    FOLDER = ""
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {
+        "Name": "名前",
+        "Missing": "存在しない列",  # ``soql()`` の結果には無い列
+    }
+
+    def soql(self) -> str:
+        return "SELECT Id, Name FROM Account"
+
+
+class _ColumnNamesMergeExistingReport(SoqlReport):
+    """``COLUMN_NAMES`` の置き換え先が結果に元々ある列名と重なるときのテスト用。
+
+    ``A`` を ``B`` に置き換える ``COLUMN_NAMES`` で、結果にも ``B`` があるケース
+    （置換後に見出し ``B`` が 2 つ並ぶ）を再現する。 ``runner._apply_column_names()``
+    の衝突検出は ``new_columns`` 全列を見る必要があり、元の実装は
+    ``original == new`` の列を飛ばしていたためにこのケースを見逃していた。
+    """
+
+    KEY = "9015"
+    SUMMARY = "COLUMN_NAMES衝突（既存見出しテスト用）"
+    URL = URL
+    FOLDER = ""
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {
+        "A": "B",  # ``B`` 列は結果に元々ある
+    }
+
+    def soql(self) -> str:
+        return "SELECT Id, A, B FROM Something"
+
+
+def _column_names_salesforce(rows: list[dict] | None = None) -> MagicMock:
+    """``_ColumnNamesReport`` 用の Table を返す Salesforce クライアント。"""
+    table = Table(
+        ["Id", "Name", "Amount"],
+        rows if rows is not None else [{"Id": "001", "Name": "山田", "Amount": "100"}],
+    )
+    client = MagicMock()
+    client.__enter__.return_value.bulk_query.return_value = table
+    site = MagicMock(return_value=client)
+    return site
+
+
+def _overlap_salesforce() -> MagicMock:
+    """``_ColumnNamesOverlapReport`` 用の Table を返す Salesforce クライアント。"""
+    table = Table(
+        ["Id", "Name", "Account.Name"],
+        [{"Id": "001", "Name": "x", "Account.Name": "y"}],
+    )
+    client = MagicMock()
+    client.__enter__.return_value.bulk_query.return_value = table
+    site = MagicMock(return_value=client)
+    return site
+
+
+def _merge_existing_salesforce() -> MagicMock:
+    """``_ColumnNamesMergeExistingReport`` 用の Table を返すクライアント。"""
+    table = Table(["Id", "A", "B"], [{"Id": "001", "A": "a", "B": "b"}])
+    client = MagicMock()
+    client.__enter__.return_value.bulk_query.return_value = table
+    site = MagicMock(return_value=client)
+    return site
+
+
+class TestApplyColumnNames:
+    """``runner._apply_column_names()`` の挙動確認。"""
+
+    def test_replaces_only_headers(self):
+        """値・行順・列順は変わらず、見出しだけ置き換わる。"""
+        table = Table(["Id", "Name"], [{"Id": "1", "Name": "山田"}])
+        result = _apply_column_names(_ColumnNamesReport, table)
+        assert result.columns == ["Id", "名前"]  # Amount は COLUMN_NAMES に無いので残る
+        assert result.to_rows() == [{"Id": "1", "名前": "山田"}]
+
+    def test_keeps_columns_not_in_column_names(self):
+        """``COLUMN_NAMES`` に無い列は API 名のまま。"""
+        table = Table(["Id", "Name", "Amount"], [{"Id": "1", "Name": "x", "Amount": "100"}])
+        # ``_ColumnNamesReport.COLUMN_NAMES`` は ``Name`` / ``Amount`` のみ
+        result = _apply_column_names(_ColumnNamesReport, table)
+        assert result.columns == ["Id", "名前", "金額"]
+        assert result.to_rows() == [{"Id": "1", "名前": "x", "金額": "100"}]
+
+    def test_ignores_keys_not_in_result(self):
+        """結果に無いキーは無視される（SOQL を変えても対応表を貼り直さずに済む）。"""
+        table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
+        # ``_ColumnNamesExtraReport`` の ``Missing`` キーは結果に無いので無視
+        result = _apply_column_names(_ColumnNamesExtraReport, table)
+        assert result.columns == ["Id", "名前"]
+        assert result.to_rows() == [{"Id": "1", "名前": "x"}]
+
+    def test_empty_column_names_returns_input_unchanged(self):
+        """``COLUMN_NAMES`` が空なら入力がそのまま返る（オブジェクト同一でなくてよい）。"""
+        table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
+        result = _apply_column_names(_ColumnNamesEmptyReport, table)
+        assert result.columns == ["Id", "Name"]
+        assert result.to_rows() == [{"Id": "1", "Name": "x"}]
+
+    def test_raises_when_headers_collide(self):
+        """置き換え後の見出しが 2 つ以上重なるとエラー。"""
+        from src.exceptions import SoqlColumnNameConflictError
+
+        table = Table(
+            ["Id", "Name", "Account.Name"],
+            [{"Id": "1", "Name": "x", "Account.Name": "y"}],
+        )
+        with pytest.raises(SoqlColumnNameConflictError) as caught:
+            _apply_column_names(_ColumnNamesOverlapReport, table)
+        # ``KEY`` と、衝突した見出しと元の列名が両方出ている
+        message = str(caught.value)
+        assert "9012" in message
+        assert "名称" in message
+        assert "Name" in message
+        assert "Account.Name" in message
+
+    def test_raises_when_replacement_clashes_with_existing_header(self):
+        """``COLUMN_NAMES`` の置き換え先が見出しに元々ある列と重なるとエラー。
+
+        ``COLUMN_NAMES = {"A": "B"}`` で結果に ``A`` と ``B`` が両方あるケース。
+        置き換え後は見出し ``B`` が 2 つ並ぶ。 ``B → B`` は ``original == new``
+        で素通りされるため、 ``new_columns`` 全体を見ないと検出できない。
+        """
+        from src.exceptions import SoqlColumnNameConflictError
+
+        table = Table(["Id", "A", "B"], [{"Id": "1", "A": "x", "B": "y"}])
+        with pytest.raises(SoqlColumnNameConflictError) as caught:
+            _apply_column_names(_ColumnNamesMergeExistingReport, table)
+        # ``KEY`` と、衝突した見出し ``B``、元の列名 ``A`` / ``B`` が両方出ている
+        # （``B`` を元の列としても持つため、 ``B → B`` の素通りも衝突とみなす）
+        message = str(caught.value)
+        assert "9015" in message
+        assert "B" in message
+        assert "A" in message
+
+
+class TestSaveWithColumnNames:
+    """``download_soql_reports()`` が保存直前に ``COLUMN_NAMES`` を適用する。"""
+
+    def test_csv_has_replaced_headers(self, folder):
+        """保存された CSV の見出しが ``COLUMN_NAMES`` で置き換わっている。"""
+        _ColumnNamesReport.FOLDER = str(folder)
+        with patch.object(runner_module, "site_for", return_value=_column_names_salesforce()):
+            saved = download_soql_reports([_ColumnNamesReport])
+        assert len(saved) == 1
+        with CSV(saved[0], read_only=True) as csv_file:
+            table = csv_file.read()
+        # ``Id`` / ``Amount`` は COLUMN_NAMES の対象列だが ``Id`` は未登録、
+        # ``Amount`` は COLUMN_NAMES で「金額」になり、 ``Name`` は「名前」になる
+        assert table.columns == ["Id", "名前", "金額"]
+        assert table.to_rows() == [{"Id": "001", "名前": "山田", "金額": "100"}]
+
+    def test_empty_column_names_produces_api_headers(self, folder):
+        """``COLUMN_NAMES`` が空のときは API 名そのまま（従来どおり）。"""
+        _ColumnNamesEmptyReport.FOLDER = str(folder)
+        site = MagicMock()
+        site.return_value.__enter__.return_value.bulk_query.return_value = Table(
+            ["Id", "Name"], ROWS
+        )
+        with patch.object(runner_module, "site_for", return_value=site):
+            saved = download_soql_reports([_ColumnNamesEmptyReport])
+        with CSV(saved[0], read_only=True) as csv_file:
+            table = csv_file.read()
+        assert table.columns == ["Id", "Name"]
+
+    def test_collision_does_not_write_file(self, folder):
+        """見出しが衝突するとエラーで、ファイルが残らない。"""
+        from src.exceptions import SoqlColumnNameConflictError
+        from src.paths import summary_folder_name
+
+        _ColumnNamesOverlapReport.FOLDER = str(folder)
+        summary_dir = folder / summary_folder_name(_ColumnNamesOverlapReport.SUMMARY)
+        with (
+            patch.object(runner_module, "site_for", return_value=_overlap_salesforce()),
+            pytest.raises(DownloaderError) as caught,
+        ):
+            download_soql_reports([_ColumnNamesOverlapReport])
+        # ``SoqlColumnNameConflictError`` が ``__cause__`` に乗っている
+        assert isinstance(caught.value.__cause__, SoqlColumnNameConflictError)
+        # ``KEY`` と、衝突した見出し・列名がメッセージに含まれること
+        message = str(caught.value.__cause__)
+        assert "9012" in message
+        assert "名称" in message
+        # 概要フォルダ以下に CSV が**作られていない**こと（一時ファイルも残らない）
+        assert not summary_dir.exists() or not any(summary_dir.glob("*.csv"))
+
+    def test_replacement_clash_with_existing_header_does_not_write_file(self, folder):
+        """置き換え先が見出しに元々ある列と重なると、エラーで CSV が書かれない。
+
+        ``COLUMN_NAMES = {"A": "B"}`` で結果に ``A`` と ``B`` が両方あるケース。
+        置き換え後は見出し ``B`` が 2 つ並ぶため ``SoqlColumnNameConflictError``
+        を送出してファイルを書かない。
+        """
+        from src.exceptions import SoqlColumnNameConflictError
+        from src.paths import summary_folder_name
+
+        _ColumnNamesMergeExistingReport.FOLDER = str(folder)
+        summary_dir = folder / summary_folder_name(_ColumnNamesMergeExistingReport.SUMMARY)
+        with (
+            patch.object(runner_module, "site_for", return_value=_merge_existing_salesforce()),
+            pytest.raises(DownloaderError) as caught,
+        ):
+            download_soql_reports([_ColumnNamesMergeExistingReport])
+        # ``SoqlColumnNameConflictError`` が ``__cause__`` に乗っている
+        assert isinstance(caught.value.__cause__, SoqlColumnNameConflictError)
+        message = str(caught.value.__cause__)
+        assert "9015" in message
+        # 概要フォルダ以下に CSV が**作られていない**こと（一時ファイルも残らない）
+        assert not summary_dir.exists() or not any(summary_dir.glob("*.csv"))
+
+    def test_empty_rows_with_allow_empty_replaces_headers(self, folder):
+        """0 行（``ALLOW_EMPTY`` ○）でも見出しだけ置き換わる。"""
+        _ColumnNamesReport.FOLDER = str(folder)
+        # ``_ColumnNamesReport`` は ``ALLOW_EMPTY=False`` なので、
+        # 衝突を避けるために ``_AllowEmptyReport`` を継承して ``COLUMN_NAMES`` を
+        # 後付けで持つクラスを作って使う
+        # ここでは ``ALLOW_EMPTY=True`` で ``COLUMN_NAMES`` のあるクラスを別途定義する。
+
+        class _AllowEmptyWithColumnNames(_AllowEmptyReport):
+            KEY = "9014"
+            SUMMARY = "0行+COLUMN_NAMES（テスト用）"
+            COLUMN_NAMES: ClassVar[dict[str, str]] = {
+                "Name": "名前",
+                "Account.Name": "取引先名",
+            }
+
+            def soql(self) -> str:
+                return "SELECT Id, Name, Account.Name FROM Opportunity"
+
+        _AllowEmptyWithColumnNames.FOLDER = str(folder)
+        site = MagicMock()
+        site.return_value.__enter__.return_value.bulk_query.return_value = Table(
+            ["Id", "Name", "Account.Name"], []
+        )
+        with patch.object(runner_module, "site_for", return_value=site):
+            saved = download_soql_reports([_AllowEmptyWithColumnNames])
+        assert len(saved) == 1
+        with CSV(saved[0], read_only=True) as csv_file:
+            table = csv_file.read()
+        assert table.columns == ["Id", "名前", "取引先名"]
+        assert table.to_rows() == []

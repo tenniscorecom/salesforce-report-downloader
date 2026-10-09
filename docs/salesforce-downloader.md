@@ -841,6 +841,38 @@ class LargeSalesReport(SoqlReport):
 動く例は [examples/advanced/soql_report_migration](../../examples/advanced/soql_report_migration)
 （`run.py` は Salesforce に接続せずに動く。`production_main.py` は本番用の形）。
 
+### 出力 CSV の見出しを人が読む列名に置き換える（`COLUMN_NAMES`）
+
+SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま返ってくる。
+レポートの元々の見出し（`金額`、`取引先名`）で出したい場合は、
+`SoqlReport.COLUMN_NAMES` に **API名→表示名** の対応を書く。
+**貼り付け元は soql-collector の対応表**の「対応フィールドAPI名」列。
+`runner` が保存の直前にこの表を `Table.select()` に通して列名を差し替える。
+列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
+（`SELECT` を後から変えても対応表を貼り直さずに済む）。
+
+```python
+class LargeSalesReport(SoqlReport):
+    KEY = "9001"
+    SUMMARY = "売上明細（SOQL、2000件超）"
+    URL = "https://example.my.salesforce.com"
+    FOLDER = r"\\server\share\reports\売上明細"
+    ALLOW_EMPTY = False
+    COLUMN_NAMES = {
+        "Name": "商談名",
+        "Amount": "金額",
+        "Account.Name": "取引先名",
+    }
+
+    def soql(self) -> str:
+        return "SELECT Id, Name, Amount, Account.Name FROM Opportunity"
+```
+
+置き換え後の見出しが 2 つ以上重なると `SoqlColumnNameConflictError`（`DownloaderError` 系）
+で失敗扱いになり、CSV は書かれない。重なった見出しと元の列名はメッセージに出るので、
+`COLUMN_NAMES` を見直して別の見出しに分ける。
+`COLUMN_NAMES` が空（既定値）のときは何もしないので、既存のレポートはそのまま動く。
+
 ### 取り方（2つの経路）
 
 | | 管理表の「SOQL」列を `○` にする | `download_soql_reports()` を直接呼ぶ |

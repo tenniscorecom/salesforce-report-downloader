@@ -18,6 +18,7 @@ __all__ = [
     "ReportNotRegisteredError",
     "GroupNotRegisteredError",
     "SoqlReportNotRegisteredError",
+    "SoqlColumnNameConflictError",
     "EmptyReportError",
     "ReportFolderNotFoundError",
     "ReportReservePathLimitError",
@@ -100,6 +101,34 @@ class SoqlReportNotRegisteredError(DownloaderError):
             f"管理番号 {report_key} はSOQL列が「○」ですが、SoqlReportが登録されていません。\n"
             f"登録済みのSOQL管理番号: {known}"
         )
+
+
+class SoqlColumnNameConflictError(DownloaderError):
+    """``COLUMN_NAMES`` の置き換えで、出力 CSV の見出しが 2 つ以上重なった
+
+    ``runner._apply_column_names()`` は ``SoqlReport.COLUMN_NAMES`` を見て
+    SOQL の結果列（API 名）を人が読む見出しへ変える。複数の列を同じ
+    見出しに割り当てると、出力 CSV に同じ列名が 2 回現れて何が何だかに
+    なる。**そのレポートは失敗扱い**（ファイルは書かない）。どの見出しに
+    どの元列が重なったかをメッセージに書き、 ``COLUMN_NAMES`` を直すときに
+    迷わないようにする。
+
+    発生箇所: ``src.soql_reports.runner`` の ``_apply_column_names()``
+
+    対処:
+        ``reports/<ファイル>.py`` の ``COLUMN_NAMES`` を見直す。重なった
+        見出しに割り当てている列の片方を、別の見出しに分ける。 ``soql()``
+        側の ``SELECT`` に無い列は ``COLUMN_NAMES`` に残っていても無視される
+        （誤って削っても問題ないので、見直しのときはまず消すところから始める）
+    """
+
+    def __init__(self, report_key: str, conflicts: dict[str, list[str]]) -> None:
+        lines = [f"COLUMN_NAMES の置き換えで見出しが衝突しました: {report_key}"]
+        for header, sources in conflicts.items():
+            joined = "、".join(sources)
+            lines.append(f"  「{header}」: {joined}")
+        lines.append("COLUMN_NAMES を見直して、衝突している列を別の見出しに分けてください。")
+        super().__init__("\n".join(lines))
 
 
 class EmptyReportError(DownloaderError):

@@ -12,6 +12,7 @@ docs/salesforce-downloader.md「SOQLレポート（2000件超のレポートを�
 """
 
 from pathlib import Path
+from typing import ClassVar
 
 from src.soql_reports.base import SoqlReport
 
@@ -30,10 +31,21 @@ class LargeSalesReport(SoqlReport):
     URL = "https://example.my.salesforce.com"  # site_for() が組織を解決するために使う
     FOLDER = str(OUTPUT_DIR)
     ALLOW_EMPTY = False  # 0件を失敗として扱う（対象月に商談が無いのは想定外のため）
+    # 出力 CSV の見出しを人が読む列名に置き換える（任意）。
+    # **貼り付け元は soql-collector の対応表**（この例は手で書いています）。
+    # キーは ``soql()`` の結果列名（``Account.Name`` のドット付きもそのまま）、
+    # 値は CSV に書く見出し。SELECT に無い列は書いても無視される。
+    # 置き換え後の見出しが 2 つ以上重なると ``SoqlColumnNameConflictError`` で
+    # 失敗扱い（CSV は書かれない）。
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {
+        "Name": "商談名",
+        "Amount": "金額",
+        "CloseDate": "完了予定日",
+    }
 
     def soql(self) -> str:
         # レポートの絞り込み条件を WHERE 句にした SOQL の例。
-        # 実際のフィールド名は describe_fields() の
+        # 実際のフィールド名は soql-collector の対応表の
         # 「対応フィールドAPI名」列を見て埋める。
         # 書けない SOQL と値の扱い（bulk の制約・CSV の文字列扱い）は
         # ``_template.py`` の ``soql()`` を参照。

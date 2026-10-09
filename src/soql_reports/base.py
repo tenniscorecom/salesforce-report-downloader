@@ -51,6 +51,15 @@ class SoqlReport:
         ALLOW_EMPTY: ``True`` なら 0 件のときも空 CSV を保存して成功扱い、
             ``False`` なら 0 件を ``EmptyReportError`` として失敗扱いする
             （``ReportEntry.allow_empty`` と同じ運用）。
+        COLUMN_NAMES: 出力 CSV の見出しを Salesforce の API 名（``Amount`` や
+            ``Account.Name``）から人が読む列名に置き換える対応表。キーは
+            ``soql()`` が返す SOQL の結果の列名（ドット付きの参照項目も
+            そのまま）、値はその列を CSV に書くときの見出し。**貼り付け元は
+            soql-collector の対応表**（人が ``reports/<ファイル>.py`` に
+            コピペする前提）。空のときは何もしない。**結果に無いキーは無視**
+            （SOQL を変えても対応を貼り直さずに済む）。置き換え後の見出しが
+            2 つ以上重なると ``SoqlColumnNameConflictError``（CSV は書かれ
+            ない）。``runner._apply_column_names()`` が保存直前に適用する。
     """
 
     KEY: ClassVar[str] = ""
@@ -58,6 +67,7 @@ class SoqlReport:
     URL: ClassVar[str] = ""
     FOLDER: ClassVar[str] = ""
     ALLOW_EMPTY: ClassVar[bool] = False
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {}
 
     def soql(self) -> str:
         """実行する SOQL クエリ文字列を返す。サブクラスで実装する。"""

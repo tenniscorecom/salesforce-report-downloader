@@ -8,6 +8,8 @@
 ``docs/salesforce-downloader.md``「SOQLレポート（2000件超のレポートを移行する）」を参照。
 """
 
+from typing import ClassVar
+
 from src.soql_reports.base import SoqlReport
 
 
@@ -19,6 +21,8 @@ class NewReport(SoqlReport):
     URL = ""  # TODO: 接続先組織のMy Domain URL（site_for()が組織を解決する）
     FOLDER = r""  # TODO: 保存先フォルダの絶対パス／UNC（存在しないとエラー。勝手に作らない）
     ALLOW_EMPTY = False  # TODO: 0件を失敗として扱うか（普段データがあるなら False のまま）
+    # 任意: {"Amount": "金額", "Account.Name": "取引先名"}
+    COLUMN_NAMES: ClassVar[dict[str, str]] = {}
 
     def soql(self) -> str:
         """TODO: 実行する SOQL クエリ文字列を返す。
