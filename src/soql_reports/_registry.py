@@ -1,9 +1,8 @@
 """src/soql_reports/_registry.py — SOQLレポート登録の置き場所。
 
 ``__init__.py`` から ``runner`` を import するので、``runner`` から
-``__init__.py`` を逆に import すると循環する。``registered_reports()`` は
-``runner.download_soql_reports()`` が「``reports=None`` のときの既定値」
-として参照するため、**循環を切れる別のモジュール**に置く。
+``__init__.py`` を逆に import すると循環する。 ``registered_reports()``
+を ``__init__.py`` 側で参照するために、**循環を切れる別のモジュール**に置く。
 """
 
 from __future__ import annotations

@@ -818,6 +818,12 @@ SOQL は人が組み立てる（レポートの列名と SOQL のフィールド
 **置くだけで登録される**（`_` で始まるファイルは対象外。雛形は `reports/_template.py`）。
 `KEY` が空・重複していると、読み込み時に `DownloaderError` で止まる。
 
+`SoqlReport` に書くのは **`KEY` と `soql()` と（任意で）`COLUMN_NAMES` だけ**。
+URL・保存先・0件可否は **管理表の `ReportEntry`** が単一の正。
+管理表に新しい行を足し、「SOQL」列を「○」にしてから、`SoqlReport` に対応する
+`KEY` でサブクラスを置く。取得は `download_scheduled()` 経由で動き、
+スケジュール判定・履歴記録・空フォルダ検査も既存の管理表ルートと同じ。
+
 ```python
 # src/soql_reports/reports/large_sales_report.py
 from src.soql_reports.base import SoqlReport
@@ -825,10 +831,6 @@ from src.soql_reports.base import SoqlReport
 
 class LargeSalesReport(SoqlReport):
     KEY = "9001"                                   # 社内で決める管理番号
-    SUMMARY = "売上明細（SOQL、2000件超）"
-    URL = "https://example.my.salesforce.com"       # site_for() が組織を解決する
-    FOLDER = r"\\server\share\reports\売上明細"      # 存在しないとエラー（勝手に作らない）
-    ALLOW_EMPTY = False                              # 0件を失敗として扱うか
 
     def soql(self) -> str:
         return (
@@ -838,8 +840,18 @@ class LargeSalesReport(SoqlReport):
         )
 ```
 
-動く例は [examples/advanced/soql_report_migration](../../examples/advanced/soql_report_migration)
-（`run.py` は Salesforce に接続せずに動く。`production_main.py` は本番用の形）。
+動かす手順は次のとおり:
+
+1. `src/soql_reports/reports/_template.py` を雛形に `src/soql_reports/reports/`
+   配下へコピーし、ファイル名とクラス名を変える（ファイル名を `_` で
+   始めないこと）
+2. `KEY` を社内で決める管理番号に書き換える
+3. `soql()` に SOQL を書く
+4. 管理表に該当管理番号の行を足し、「SOQL」列を「○」にする
+   （URL・保存先・0件可否はこの行で指定する）
+
+動く例は [examples/soql_report_migration](../examples/soql_report_migration)
+の `large_sales_report.py`（`SoqlReport` サブクラスのサンプル）。
 
 ### 出力 CSV の見出しを人が読む列名に置き換える（`COLUMN_NAMES`）
 
@@ -847,17 +859,14 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 レポートの元々の見出し（`金額`、`取引先名`）で出したい場合は、
 `SoqlReport.COLUMN_NAMES` に **API名→表示名** の対応を書く。
 **貼り付け元は soql-collector の対応表**の「対応フィールドAPI名」列。
-`runner` が保存の直前にこの表を `Table.select()` に通して列名を差し替える。
+`service._save()` が SOQL 経由のときだけ保存の直前にこの表を `Table.select()` に
+通して列名を差し替える（Report API 経由・ブラウザ経由では適用しない）。
 列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
 （`SELECT` を後から変えても対応表を貼り直さずに済む）。
 
 ```python
 class LargeSalesReport(SoqlReport):
     KEY = "9001"
-    SUMMARY = "売上明細（SOQL、2000件超）"
-    URL = "https://example.my.salesforce.com"
-    FOLDER = r"\\server\share\reports\売上明細"
-    ALLOW_EMPTY = False
     COLUMN_NAMES = {
         "Name": "商談名",
         "Amount": "金額",
@@ -873,16 +882,15 @@ class LargeSalesReport(SoqlReport):
 `COLUMN_NAMES` を見直して別の見出しに分ける。
 `COLUMN_NAMES` が空（既定値）のときは何もしないので、既存のレポートはそのまま動く。
 
-### 取り方（2つの経路）
+### 取り方
 
-| | 管理表の「SOQL」列を `○` にする | `download_soql_reports()` を直接呼ぶ |
-|---|---|---|
-| 使う場面 | 管理表にあるレポートを SOQL に切り替える | 管理表に行を作らず、SOQL レポートだけ取る |
-| 管理表への登録 | 必要（同じ管理番号の `KEY` が要る） | 不要 |
-| スケジュール | 「スケジュール」シートが使える | 呼び出し側が決める |
-| 履歴（history.csv） | 記録する | 記録しない |
+SOQL レポートは **管理表ルートだけ** で取る。`download_scheduled()` が
+「SOQL」列が「○」の行を `SoqlReport` 経由で取得し、保存する。
+「2000件超」列が同時に「○」でも「SOQL」列が優先される（管理表の
+優先順位は「SOQL」→「2000件超」→通常の Report API）。
+URL・保存先・0件可否はすべて管理表の `ReportEntry` から取り、
+`SoqlReport` には持たせない（管理表を単一の正にするため）。
 
-どちらも 1 件失敗しても残りは続け、保存ファイル名の組み立て方は `download_scheduled()` と同じ。
 `SUMMARY` / `MATRIX` 形式（グルーピング・集計）と複合レポートタイプは、SOQL の `GROUP BY`
 などで個別に作り直す。
 

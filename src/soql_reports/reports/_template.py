@@ -17,10 +17,6 @@ class NewReport(SoqlReport):
     """TODO: レポートの説明に書き換える（登録前にファイル名・クラス名もリネーム）。"""
 
     KEY = ""  # TODO: 社内で決める管理番号（例: "9001"）
-    SUMMARY = ""  # TODO: 人が読んで分かる説明（保存するファイル名にも使われる）
-    URL = ""  # TODO: 接続先組織のMy Domain URL（site_for()が組織を解決する）
-    FOLDER = r""  # TODO: 保存先フォルダの絶対パス／UNC（存在しないとエラー。勝手に作らない）
-    ALLOW_EMPTY = False  # TODO: 0件を失敗として扱うか（普段データがあるなら False のまま）
     # 任意: {"Amount": "金額", "Account.Name": "取引先名"}
     COLUMN_NAMES: ClassVar[dict[str, str]] = {}
 
@@ -35,5 +31,8 @@ class NewReport(SoqlReport):
         戻り値の ``Table`` は **全フィールドが文字列**（真偽値は ``"true"`` /
         ``"false"``、null は空文字）。参照項目（``Account.Name`` など）は
         ``Account.Name`` の形の列名になり、平坦化されない。
+
+        URL・保存先・0件可否は管理表の ``ReportEntry`` が単一の正なので
+        ここには書かない。
         """
         raise NotImplementedError("TODO: SOQL文をここに書く")

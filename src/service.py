@@ -98,6 +98,7 @@ from src.sheets.master import (
 )
 from src.sheets.schedule import ScheduleRule, load_schedule
 from src.soql_reports import soql_report_for
+from src.soql_reports.runner import _apply_column_names
 
 if TYPE_CHECKING:
     # ブラウザ経由の戻り値の型だけ。``selenium`` 依存を実際にブラウザ経由の
@@ -787,10 +788,9 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     ``soql_report_for()`` で探す。管理表の「SOQL」列が「○」なのに登録が無い
     場合は ``SoqlReportNotRegisteredError``（設定ミス）で止まる。
 
-    つなぐ組織は ``SoqlReport.URL`` ではなく ``entry.url``（管理表側）を使う。
-    参照先の単一の正は管理表で、``SoqlReport.URL`` は
-    ``download_soql_reports()``（管理表を経由しない独立した経路）専用の値
-    だからここでは読まない。
+    つなぐ組織は管理表の ``entry.url`` を使う。 ``SoqlReport`` には URL などの
+    接続情報を持たせず、管理表の ``ReportEntry`` を単一の正にしている
+    （管理表を経由しない別ルートは廃止）。
 
     取得は ``SalesforceBase.bulk_query()`` で行う。サーバ側で
     データを処理する非同期ジョブのため、件数が多い SOQL レポートでの
@@ -1021,6 +1021,17 @@ def _save(
         # （連番探索は行わない。dry-run は競合判定まで含めて副作用を出さない運用）
         if is_dry_run():
             return base
+        # **SOQL 経由のときだけ ``COLUMN_NAMES`` を適用する。** 管理表の
+        # 「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
+        # 取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への
+        # 対応表を持っている。ここで ``table`` を見出しだけ差し替えてから
+        # CSV に書く。見出しが衝突すると ``SoqlColumnNameConflictError``
+        # が送出されるが、その場合は ``_write_csv`` 前に ``except`` へ
+        # 流れるので CSV は書かれない。Report API / ブラウザ経由は
+        # そのまま（``SoqlReport`` を見ない）。
+        if entry.use_soql:
+            report_cls = soql_report_for(entry.key)
+            table = _apply_column_names(report_cls, table)
         _write_csv(tmp_path, table)
         if entry.overwrite:
             # **上書きモード:** ``{管理番号}_{HHMM}.csv`` の名前で毎回置き換える。

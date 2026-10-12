@@ -5,27 +5,20 @@
 ``_registry.registered_reports()`` が ``pkgutil.iter_modules`` で走査して
 自動で集める。明示的なタプル編集は不要。
 
-``download_soql_reports()`` を呼ぶと ``registered_reports()`` の戻り値を取りに行く。
-``reports/`` に何も置いていない状態なら空タプルが返り、何もしない（テストでは
-``reports`` 引数で差し替える）。
+取得の入口は **管理表ルートだけ** に統一した。管理表の「SOQL」列が「○」の行は
+取得実行側（``src.service._fetch_via_soql()`` / ``_save()``）が
+``soql_report_for()`` で管理番号から ``SoqlReport`` を引く。
 
-管理表の「SOQL」列（``ReportEntry.use_soql``）が「○」の行は、取得実行側
-（``src.service``）が ``soql_report_for()`` で管理番号から ``SoqlReport`` を引く。
-``site_for()``（``comken.toolbox.salesforce.sites``）と同じ「URL・管理番号から
-対応クラスを探す」役割。
-
-``_registry.py`` は別モジュールに置く。``__init__.py`` が ``runner`` を
-import する関係で、``runner`` から ``__init__.py`` を import すると循環するため
-（``registered_reports()`` はこの循環を避けるためだけの存在）。
+``_registry.py`` は別モジュールに置く（``_registry`` 自体は ``src.soql_reports``
+パッケージの別モジュールとして読み込み、 ``runner`` からの循環を避ける）。
 """
 
 from src.exceptions import SoqlReportNotRegisteredError
 from src.soql_reports import _registry
 from src.soql_reports._registry import registered_reports
 from src.soql_reports.base import SoqlReport
-from src.soql_reports.runner import download_soql_reports
 
-__all__ = ["SoqlReport", "registered_reports", "download_soql_reports", "soql_report_for"]
+__all__ = ["SoqlReport", "registered_reports", "soql_report_for"]
 
 
 def soql_report_for(key: str) -> type[SoqlReport]:
@@ -43,9 +36,8 @@ def soql_report_for(key: str) -> type[SoqlReport]:
         SoqlReportNotRegisteredError: ``registered_reports()`` に該当する ``KEY`` が無い場合
             （管理表の「SOQL」列を「○」にしたのに登録を忘れている設定ミス）。
     """
-    # ``_registry`` モジュール経由で読む（``download_soql_reports()`` と同じ理由）。
-    # ``from registered_reports import ...`` だとこのモジュールの import 時点のスナップ
-    # ショットに固定され、テストでの `_registry.registered_reports` 差し替えを拾えない
+    # ``_registry`` モジュール経由で読む（import 時点のスナップショットに
+    # 固定されないようにするため）。
     for report_cls in _registry.registered_reports():
         if key == report_cls.KEY:
             return report_cls
