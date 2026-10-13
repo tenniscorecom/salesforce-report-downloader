@@ -2842,6 +2842,54 @@ class TestUnscheduledReportIsSkipped:
         # Salesforce には 1002 の 1 回だけ問い合わせが走る
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
 
+    def test_skip_breakdown_log_counts_each_reason(self, tmp_path, monkeypatch, caplog):
+        """対象外にした理由を 1 実行 1 行の INFO ログで出す。
+
+        「有効× 1 件 / 予定外 1 件」の管理表を ``download_scheduled()`` に通し、
+        内訳ログの件数が実際の外れ方と一致することを ``caplog`` で確かめる。
+        既存テスト ``test_warning_lists_each_unscheduled_enabled_report`` の
+        「ログの件数」と同じ発想だが、こちらは ``_select_targets()`` が出す
+        4 区分（有効× / スケジュール行なし / 予定外 / 当日取得済）の件数を
+        一度に固定する回帰テスト。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        # 2026-01-07（水曜）固定 → 月曜 09:00 のスケジュールは曜日外しで
+        # ``is_due()`` が False → 「予定外」になる
+        fixed_now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        master = make_master_with_schedule(
+            tmp_path / "管理表.xlsx",
+            [
+                # 1001 = 有効×（「有効」が「×」）→ 「有効×」 1 件
+                ["1001", "停止中", URL_A, "営業事務グループ", "山田", "×"],
+                # 1002 = 有効○ だがスケジュール行の曜日が合わない → 「予定外」 1 件
+                ["1002", "曜日外し", URL_B, "営業事務グループ", "佐藤", "○"],
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+            schedule_rows=[
+                # 月曜 09:00 → 2026-01-07（水曜）は曜日不一致で ``is_due=False``
+                ["S001", "1002", "毎週", "09:00", "", "月", "", "取得しない", "○"],
+            ],
+        )
+        _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
+        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+
+        with (
+            caplog.at_level(logging.INFO, logger="src.service"),
+            patch("src.service.site_for", return_value=fake_salesforce()),
+        ):
+            download_scheduled()
+
+        # 内訳ログが 1 行出ている
+        breakdown_records = [r for r in caplog.records if "対象から外した内訳" in r.message]
+        assert len(breakdown_records) == 1
+        message = breakdown_records[0].message
+        # 4 区分の件数が実際の外れ方と一致する
+        assert "有効× 1 件" in message
+        assert "スケジュール行なし 0 件" in message
+        assert "予定外 1 件" in message
+        assert "当日取得済 0 件" in message
+
 
 # ── 同時起動対策 ─────────────────────────────────────────────────────────
 class TestRunLock:
@@ -3780,3 +3828,187 @@ class TestOverwriteMode:
             )
         # ``1001_20260918_0900.csv``（日付+HHMM。連番や上書きはしない）
         assert saved.name == "1001_20260918_0900.csv"
+
+
+# ── 「取得開始」ログの順序回帰テスト ─────────────────────────────────────
+class TestFetchStartLogEmittedBeforeSalesforceContact:
+    """``_download()`` の「取得開始」ログが Salesforce へ問い合わせる前に出る回帰テスト。
+
+    取得中に固まったときに「どのレポートで止まったか」をログで分かるように
+    することが目的なので、ログは ``_require_folder()`` の前、
+    =Salesforce へ問い合わせる前に出ていなければならない。``_fetch_with_auto_fallback()``
+    が呼ばれた時点の ``caplog`` を ``side_effect`` で捕捉し、呼ばれた時点で
+    既に「取得開始」ログが出ていることを確認する。壊れた版（=ログを取得の
+    後ろに出す）に戻すと、このテストは落ちる。
+    """
+
+    def _make_entry(
+        self,
+        key: str,
+        *,
+        use_soql: bool = False,
+        exceeds_row_limit: bool = False,
+    ):
+        """テスト用の ``ReportEntry`` を作る。``ReportEntry.use_soql`` /
+        ``exceeds_row_limit`` は真偽値で渡るので、ヘルパーでは単純に
+        キーワード引数で ``ReportEntry`` を組み立てるだけにする。
+        """
+        from src.sheets.master import ReportEntry
+
+        return ReportEntry(
+            key=key,
+            summary="顧客一覧",
+            url=(
+                "https://example--sandbox.sandbox.my.salesforce.com/"
+                "lightning/r/Report/00O5g00000ABCDE/view"
+            ),
+            group="営業本部",
+            assignee="山田",
+            enabled=True,
+            allow_empty=False,
+            use_soql=use_soql,
+            exceeds_row_limit=exceeds_row_limit,
+        )
+
+    def _setup(
+        self,
+        tmp_path,
+        monkeypatch,
+        entry,
+    ):
+        """テストに必要な実ファイル（管理表 / ベースフォルダ / 履歴パス）を
+        用意し、``MASTER_PATH`` / ``HISTORY_PATH`` を差し替える。 ``_download()``
+        失敗時の ``record_failure()`` が ``output_path()`` を経由して
+        管理表を読むので、**マスタが実在しないと ``GroupNotRegisteredError``
+        以前の段階で ``ComkenFileNotFoundError`` が出て本来検証したい
+        例外を覆い隠してしまう**。 ``_patch_master_path`` ヘルパーを
+        流用して ``MASTER_PATH`` を tmp_path の本物の管理表へ向ける。
+        """
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        # 管理表を 1 件だけ作って tmp_path に置く。``record_failure()`` の
+        # ``output_path()`` が「営業本部」グループのフォルダを参照できるよう、
+        # 設定シートにも対応行を足す
+        master = make_master_with_schedule(
+            tmp_path / "管理表.xlsx",
+            [
+                [
+                    entry.key,
+                    entry.summary,
+                    entry.url,
+                    "営業本部",
+                    entry.assignee,
+                    "○",
+                    "",  # 0件あり
+                    "○" if entry.exceeds_row_limit else "",  # 2000件超
+                    "○" if entry.use_soql else "",  # SOQL
+                ]
+            ],
+            settings_rows=[["営業本部", str(base_path)]],
+            # ``_download()`` を直接呼ぶテストではスケジュール判定は走らないが、
+            # ``make_master_with_schedule`` のシグネチャ上 ``schedule_rows`` は
+            # 必須。空 ``list`` を渡して「スケジュール」シート自体を作らない形に
+            # する（管理表だけあれば ``output_path()`` の動作には十分）
+            schedule_rows=[],
+        )
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+        return base_path, history_path
+
+    def test_soql_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
+        """``use_soql=True`` のエントリは、``_fetch_with_auto_fallback()`` が
+        呼ばれた時点で予定経路 ``SOQL`` の「取得開始」ログが既に出ている。
+        """
+        entry = self._make_entry("9001", use_soql=True)
+        _, history_path = self._setup(tmp_path, monkeypatch, entry)
+
+        # ``_fetch_with_auto_fallback()`` が呼ばれた時点の ``caplog`` を捕捉する。
+        # この ``side_effect`` の中で ``caplog.records`` をコピーすれば、
+        # 「Salesforce へ問い合わせる前」に出たログだけが手に入る
+        captured: list[logging.LogRecord] = []
+
+        def _explode(*args, **kwargs):
+            captured.extend(list(caplog.records))
+            raise RuntimeError("Salesforce へ問い合わせに失敗")
+
+        with (
+            caplog.at_level(logging.INFO, logger="src.service"),
+            patch.object(
+                service_module,
+                "_fetch_with_auto_fallback",
+                side_effect=_explode,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
+                service_module._download(entry, "定期実行", history_path)
+
+        # 呼ばれた時点で「取得開始」ログが既に出ていた（=問い合わせの後ろではない）
+        start_records = [r for r in captured if "取得開始" in r.message]
+        assert len(start_records) == 1, (
+            "「取得開始」ログが fetch 呼び出し時点で出ていない（壊れた版では "
+            "取得完了後に出るため caplog を捕捉した時点では 0 件になる）: "
+            f"{[r.message for r in captured]}"
+        )
+        # 予定経路は SOQL。``_planned_route()`` の優先順位（``use_soql`` を
+        # 最初に見る）に従う
+        assert "経路=SOQL" in start_records[0].message
+        # 管理番号も含まれている（=どのレポートで止まったかがログから追える）
+        assert "9001" in start_records[0].message
+
+    def test_api_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
+        """``use_soql=False`` / ``exceeds_row_limit=False`` の通常 API 経路でも
+        同じ順序で「取得開始」ログが ``_fetch_with_auto_fallback()`` の前に出る。
+        """
+        entry = self._make_entry("9002", use_soql=False, exceeds_row_limit=False)
+        _, history_path = self._setup(tmp_path, monkeypatch, entry)
+
+        captured: list[logging.LogRecord] = []
+
+        def _explode(*args, **kwargs):
+            captured.extend(list(caplog.records))
+            raise RuntimeError("Salesforce へ問い合わせに失敗")
+
+        with (
+            caplog.at_level(logging.INFO, logger="src.service"),
+            patch.object(
+                service_module,
+                "_fetch_with_auto_fallback",
+                side_effect=_explode,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
+                service_module._download(entry, "定期実行", history_path)
+
+        start_records = [r for r in captured if "取得開始" in r.message]
+        assert len(start_records) == 1
+        assert "経路=API" in start_records[0].message
+        assert "9002" in start_records[0].message
+
+    def test_browser_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
+        """``exceeds_row_limit=True`` のエントリも、``_fetch_with_auto_fallback()``
+        が呼ばれる前に予定経路「ブラウザ」の「取得開始」ログが出ている。
+        """
+        entry = self._make_entry("9003", exceeds_row_limit=True)
+        _, history_path = self._setup(tmp_path, monkeypatch, entry)
+
+        captured: list[logging.LogRecord] = []
+
+        def _explode(*args, **kwargs):
+            captured.extend(list(caplog.records))
+            raise RuntimeError("Salesforce へ問い合わせに失敗")
+
+        with (
+            caplog.at_level(logging.INFO, logger="src.service"),
+            patch.object(
+                service_module,
+                "_fetch_with_auto_fallback",
+                side_effect=_explode,
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
+                service_module._download(entry, "定期実行", history_path)
+
+        start_records = [r for r in captured if "取得開始" in r.message]
+        assert len(start_records) == 1
+        assert "経路=ブラウザ" in start_records[0].message
+        assert "9003" in start_records[0].message

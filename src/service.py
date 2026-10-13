@@ -263,9 +263,36 @@ def _download_scheduled_locked(
     # として履歴が残ると、翌日の同じスケジュールキーが「成功済み」で飛ぶ
     # 事故を防ぐ）。
     current = clock_now()
+    # 実行開始の基準時刻。終了ログで経過秒を出すために取る（``clock_now()`` の
+    # 日付とは別物として、``time.perf_counter()`` を使う）
+    run_started = time.perf_counter()
 
-    targets, already_failed = _select_targets(entries, rules_by_report, current)
-    logger.info("定期取得の対象: %d 件", len(targets))
+    targets, already_failed, skipped = _select_targets(entries, rules_by_report, current)
+    enabled_count = sum(1 for entry in entries.values() if entry.enabled)
+    logger.info(
+        "定期取得を開始します: 管理表=%s, 全 %d 件 / 有効 %d 件 / 対象 %d 件",
+        paths.MASTER_PATH,
+        len(entries),
+        enabled_count,
+        len(targets),
+    )
+    logger.info(
+        "対象から外した内訳: 有効× %d 件 / スケジュール行なし %d 件 / 予定外 %d 件 / "
+        "当日取得済 %d 件",
+        len(skipped["有効×"]),
+        len(skipped["スケジュール行なし"]),
+        len(skipped["予定外"]),
+        len(skipped["当日取得済"]),
+    )
+    # 1 件ごとの理由は DEBUG（=既定では出ない。障害調査時に ``--log-level=DEBUG`` で見る想定）
+    for key in skipped["有効×"]:
+        logger.debug("対象外: 管理番号=%s, 理由=有効×", key)
+    for key in skipped["スケジュール行なし"]:
+        logger.debug("対象外: 管理番号=%s, 理由=スケジュール行なし", key)
+    for key in skipped["予定外"]:
+        logger.debug("対象外: 管理番号=%s, 理由=予定外", key)
+    for key in skipped["当日取得済"]:
+        logger.debug("対象外: 管理番号=%s, 理由=当日取得済", key)
 
     saved: list[Path] = []
     # 1件失敗したら ``failed`` に積む。RPA 基盤から「失敗扱い」を判断できるよう、
@@ -282,8 +309,9 @@ def _download_scheduled_locked(
     # 該当エントリを ``pop`` して ``__exit__()`` を呼んだうえで例外を上げる
     # （壊れた状態のブラウザを次のレポートへ引き継がないため）
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] = {}
+    total_targets = len(targets)
     try:
-        for entry, schedule_key, schedule_rule in targets:
+        for index, (entry, schedule_key, schedule_rule) in enumerate(targets, start=1):
             try:
                 saved.append(
                     _download(
@@ -297,6 +325,7 @@ def _download_scheduled_locked(
                         filters=filters_by_report.get(entry.key),
                         current=current,
                         browser_sessions=browser_sessions,
+                        progress=(index, total_targets),
                     )
                 )
             except (ComkenError, OSError) as e:
@@ -328,7 +357,13 @@ def _download_scheduled_locked(
             except Exception as close_exc:
                 logger.warning("ブラウザを閉じる途中で例外が発生しました: %s", close_exc)
 
-    logger.info("定期取得: %d 件中 %d 件を取得しました。", len(targets), len(saved))
+    run_seconds = time.perf_counter() - run_started
+    logger.info(
+        "定期取得: %d 件中 %d 件を取得しました。（%.1f 秒）",
+        len(targets),
+        len(saved),
+        run_seconds,
+    )
     if failed:
         # 続けたぶん、最後に必ず知らせる（終了コードで落ちたことが分かるように）。
         # 直近の失敗を ``__cause__`` に乗せて送出する（呼び出し側が
@@ -471,6 +506,56 @@ class _Attempt:
         )
 
 
+def _log_fetch_start(
+    entry: ReportEntry, route: str, progress: tuple[int, int] | None
+) -> None:
+    """1 件の取得開始を INFO で 1 行出す。
+
+    ``_download()`` の冒頭（``_require_folder()`` の前、Salesforce へ問い合わせる
+    前）に呼び、 ``[i/n]`` の進み具合と管理番号・概要・**予定していた経路**を
+    1 行で残す。**取得中に固まったときに「どのレポートで止まったか」をログで
+    分かるようにすることが目的なので、取得完了後に出しても意味がない。**
+    「自動切替」（API → ブラウザ）が起きた事実は既存の WARNING が
+    ``_download()`` / ``_fetch_with_auto_fallback()`` 側ですでに出しているので、
+    ここでは 2 回目を呼ばない（重複させない）。
+    """
+    if progress is not None:
+        i, n = progress
+        logger.info(
+            "[%d/%d] 取得開始: 管理番号=%s, 概要=%s, 経路=%s",
+            i,
+            n,
+            entry.key,
+            entry.summary,
+            route,
+        )
+    else:
+        # 単体テストや直接 ``_download()`` を呼ぶ経路向け。``[i/n]`` 抜きで出す
+        logger.info(
+            "取得開始: 管理番号=%s, 概要=%s, 経路=%s",
+            entry.key,
+            entry.summary,
+            route,
+        )
+
+
+def _planned_route(entry: ReportEntry) -> str:
+    """``_fetch()`` と同じ優先順位で「予定していた経路」を返す。
+
+    「取得開始」ログは ``_require_folder()`` の前に出すので、Salesforce へ
+    問い合わせる前の段階では「実際に何を使うか」は未確定。``_fetch()`` の
+    分岐ロジック（``use_soql`` → SOQL / ``exceeds_row_limit`` → ブラウザ /
+    どちらも偽 → API）をそのまま写して、予定していた経路の文字列だけを
+    先に出しておく。Report API 経路で「自動切替」が起きた事実は別途既存の
+    WARNING で出る（= ここでの出力は予定であり、最終結果ではない）。
+    """
+    if entry.use_soql:
+        return ROUTE_SOQL
+    if entry.exceeds_row_limit:
+        return ROUTE_BROWSER
+    return ROUTE_API
+
+
 def _download(
     entry: ReportEntry,
     project: str,
@@ -481,6 +566,7 @@ def _download(
     filters: list[dict] | None = None,
     current: dt.datetime | None = None,
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
+    progress: tuple[int, int] | None = None,
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
@@ -521,6 +607,13 @@ def _download(
     route = ""
     try:
         try:
+            # 「取得開始」ログは **Salesforce へ問い合わせる前** に出す。
+            # 取得中に固まったときに「どのレポートで止まったか」をログで
+            # 分かるようにすることが目的なので、取得完了後に出しても意味がない。
+            # 経路は予定（``_fetch()`` と同じ優先順位）で書く。自動切替が起きて
+            # 実際の経路が変わった事実は既存の WARNING が別途出すので、ここで
+            # 2 回目は呼ばない（重複させない）。
+            _log_fetch_start(entry, _planned_route(entry), progress)
             _require_folder(entry)
             route, table = _fetch_with_auto_fallback(
                 entry,
@@ -552,12 +645,25 @@ def _download(
                     # 0 件取り直しのブラウザ取得自体が失敗 → 自動切替は成功しなかった扱いとし、
                     # 2000 件超の取り直し失敗と同じ ``BrowserFallbackFailedError`` で表現する
                     # （``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分に入る）
+                    # フォールバック自体が落ちたことはこの分岐でしか分からないので、
+                    # 下流の「取得に失敗しました」より一段手前で WARNING を 1 行出す
+                    logger.warning(
+                        "0 件取り直しのブラウザ取得に失敗しました: %s（%s）",
+                        entry.key,
+                        browser_exc,
+                    )
                     raise BrowserFallbackFailedError(
                         entry.key, entry.summary, "0件", ROUTE_BROWSER_FALLBACK_EMPTY
                     ) from browser_exc
                 if browser_table:
                     # ブラウザで取れたので、保存し直して履歴は「成功・自動切替」で記録
                     # （``_Attempt`` の開始時刻はそのまま使い、route だけ書き換える）
+                    # 「自動切替: API → ブラウザ（0件取り直し）」の事実は、
+                    # この ``if`` に入る前に出した WARNING
+                    # （"Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます"）
+                    # が出ているので、ここでは ``_log_fetch_start()`` を再度呼ばない
+                    # （重複させない）。
+                    route = ROUTE_BROWSER_FALLBACK_EMPTY
                     path = _save(
                         entry,
                         browser_table,
@@ -685,6 +791,13 @@ def _fetch_with_auto_fallback(
             # のシグネチャに合わせようとすると ``TypeError`` になり、原因区分が
             # 「プログラム」化けるため、ダウンローダー側で専用例外を新設する。
             # ``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分に入る
+            # フォールバック自体が落ちたことはこの分岐でしか分からないので、
+            # 下流の「取得に失敗しました」より一段手前で WARNING を 1 行出す
+            logger.warning(
+                "2000件超取り直しのブラウザ取得に失敗しました: %s（%s）",
+                entry.key,
+                browser_exc,
+            )
             raise BrowserFallbackFailedError(
                 entry.key, entry.summary, "2000件超", ROUTE_BROWSER_FALLBACK_TRUNCATED
             ) from browser_exc
@@ -799,6 +912,17 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     """
     report_cls = soql_report_for(entry.key)
     instance = report_cls()
+    # SOQL 経由のとき、実際に使った ``SoqlReport`` のクラス名と所在モジュールを
+    # INFO で 1 行出す（管理表の「SOQL」列 = ○ のレポートが、コードのどの
+    # ``reports/<ファイル>.py`` で定義されているかを運用時に追えるようにするため）。
+    # SOQL 本文は DEBUG（=既定では出ない。問い合わせの中身は障害調査で見たい想定）
+    logger.info(
+        "SOQL レポートを使用します: クラス=%s, モジュール=%s, 管理番号=%s",
+        report_cls.__name__,
+        report_cls.__module__,
+        entry.key,
+    )
+    logger.debug("SOQL: %s", instance.soql())
     site = site_for(entry.url)
     with site() as salesforce:
         return salesforce.bulk_query(instance.soql())
@@ -1003,6 +1127,9 @@ def _save(
     検査で落とすケース）は ``unlink(missing_ok=True)`` で後始末する。
     """
     base = paths.output_path(entry, schedule_run_time, now=current)
+    # 保存先を決定した時点で DEBUG を 1 行出す（上書きモードかどうかも一緒に出す）。
+    # 障害調査時に「どのパスに書こうとして何が起きなかったか」を追えるようにする
+    logger.debug("保存先を決定しました: パス=%s, 上書き=%s", base, entry.overwrite)
     # **概要のフォルダは保存前に ``mkdir`` する。** ベースフォルダは
     # ``_require_folder()`` で先に検査済みなので ``parents=False`` で安全。
     # dry-run 中は作らない（保存もしない運用に合わせた防御）
@@ -1031,7 +1158,22 @@ def _save(
         # そのまま（``SoqlReport`` を見ない）。
         if entry.use_soql:
             report_cls = soql_report_for(entry.key)
+            original_columns = list(table.columns)
             table = _apply_column_names(report_cls, table)
+            # 実際に置き換わった列数だけ INFO に出す（0 件 = 全部元の見出しのまま
+            # なら出さない）。列名そのものは見出しに過ぎず、認証情報にも
+            # レポートの値にも触れないので INFO で出してよい
+            replaced_count = sum(
+                1
+                for original, new in zip(original_columns, table.columns, strict=True)
+                if original != new
+            )
+            if replaced_count > 0:
+                logger.info(
+                    "COLUMN_NAMES で %d 列を置き換えました: 管理番号=%s",
+                    replaced_count,
+                    entry.key,
+                )
         _write_csv(tmp_path, table)
         if entry.overwrite:
             # **上書きモード:** ``{管理番号}_{HHMM}.csv`` の名前で毎回置き換える。
@@ -1103,17 +1245,19 @@ def _matched_schedule_key(
     entry: ReportEntry,
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str]:
     """このレポートを今取得すべきか、すべきなら根拠のスケジュールキーを返す。
 
-    戻り値は ``(取得すべきか, スケジュールキー)``。スケジュールキーは、
-    取得すべきだった場合に「どのスケジュール行が根拠になったか」を表し、
-    履歴の ``スケジュールキー`` 列にそのまま記録する。取得しないときは
-    ``(False, "")`` を返す。
+    戻り値は ``(取得すべきか, スケジュールキー, 外した理由)``。
+    スケジュールキーは、取得すべきだった場合に「どのスケジュール行が根拠になったか」を
+    表し、履歴の ``スケジュールキー`` 列にそのまま記録する。取得しないときは
+    ``(False, "", 理由)`` を返し、第3要素で外した理由を返す（外さないときは空文字）。
+    理由は「予定外」/「当日取得済」の2値で、``_select_targets()`` の内訳ログに使う
+    （両方「スケジュール行は有るが今回は取らない」ケースの細分）。
 
     判定ロジック:
 
-    - スケジュール行が無いレポートは取得しない（``(False, "")`` を返す）。
+    - スケジュール行が無いレポートは取得しない（``(False, "", "")`` を返す）。
       「スケジュール」シートに紐付かないレポートは黙って取らない（気づけるよう、
       ``_select_targets()`` 側で 1 実行 1 回のログを出す）
     - スケジュール行がある場合、いずれかの行が ``is_due()`` True で、かつ
@@ -1121,8 +1265,8 @@ def _matched_schedule_key(
       複数の行が True を返す場合は取得時刻が一番遅い行のキーを採用（それより早い
       時刻の行は無視する）。``start_time is None`` の行は最も早い扱いとし、具体的な
       時刻を持つ行がある限りそちらを優先する
-    - いずれの行も ``is_due()`` False なら False, ""
-    - いずれかの行が ``is_due()`` True でも、今日すでに成功済みなら False, ""
+    - いずれの行も ``is_due()`` False なら ``(False, "", "予定外")``
+    - いずれかの行が ``is_due()`` True でも、今日すでに成功済みなら ``(False, "", "当日取得済")``
 
     祝日判定は ``ScheduleRule.is_due()`` が ``comken.core.dates`` の統一
     カレンダーを直接見るため、呼び出し側でカレンダーを用意する必要はない。
@@ -1141,19 +1285,29 @@ def _matched_schedule_key(
             _history_path(), rule.schedule_key, date=current.date()
         )
     ]
-    if not due_rules:
-        return False, ""
-    # ``start_time is None`` の行は具体的な時刻より優先度が低い（時刻条件なしの行で
-    # 取得すると、後の時刻の行を再評価する余地がなくなるため）。
-    latest = max(due_rules, key=lambda rule: rule.start_time or dt.time.min)
-    return True, latest.schedule_key
+    if due_rules:
+        # ``start_time is None`` の行は具体的な時刻より優先度が低い（時刻条件なしの行で
+        # 取得すると、後の時刻の行を再評価する余地がなくなるため）。
+        latest = max(due_rules, key=lambda rule: rule.start_time or dt.time.min)
+        return True, latest.schedule_key, ""
+    # 取らない理由を「予定外」と「当日取得済」に分ける。後者は is_due は真だが
+    # 同日内に既に成功履歴があるケースで、再実行で黙って取られなくなる事故の兆候を
+    # 拾えるように区別する
+    any_due = any(rule.is_due(current) for rule in rules_by_report.get(entry.key, ()))
+    if any_due:
+        return False, "", "当日取得済"
+    return False, "", "予定外"
 
 
 def _select_targets(
     entries: dict[str, ReportEntry],
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,
-) -> tuple[list[tuple[ReportEntry, str, ScheduleRule | None]], list[str]]:
+) -> tuple[
+    list[tuple[ReportEntry, str, ScheduleRule | None]],
+    list[str],
+    dict[str, list[str]],
+]:
     """定期取得の対象を「有効」かつ「取得すべき」レポートに絞る。
 
     ``download_scheduled()`` から対象選定ロジックだけを抜き出したヘルパー。
@@ -1169,7 +1323,7 @@ def _select_targets(
     戻り値の ``already_failed`` は常に空リスト。
 
     **「スケジュール」シートに行が無いレポートは取得しない。**
-    ``_matched_schedule_key()`` が ``(False, "")`` を返し、ここでは対象外になる。
+    ``_matched_schedule_key()`` が ``(False, "", ...)`` を返し、ここでは対象外になる。
     ただし「有効」なレポートのうちスケジュール行が 1 つも無いものがあれば、
     1 回の実行につき警告ログを 1 件出す（黙って取らなくなると気づけないため）。
     対象は「有効」なレポートだけ（``enabled=False`` は対象外）。
@@ -1181,24 +1335,45 @@ def _select_targets(
     ``rules_by_report`` に 1 つ以上の ``ScheduleRule`` があるときだけなので、
     この関数が作る ``targets`` の ``ScheduleRule`` は必ず ``None`` 以外。
 
+    戻り値の ``skipped_by_reason`` は「対象外にした管理番号」を理由ごとに分けた
+    ``dict``。キーは「有効×」「スケジュール行なし」「予定外」「当日取得済」の
+    4 値で、値は該当する管理番号のリスト。呼び出し側で 1 実行 1 行の INFO
+    内訳ログと、1 件ごとの DEBUG ログに使う。
+
     Returns:
-        ``(targets, already_failed)``。``targets`` は実際に取得を試みる
-        ``(ReportEntry, schedule_key, ScheduleRule | None)`` のリスト。
+        ``(targets, already_failed, skipped_by_reason)``。``targets`` は実際に
+        取得を試みる ``(ReportEntry, schedule_key, ScheduleRule | None)`` のリスト。
         ``already_failed`` は空（``_download_scheduled_locked()`` の呼び出し
-        シグネチャを保つために残してある）。
+        シグネチャを保つために残してある）。``skipped_by_reason`` は対象外理由を
+        管理番号で引ける ``dict``。
     """
     targets: list[tuple[ReportEntry, str, ScheduleRule | None]] = []
     unscheduled_enabled: list[str] = []
+    skipped: dict[str, list[str]] = {
+        "有効×": [],
+        "スケジュール行なし": [],
+        "予定外": [],
+        "当日取得済": [],
+    }
     for entry in entries.values():
         if not entry.enabled:
+            # 「有効」× のレポートは対象外。理由別の内訳にも積む
+            skipped["有効×"].append(entry.key)
             continue
         rules = rules_by_report.get(entry.key)
         if not rules:
             # 「有効」だがスケジュール行が無い → 取らないが、気づけるよう集める
             unscheduled_enabled.append(entry.key)
+            skipped["スケジュール行なし"].append(entry.key)
             continue
-        is_due, schedule_key = _matched_schedule_key(entry, rules_by_report, current)
+        is_due, schedule_key, skip_reason = _matched_schedule_key(
+            entry, rules_by_report, current
+        )
         if not is_due:
+            # 予定外 / 当日取得済 のどちらかを ``skip_reason`` で返す。
+            # 旧コードは区別していなかったが、内訳ログで「2 回実行しても
+            # 取れていない」を見える化したいため、ここで分ける
+            skipped[skip_reason].append(entry.key)
             continue
         # ``schedule_key`` は取得後に履歴へ記録し、``schedule_succeeded_today()``
         # が再判定に使う
@@ -1214,7 +1389,7 @@ def _select_targets(
             "（管理表の「スケジュール」シートに行を追加してください）",
             "、".join(unscheduled_enabled),
         )
-    return targets, []
+    return targets, [], skipped
 
 
 def _failure_row(

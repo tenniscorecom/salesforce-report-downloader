@@ -410,7 +410,16 @@ class TestBrowserSessionReuse:
         monkeypatch.setattr(
             service_module,
             "_select_targets",
-            lambda *a, **kw: ([(EXCEEDS_ENTRY, "", None)], []),
+            lambda *a, **kw: (
+                [(EXCEEDS_ENTRY, "", None)],
+                [],
+                {
+                    "有効×": [],
+                    "スケジュール行なし": [],
+                    "予定外": [],
+                    "当日取得済": [],
+                },
+            ),
         )
 
         def _fake_download(entry, project, history_path, schedule_key, **kwargs):
