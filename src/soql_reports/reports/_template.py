@@ -29,6 +29,8 @@ class NewReport(SoqlReport):
     # 任意: {"Amount": "金額", "Account.Name": "取引先名"}
     # （無くても ``列名の対応.csv`` から自動置換）
     COLUMN_NAMES: ClassVar[dict[str, str]] = {}
+    # 任意: レポートと範囲が違う SOQL のときだけ ``False`` にする（理由をコメントに書く）
+    CHECK_COUNT: ClassVar[bool] = True
 
     def soql(self) -> str:
         """TODO: 実行する SOQL クエリ文字列を返す。

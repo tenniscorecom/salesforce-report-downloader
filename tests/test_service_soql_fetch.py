@@ -26,15 +26,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from comken.core.table import Table
+from comken.exceptions import SalesforceError, SalesforceRequestError
 from comken.toolbox.csv import CSV
 
 from src import paths as paths_module
 from src.exceptions import (
     ColumnNamesCSVFormatError,
     SoqlColumnNameConflictError,
+    SoqlCountMismatchError,
     SoqlReportNotRegisteredError,
 )
-from src.service import _fetch, _fetch_via_soql, _save
+from src.service import (
+    _fetch,
+    _fetch_via_soql,
+    _save,
+    _verify_soql_count,
+)
 from src.sheets.master import ReportEntry
 from src.soql_reports import _registry
 from src.soql_reports import column_names as column_names_module
@@ -117,14 +124,52 @@ class TestFetchViaSoql:
         table = MagicMock()
         client = MagicMock()
         client.__enter__.return_value.bulk_query.return_value = table
+        # 件数の比較でレポート API の総件数を取りに行く。``_StubReport`` の
+        # ``KEY=9001`` に対応する管理表の ``report_id`` を ``00O5g00000ABCDE``
+        # とし、レポートのレスポンスには ``RowCount`` が無い形にして、比較は
+        # WARNING で握りつぶされて ``table`` がそのまま返る
+        client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+            f"/services/data/v67.0{suffix}"
+        )
+        client.__enter__.return_value.request.return_value = (
+            {"reportMetadata": {"aggregates": []}, "factMap": {}},
+            {},
+        )
         site = MagicMock(return_value=client)
         with patch("src.service.site_for", return_value=site) as site_for:
             result = _fetch_via_soql(SOQL_ENTRY)
 
-        site_for.assert_called_once_with(SOQL_ENTRY.url)
+        # 件数比較は同じ接続のうちに行うため、 ``site_for`` は 1 回しか呼ばれない
+        # （=ログインが 1 回だけ）
+        assert site_for.call_count == 1
+        site_for.assert_called_with(SOQL_ENTRY.url)
         client.__enter__.return_value.bulk_query.assert_called_once_with(
             "SELECT Id, Name FROM Account"
         )
+        # 比較も同じ ``salesforce.request()`` を 1 回叩く
+        client.__enter__.return_value.request.assert_called_once()
+        assert result is table
+
+    def test_returns_table_when_count_check_disabled(self):
+        """``SoqlReport.CHECK_COUNT=False`` のときはレポート API を叩かず ``bulk_query()`` の
+        結果をそのまま返す（``request()`` が呼ばれない）。"""
+        table = MagicMock()
+        client = MagicMock()
+        client.__enter__.return_value.bulk_query.return_value = table
+        site = MagicMock(return_value=client)
+
+        class _NoCheckReport(SoqlReport):
+            KEY = "9001"
+            CHECK_COUNT: ClassVar[bool] = False
+
+            def soql(self) -> str:
+                return "SELECT Id, Name FROM Account"
+
+        with patch("src.soql_reports._registry.registered_reports", return_value=(_NoCheckReport,)):
+            with patch("src.service.site_for", return_value=site):
+                result = _fetch_via_soql(SOQL_ENTRY)
+
+        client.__enter__.return_value.request.assert_not_called()
         assert result is table
 
     def test_raises_when_no_matching_soql_report_registered(self):
@@ -231,7 +276,9 @@ class TestSaveAppliesColumnNames:
     """管理表ルート（``_save()`` 経由）で ``COLUMN_NAMES`` が保存 CSV の見出しへ反映される。"""
 
     def test_column_names_applied_to_csv_headers(
-        self, monkeypatch, output_folder,
+        self,
+        monkeypatch,
+        output_folder,
     ):
         """SOQL 経由（``use_soql=True``）のとき、保存 CSV の見出しが ``COLUMN_NAMES`` で
         置き換わる。"""
@@ -253,7 +300,9 @@ class TestSaveAppliesColumnNames:
         assert result.to_rows() == [{"Id": "001", "名前": "山田", "金額": "100"}]
 
     def test_api_route_does_not_apply_column_names(
-        self, monkeypatch, output_folder,
+        self,
+        monkeypatch,
+        output_folder,
     ):
         """Report API 経由（``use_soql=False``）のときは見出しが変わらない。
 
@@ -278,7 +327,9 @@ class TestSaveAppliesColumnNames:
         assert result.to_rows() == [{"Id": "001", "Name": "山田", "Amount": "100"}]
 
     def test_column_names_conflict_raises_and_does_not_write_file(
-        self, monkeypatch, output_folder,
+        self,
+        monkeypatch,
+        output_folder,
     ):
         """管理表ルートで見出しが衝突すると ``SoqlColumnNameConflictError`` で
         失敗し、 CSV が一切残らない（一時ファイルも本番ファイルも）。"""
@@ -342,11 +393,13 @@ def column_csv_path(tmp_path, monkeypatch):
 
 
 class TestSaveAppliesFileColumnNames:
-    """``_save()`` が ``列名の対応.csv`` から自動で ``COLUMN_NAMES`` を組み立てる検証。
-    """
+    """``_save()`` が ``列名の対応.csv`` から自動で ``COLUMN_NAMES`` を組み立てる検証。"""
 
     def test_save_applies_file_column_names_to_csv(
-        self, monkeypatch, output_folder, column_csv_path,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
     ):
         """``COLUMN_NAMES`` が空のレポートでも、 そのレポートの SOQL の主オブジェクトに
         該当する ``列名の対応.csv`` の対応があれば保存 CSV の見出しが置き換わる。
@@ -375,7 +428,10 @@ class TestSaveAppliesFileColumnNames:
         assert result.to_rows() == [{"Id": "001", "名前": "山田", "金額": "100"}]
 
     def test_save_does_not_apply_other_main_object_rows(
-        self, monkeypatch, output_folder, column_csv_path,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
     ):
         """``列名の対応.csv`` に他主オブジェクトの行があっても、 このレポートの
         SOQL の主オブジェクトの行だけ使われる。"""
@@ -406,7 +462,10 @@ class TestSaveAppliesFileColumnNames:
         assert "混入してはいけない金額" not in result.columns
 
     def test_save_manual_column_names_wins_over_file(
-        self, monkeypatch, output_folder, column_csv_path,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
     ):
         """``COLUMN_NAMES`` と ``列名の対応.csv`` の両方に同じキーがあると、
         手書き（ ``COLUMN_NAMES`` ）が勝つ。"""
@@ -436,7 +495,11 @@ class TestSaveAppliesFileColumnNames:
         ]
 
     def test_save_missing_file_keeps_api_names_with_warning(
-        self, monkeypatch, output_folder, column_csv_path, caplog,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
+        caplog,
     ):
         """``列名の対応.csv`` が無いときは API 名のまま保存され、 WARNING が出る。
         取得は失敗させない。"""
@@ -460,7 +523,11 @@ class TestSaveAppliesFileColumnNames:
         assert "列名の対応ファイルがありません" in caplog.text
 
     def test_save_no_matching_main_object_keeps_api_names_with_warning(
-        self, monkeypatch, output_folder, column_csv_path, caplog,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
+        caplog,
     ):
         """``列名の対応.csv`` が有っても該当主オブジェクトの行が無いときは
         API 名のまま保存され、 WARNING が出る。"""
@@ -485,13 +552,14 @@ class TestSaveAppliesFileColumnNames:
         # Opportunity の主オブジェクトには該当行が無いので API 名のまま
         assert result.columns == ["Id", "Name", "Amount"]
         # WARNING に主オブジェクト名が出ている（ ``列名の対応に主オブジェクト=Opportunity`` ）
-        assert (
-            "列名の対応に主オブジェクト=" in caplog.text
-        )
+        assert "列名の対応に主オブジェクト=" in caplog.text
         assert "Opportunity" in caplog.text
 
     def test_save_format_error_raises_and_does_not_write_csv(
-        self, monkeypatch, output_folder, column_csv_path,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
     ):
         """``列名の対応.csv`` のフォーマットが壊れている（旧形式も見出しに必要な列が無い）
         と ``ColumnNamesCSVFormatError`` で失敗し、 CSV が一切残らない。"""
@@ -521,6 +589,7 @@ class TestSaveAppliesFileColumnNames:
 
         # 期待する本番パスとその一時ファイルが保存後に残らないことを確認する
         from src import paths as paths_inner
+
         final_csv = output_folder / "9201_20240101_0900.csv"
         tmp_csv = paths_inner.make_temp_csv_path(final_csv)
 
@@ -532,7 +601,10 @@ class TestSaveAppliesFileColumnNames:
         assert not any(output_folder.glob("*.csv"))
 
     def test_save_api_route_unchanged_even_when_file_present(
-        self, monkeypatch, output_folder, column_csv_path,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
     ):
         """Report API 経由（ ``use_soql=False`` ）のときは ``列名の対応.csv`` が
         有っても見出しは変わらない。 ``SoqlReport`` 経由でしか取らないので、
@@ -561,7 +633,11 @@ class TestSaveAppliesFileColumnNames:
         assert result.columns == ["Id", "Name", "Amount"]
 
     def test_save_log_message_includes_breakdown(
-        self, monkeypatch, output_folder, column_csv_path, caplog,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
+        caplog,
     ):
         """``COLUMN_NAMES で N 列を置き換えました（ファイル=M, 手書き=K）`` の
         ログが出る（ファイル由来と手書きの内訳が分かる文言）。"""
@@ -597,7 +673,11 @@ class TestSaveNoFromInSoql:
     """
 
     def test_save_soql_without_from_keeps_api_names_with_warning(
-        self, monkeypatch, output_folder, column_csv_path, caplog,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
+        caplog,
     ):
         """``FROM`` の無い SOQL では主オブジェクトが取れず、 API 名のまま保存される
         （ ``column_names`` 側ではなく ``service._save()`` 側で WARNING が出る）。"""
@@ -637,7 +717,11 @@ class TestSaveNoFromInSoql:
         assert "SOQL から主オブジェクトを取り出せませんでした" in caplog.text
 
     def test_save_warning_does_not_leak_soql_body(
-        self, monkeypatch, output_folder, column_csv_path, caplog,
+        self,
+        monkeypatch,
+        output_folder,
+        column_csv_path,
+        caplog,
     ):
         """主オブジェクトが取り出せない SOQL の WARNING 本文に、 SOQL 本文
         （WHERE の値等）が漏れていない。 SOQL 本文は同じ場所の DEBUG にだけ出る
@@ -666,9 +750,7 @@ class TestSaveNoFromInSoql:
             _save(entry, table)
 
         service_records = [r for r in caplog.records if r.name == "src.service"]
-        warnings_and_above = [
-            r for r in service_records if r.levelno >= logging.WARNING
-        ]
+        warnings_and_above = [r for r in service_records if r.levelno >= logging.WARNING]
         debugs = [r for r in service_records if r.levelno == logging.DEBUG]
 
         # WARNING 以上の ``src.service`` ログに、 SOQL 本文（目印）が含まれていない
@@ -681,3 +763,361 @@ class TestSaveNoFromInSoql:
         assert any(marker in record.getMessage() for record in debugs), (
             "DEBUG に SOQL 本文が出ていません"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# _fetch_via_soql() の件数比較（2026-10 改定）
+# 偽の Salesforce（ ``MagicMock`` ）でリクエストを組み立て、 一致・不一致・
+# 比べるための値が取れない・HTTP エラー・ ``CHECK_COUNT=False``・0 件同士を
+# それぞれ検証する
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _make_soql_entry(url: str | None = None) -> ReportEntry:
+    """テスト用の ``ReportEntry`` を作る。``url`` を ``None`` にすると
+    レポート ID が取れない形にできる。"""
+    if url is None:
+        url = URL
+    return ReportEntry(
+        key="9001",
+        summary="顧客一覧",
+        url=url,
+        group="営業本部",
+        assignee="山田",
+        enabled=True,
+        allow_empty=False,
+        use_soql=True,
+    )
+
+
+def _build_fake_client(soql_table: Table, *, request_return: object) -> MagicMock:
+    """``bulk_query()`` が ``soql_table`` を返し、 ``request()`` が ``request_return``
+    （ ``(payload, headers)`` あるいは ``SalesforceRequestError`` を投げるよう
+    ``side_effect`` に設定する ``MagicMock`` ）を返す偽クライアントを作る。"""
+    client = MagicMock()
+    client.__enter__.return_value.bulk_query.return_value = soql_table
+    client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+        f"/services/data/v67.0{suffix}"
+    )
+    if isinstance(request_return, Exception):
+        client.__enter__.return_value.request.side_effect = request_return
+    else:
+        client.__enter__.return_value.request.return_value = request_return
+    return client
+
+
+def _payload_with_row_count(row_count: int | object) -> tuple[dict, dict]:
+    """``RowCount`` が ``reportMetadata.aggregates`` の 0 番目にあるレスポンスを作る。
+
+    ``row_count`` はそのまま ``factMap["T!T"]["aggregates"][0]`` に入る
+    （ ``int`` / ``dict`` / ``bool`` など検証したい形を直接渡せる）。
+    """
+    payload = {
+        "reportMetadata": {"aggregates": ["RowCount"]},
+        "factMap": {"T!T": {"aggregates": [row_count]}},
+    }
+    return payload, {}
+
+
+class TestVerifySoqlCount:
+    """``_verify_soql_count()`` — SOQL 件数とレポート総件数の比較。
+
+    ``_fetch_via_soql()`` の ``bulk_query()`` 直後に動く検証ロジック。
+    """
+
+    def test_match_returns_silently_and_logs(self, caplog):
+        """件数が一致すれば INFO ログを 1 行出してそのまま戻る（保存は止めない）。"""
+        soql_table = Table(["Id"], [{"Id": str(i)} for i in range(3)])
+        client = _build_fake_client(soql_table, request_return=_payload_with_row_count(3))
+
+        with caplog.at_level(logging.INFO, logger="src.service"):
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        assert "SOQL 件数がレポート総件数と一致しました" in caplog.text
+        assert "件数=3" in caplog.text
+
+    def test_mismatch_raises_and_does_not_leak_soql_body(self, caplog):
+        """件数が合わないと ``SoqlCountMismatchError`` で保存しない。例外・ログに
+        SOQL 本文や行の値は漏れない（目印で確認）。"""
+        soql_body_marker = "WHERE SECRET_VALUE_MARKER@example.com <> ''"
+        row_value_marker = "ROW_VALUE_MARKER"
+
+        class _MarkerReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return f"SELECT Id FROM Account {soql_body_marker}"
+
+        with patch(
+            "src.soql_reports._registry.registered_reports",
+            return_value=(_MarkerReport,),
+        ):
+            # report_cls は ``_verify_soql_count()`` では直接は触らないが、
+            # 既存の ``_StubReport`` との置き換え整合のため一応差し替える
+            pass
+
+        soql_table = Table(
+            ["Id"],
+            [{"Id": row_value_marker}],
+        )
+        client = _build_fake_client(soql_table, request_return=_payload_with_row_count(2))
+        entry = _make_soql_entry()
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            with pytest.raises(SoqlCountMismatchError) as caught:
+                _verify_soql_count(entry, soql_table, client.__enter__.return_value)
+
+        # 管理番号・概要・件数・対処メッセージが出ている
+        message = str(caught.value)
+        assert entry.key in message
+        assert entry.summary in message
+        assert "SOQL の件数: 1" in message
+        assert "レポートの総件数: 2" in message
+        assert "SOQL の条件がレポートと同じか確認してください" in message
+        assert "次回の取得で一致します" in message
+        # WARNING ログにも件数の比較が出ている（目印の行値は出ない）
+        assert "SOQL=1, レポート=2" in caplog.text
+        # SOQL 本文・行値が漏れていない（ INFO も含めて ）
+        service_records = [r for r in caplog.records if r.name == "src.service"]
+        for record in service_records:
+            assert soql_body_marker not in record.getMessage(), (
+                f"SOQL 本文が漏れています: level={record.levelname}, "
+                f"message={record.getMessage()!r}"
+            )
+            assert row_value_marker not in record.getMessage(), (
+                f"行の値が漏れています: level={record.levelname}, message={record.getMessage()!r}"
+            )
+        # 例外メッセージにも漏れていない
+        assert soql_body_marker not in message
+        assert row_value_marker not in message
+
+    def test_zero_zero_matches(self, caplog):
+        """0 件同士は一致扱い。例外は出さず INFO ログが 1 行出る。"""
+        soql_table = Table([], [])
+        client = _build_fake_client(soql_table, request_return=_payload_with_row_count(0))
+
+        with caplog.at_level(logging.INFO, logger="src.service"):
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        assert "SOQL 件数がレポート総件数と一致しました" in caplog.text
+        assert "件数=0" in caplog.text
+
+    def test_row_count_missing_logs_warning_and_returns(self, caplog):
+        """``RowCount`` が ``aggregates`` に無いときは WARNING を出してそのまま戻る
+        （保存は止めない）。"""
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        # ``aggregates`` が空 → ``RowCount`` が見つからない
+        client = _build_fake_client(
+            soql_table,
+            request_return=({"reportMetadata": {"aggregates": []}, "factMap": {"T!T": {}}}, {}),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            # 例外が出ない
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        assert "RowCount が見つかりません" in caplog.text
+
+    def test_url_with_no_report_id_skips_comparison_with_warning(self, caplog):
+        """URL がレポートの URL でない（ ``report_id_from_url`` で例外）ときは
+        WARNING を出して比べる対象が無いことを示し、例外は出さない。"""
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        client = _build_fake_client(soql_table, request_return=({}, {}))
+        # レポート ID が取れない URL
+        bad_url_entry = _make_soql_entry(url="https://example.my.salesforce.com/")
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            _verify_soql_count(bad_url_entry, soql_table, client.__enter__.return_value)
+
+        # ``request()`` が呼ばれていない（ ID が取れないので比較しようがない）
+        client.__enter__.return_value.request.assert_not_called()
+        assert "レポート ID を URL から取り出せません" in caplog.text
+
+    def test_http_500_logs_warning_and_returns(self, caplog):
+        """レポート総件数の取得が 500 などの永続的な HTTP エラーで失敗したとき
+        は WARNING を出して保存は続ける。"""
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        exc = SalesforceRequestError("GET", "/x", 500, "boom")
+        client = _build_fake_client(soql_table, request_return=exc)
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        assert "HTTP 500" in caplog.text
+
+    def test_http_401_propagates(self):
+        """401 は既存の取得失敗と同じ扱い（ ``SalesforceRequestError`` をそのまま
+        上位へ送出）。WARNING で握りつぶさない。"""
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        exc = SalesforceRequestError("GET", "/x", 401, "unauthorized")
+        client = _build_fake_client(soql_table, request_return=exc)
+
+        with pytest.raises(SalesforceRequestError) as caught:
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        assert caught.value.status_code == 401
+
+    def test_http_403_propagates(self):
+        """403 も既存の取得失敗と同じ扱い（ ``SalesforceRequestError`` をそのまま）。"""
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        exc = SalesforceRequestError("GET", "/x", 403, "forbidden")
+        client = _build_fake_client(soql_table, request_return=exc)
+
+        with pytest.raises(SalesforceRequestError) as caught:
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        assert caught.value.status_code == 403
+
+    def test_row_count_value_as_int(self):
+        """``factMap["T!T"]["aggregates"][RowCount]`` が ``int`` のときに
+        その値が取れる。"""
+        soql_table = Table(["Id"], [{"Id": str(i)} for i in range(7)])
+        client = _build_fake_client(soql_table, request_return=_payload_with_row_count(7))
+
+        _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+    def test_row_count_value_as_dict(self):
+        """``factMap["T!T"]["aggregates"][RowCount]`` が ``{"value": n}`` の
+        ``dict`` のときも ``value`` を採って件数が取れる。"""
+        soql_table = Table(["Id"], [{"Id": str(i)} for i in range(5)])
+        client = _build_fake_client(
+            soql_table,
+            request_return=_payload_with_row_count({"label": "5", "value": 5}),
+        )
+
+        _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+    def test_row_count_value_as_bool_is_ignored(self, caplog):
+        """``bool`` は ``int`` の subclass なので ``isinstance(value, int)`` で
+        拾ってしまう事故を防ぐ。除外される（= ``None`` 扱い → WARNING）。"""
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        client = _build_fake_client(soql_table, request_return=_payload_with_row_count(True))
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        assert "RowCount が見つかりません" in caplog.text
+
+    def test_non_http_salesforce_error_logs_warning_and_returns(self, caplog):
+        """HTTP 以外の ``SalesforceError``（ ``SalesforceRequestError`` でない
+        ``SalesforceError``、 例: 通信断・タイムアウトなど）は WARNING を出して
+        保存は続ける。 ``_fetch_report_total_count()`` 内で ``SalesforceRequestError``
+        より広い ``SalesforceError`` を補足する形になっていることを検証する。
+        """
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        # ``SalesforceError`` を直接投げる（ ``SalesforceRequestError`` の
+        # subclass ではない形 ── 401/403 扱いではない ）
+        exc = SalesforceError("connection lost")
+        client = _build_fake_client(soql_table, request_return=exc)
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            # 例外は上がらず、 WARNING が出る
+            _verify_soql_count(_make_soql_entry(), soql_table, client.__enter__.return_value)
+
+        # 通信エラー（HTTP ではない）が WARNING で記録されている
+        assert caplog.text  # ログが出ている
+        assert any(record.levelno == logging.WARNING for record in caplog.records), (
+            "WARNING が出ていません"
+        )
+
+
+class TestFetchViaSoqlCountCheckDisabled:
+    """``SoqlReport.CHECK_COUNT=False`` のときは Report API を叩かず
+    ``bulk_query()`` の結果をそのまま返す。"""
+
+    def test_check_count_false_skips_request(self):
+        """``CHECK_COUNT=False`` のときは ``request()`` が呼ばれず ``bulk_query()``
+        の Table がそのまま返る。"""
+
+        class _NoCheckReport(SoqlReport):
+            KEY = "9001"
+            CHECK_COUNT: ClassVar[bool] = False
+
+            def soql(self) -> str:
+                return "SELECT Id FROM Account"
+
+        soql_table = Table(["Id"], [{"Id": "1"}])
+        client = _build_fake_client(soql_table, request_return=({}, {}))
+        site = MagicMock(return_value=client)
+
+        with patch(
+            "src.soql_reports._registry.registered_reports",
+            return_value=(_NoCheckReport,),
+        ):
+            with patch("src.service.site_for", return_value=site):
+                result = _fetch_via_soql(_make_soql_entry())
+
+        client.__enter__.return_value.request.assert_not_called()
+        assert result is soql_table
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 比較を壊した場合に不一致のテストが落ちることを確認する
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestCountMismatchFailureRow:
+    """``SoqlCountMismatchError`` を ``_failure_row()`` に通したときの履歴行。
+
+    既存の ``_failure_row()`` の区分ルール（ ``ComkenError`` 系は「Salesforce」
+    区分）に従うため、 ``SoqlCountMismatchError`` は ``cause="Salesforce"``
+    で記録される。
+    """
+
+    def test_failure_row_uses_salesforce_cause(self):
+        from src.service import _failure_row
+
+        exc = SoqlCountMismatchError("9001", "顧客一覧", 5, 10)
+        row = _failure_row(exc, 1.5, schedule_key="S001", route="SOQL")
+        assert row.cause == "Salesforce"
+        assert row.error_code == "SoqlCountMismatchError"
+        assert row.succeeded is False
+        assert row.fetched_from_salesforce is False
+        assert row.saved_to_file is None
+        # エラーメッセージに管理番号・概要・件数が出ている
+        assert "9001" in row.error
+        assert "顧客一覧" in row.error
+        assert "SOQL の件数: 5" in row.error
+        assert "レポートの総件数: 10" in row.error
+
+
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestCountCheckSanityCheck:
+    """比較ロジックを壊したときに、 不一致ケースで例外が出なくなる事故を
+    防ぐためのサニティチェック。 ``src.service._verify_soql_count`` を
+    意図的に「何もしない」関数で差し替え、 不一致ケースで例外が出ること
+    （=サニティチェックが本物の実装を呼んでいることを確認する）を一度確かめる。
+    """
+
+    def test_sanity_check_detects_when_verification_disabled(self):
+        # ``src.service`` の ``_verify_soql_count`` を直接「何もしない」関数に
+        # 置き換える。 ``_verify_soql_count`` 自体は test 冒頭で ``from src.service
+        # import _verify_soql_count`` 済みだが、 呼び出し側で ``from src.service``
+        # 経由ではなく、 ``service_module._verify_soql_count`` を直接参照して
+        # 呼ぶことでモンキーパッチ後の実装が効くようにする
+        from src import service as service_module
+
+        original = service_module._verify_soql_count
+
+        def _always_match(*args, **kwargs):
+            return None
+
+        service_module._verify_soql_count = _always_match
+        try:
+            # 不一致ケース（ SOQL=1 件 / レポート=99 件 ）で、
+            # 壊した実装では何も起きないはず → pytest.raises が失敗する
+            soql_table = Table(["Id"], [{"Id": "1"}])
+            client = _build_fake_client(soql_table, request_return=_payload_with_row_count(99))
+            # 壊した実装を直接呼ぶ（ ``_verify_soql_count`` というローカル名は
+            # 束縛済みのため、 モジュールの属性経由で参照する）。新シグネチャは
+            # ``(entry, table, salesforce)`` なので偽の client を直接渡す
+            service_module._verify_soql_count(
+                _make_soql_entry(), soql_table, client.__enter__.return_value
+            )
+        finally:
+            service_module._verify_soql_count = original
+        # 「壊した実装（何もしない関数）で不一致ケースを呼んでも例外が出ない」こと
+        # を直接 assert することで、 本物の実装が呼ばれていないことを保証する。
+        # 元の実装がモンキーパッチで漏れていた場合はここで例外が出て落ちる

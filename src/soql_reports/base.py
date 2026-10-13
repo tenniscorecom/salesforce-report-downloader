@@ -61,10 +61,22 @@ class SoqlReport:
             ``{SOQL列名: 表示名}`` を引き、 ``COLUMN_NAMES`` とマージする
             （手書き優先）。主オブジェクト名は Salesforce の API 名と同じく
             大文字小文字を区別しない。
+        CHECK_COUNT: SOQL で取った件数を、レポート API の総件数と毎回比較するか。
+            **既定は ``True``**（=比較する）。``_fetch_via_soql()`` が
+            ``bulk_query()`` の直後、同じ接続のうちにもう 1 度 Report API を
+            叩いて ``factMap["T!T"]["aggregates"]`` の ``RowCount`` を取り、
+            ``len(table)`` と比べる。一致しなければ ``SoqlCountMismatchError``
+            で失敗扱い（保存しない）。比べるためのレポート ID が URL から
+            取れない／``RowCount`` が無い／401・403 以外の HTTP エラーは
+            WARNING を出して保存を続ける（401・403 は既存の失敗扱いに揃える）。
+            **意図的にレポートと範囲が違う SOQL を書くときだけ** ``False`` に
+            する（``False`` にする理由を ``#`` コメントに書く）。件数一致は
+            中身の一致を意味しない点に注意。
     """
 
     KEY: ClassVar[str] = ""
     COLUMN_NAMES: ClassVar[dict[str, str]] = {}
+    CHECK_COUNT: ClassVar[bool] = True
 
     def soql(self) -> str:
         """実行する SOQL クエリ文字列を返す。サブクラスで実装する。"""

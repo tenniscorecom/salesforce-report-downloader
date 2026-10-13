@@ -360,7 +360,17 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
         # SOQL クエリで 0 件 → ``SalesforceRequestError`` ではなく空 Table
         from comken.core.table import Table
 
-        soql_client.__enter__.return_value.query.return_value = Table(["名前", "金額"], [])
+        soql_client.__enter__.return_value.bulk_query.return_value = Table(["名前", "金額"], [])
+        # 件数の比較でレポート API の総件数を取りに行く。 ``RowCount`` が無い形に
+        # して WARNING で握りつぶし、 0 件 + ``allow_empty=False`` の ``EmptyReportError``
+        # だけが失敗として伝わる形にする
+        soql_client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+            f"/services/data/v67.0{suffix}"
+        )
+        soql_client.__enter__.return_value.request.return_value = (
+            {"reportMetadata": {"aggregates": []}, "factMap": {}},
+            {},
+        )
         soql_site.return_value = soql_client
         with (
             patch("src.service.site_for", return_value=soql_site),

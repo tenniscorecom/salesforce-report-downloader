@@ -19,6 +19,7 @@ __all__ = [
     "GroupNotRegisteredError",
     "SoqlReportNotRegisteredError",
     "SoqlColumnNameConflictError",
+    "SoqlCountMismatchError",
     "ColumnNamesCSVFormatError",
     "EmptyReportError",
     "ReportFolderNotFoundError",
@@ -130,6 +131,42 @@ class SoqlColumnNameConflictError(DownloaderError):
             lines.append(f"  「{header}」: {joined}")
         lines.append("COLUMN_NAMES を見直して、衝突している列を別の見出しに分けてください。")
         super().__init__("\n".join(lines))
+
+
+class SoqlCountMismatchError(DownloaderError):
+    """SOQL で取った件数が、 レポート API で取った件数と合わない
+
+    SOQL は人や AI が ``SoqlReport.soql()`` に書くもので、条件の書き間違いで
+    レポートと違う範囲を取得することがある（期間・条件・参照項目の取り違え）。
+    件数の比較は **取得のたびに** 毎回行われ、 **合わなければ保存しない**
+    （ファイルも一時ファイルも作らない）。 **件数一致は中身の一致を意味
+    しない** — 偶然件数が一致してもレコードの値が食い違うことはあり得る。
+
+    0 件同士のときは一致扱いとする（``ALLOW_EMPTY`` の判定はその後で動く）。
+
+    発生箇所: ``src.service`` の ``_fetch_via_soql()`` （``bulk_query()`` 直後、
+    同じ接続のうちにもう 1 度 ``Report API`` を叩いて総件数を取得する）
+
+    対処:
+        ``SoqlReport.soql()`` の条件がレポートの条件と一致しているか確認する。
+        取得の間に Salesforce 側のデータが変わった場合は、次回の取得で一致
+        することがある
+    """
+
+    def __init__(
+        self,
+        report_key: str,
+        summary: str,
+        soql_count: int,
+        report_count: int,
+    ) -> None:
+        super().__init__(
+            f"SOQL の件数とレポートの総件数が一致しませんでした: {report_key}（{summary}）\n"
+            f"SOQL の件数: {soql_count}\n"
+            f"レポートの総件数: {report_count}\n"
+            "SOQL の条件がレポートと同じか確認してください。"
+            "データが取得の間に変わった場合は次回の取得で一致します。"
+        )
 
 
 class ColumnNamesCSVFormatError(DownloaderError):
