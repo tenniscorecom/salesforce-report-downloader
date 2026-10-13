@@ -6,6 +6,10 @@
 ``KEY`` が空のまま残すと登録時にエラーになるので、**必ず管理番号を埋めてから**
 使うこと。書き方は ``base.py`` のモジュール docstring、詳しい手順は
 ``docs/salesforce-downloader.md``「SOQLレポート（2000件超のレポートを移行する）」を参照。
+
+``COLUMN_NAMES`` を書かなくても、 ``soql-collector`` の出力先（``OUTPUT_DIR``）が
+``COLUMN_NAMES_CSV_PATH`` のフォルダにあれば ``列名の対応.csv`` から自動で
+置き換わる。手書きは「直したい列だけ書けばよい」（同じキーは手書きが勝つ）。
 """
 
 from typing import ClassVar
@@ -18,6 +22,7 @@ class NewReport(SoqlReport):
 
     KEY = ""  # TODO: 社内で決める管理番号（例: "9001"）
     # 任意: {"Amount": "金額", "Account.Name": "取引先名"}
+    # （無くても ``列名の対応.csv`` から自動置換）
     COLUMN_NAMES: ClassVar[dict[str, str]] = {}
 
     def soql(self) -> str:

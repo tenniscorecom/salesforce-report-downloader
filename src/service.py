@@ -98,6 +98,7 @@ from src.sheets.master import (
 )
 from src.sheets.schedule import ScheduleRule, load_schedule
 from src.soql_reports import soql_report_for
+from src.soql_reports.column_names import load_column_names_for
 from src.soql_reports.runner import _apply_column_names
 
 if TYPE_CHECKING:
@@ -1151,27 +1152,44 @@ def _save(
         # **SOQL 経由のときだけ ``COLUMN_NAMES`` を適用する。** 管理表の
         # 「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
         # 取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への
-        # 対応表を持っている。ここで ``table`` を見出しだけ差し替えてから
-        # CSV に書く。見出しが衝突すると ``SoqlColumnNameConflictError``
-        # が送出されるが、その場合は ``_write_csv`` 前に ``except`` へ
-        # 流れるので CSV は書かれない。Report API / ブラウザ経由は
-        # そのまま（``SoqlReport`` を見ない）。
+        # 対応表を持っている。 2026-10 から ``soql-collector`` が出す
+        # ``列名の対応.csv`` からも自動で拾う（手書きが無い列や新しい
+        # レポートでも、soql-collector を一度走らせれば反映される）。
+        # ``COLUMN_NAMES`` の **手書きは優先**（同じキーは手書きが勝つ）
+        # — 「直したい列だけ書けばよい」を崩さないため。
+        # 見出しが衝突すると ``SoqlColumnNameConflictError`` が送出される
+        # が、その場合は ``_write_csv`` 前に ``except`` へ流れるので CSV は
+        # 書かれない。 Report API / ブラウザ経由はそのまま（``SoqlReport`` を
+        # 見ない）。
         if entry.use_soql:
             report_cls = soql_report_for(entry.key)
             original_columns = list(table.columns)
-            table = _apply_column_names(report_cls, table)
-            # 実際に置き換わった列数だけ INFO に出す（0 件 = 全部元の見出しのまま
-            # なら出さない）。列名そのものは見出しに過ぎず、認証情報にも
-            # レポートの値にも触れないので INFO で出してよい
-            replaced_count = sum(
-                1
-                for original, new in zip(original_columns, table.columns, strict=True)
-                if original != new
-            )
+            # ``列名の対応.csv`` から、この管理番号に該当する行だけを引く。
+            # ファイルが無い / 該当行が無い / フォーマット不正はライブラリ側で
+            # WARNING or 例外に振り分けて、ここでは戻り値だけ受け取る
+            extra = load_column_names_for(entry.key)
+            table = _apply_column_names(report_cls, table, extra=extra)
+            # 実際に置き換わった列数を出所別に数える（手書きが ``column_names``
+            # に勝ち、かつ wins が元と変わった列だけが「手書きで置換」扱い）。
+            # 0 件 = 全部元の見出しのままなら出さない（ログを常に汚さない
+            # ように）。列名そのものは見出しに過ぎず、認証情報にもレポート
+            # の値にも触れないので INFO で出してよい
+            file_replaced = 0
+            manual_replaced = 0
+            for col in original_columns:
+                if col in report_cls.COLUMN_NAMES:
+                    if report_cls.COLUMN_NAMES[col] != col:
+                        manual_replaced += 1
+                elif col in extra:
+                    if extra[col] != col:
+                        file_replaced += 1
+            replaced_count = file_replaced + manual_replaced
             if replaced_count > 0:
                 logger.info(
-                    "COLUMN_NAMES で %d 列を置き換えました: 管理番号=%s",
+                    "COLUMN_NAMES で %d 列を置き換えました（ファイル=%d, 手書き=%d）: 管理番号=%s",
                     replaced_count,
+                    file_replaced,
+                    manual_replaced,
                     entry.key,
                 )
         _write_csv(tmp_path, table)

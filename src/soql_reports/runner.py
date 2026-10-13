@@ -8,6 +8,10 @@ SOQLレポートの取得・保存は **管理表ルートだけ** に統一し�
 ``_apply_column_names()`` を ``src.service`` 側に置かないのは、SOQL の
 列名変換の責務を ``soql_reports`` パッケージに閉じるため（``SoqlReport``
 と ``SoqlColumnNameConflictError`` が同じ場所にあるほうが読みやすい）。
+
+2026-10 に ``soql-collector`` の ``列名の対応.csv`` からの自動取り込みを
+追加した。``SoqlReport.COLUMN_NAMES`` の手書きは **そのまま優先**され、
+``extra``（``列名の対応.csv`` から読んだ dict）は補助としてマージされる。
 """
 
 from __future__ import annotations
@@ -18,22 +22,39 @@ from src.exceptions import SoqlColumnNameConflictError
 from src.soql_reports.base import SoqlReport
 
 
-def _apply_column_names(report_cls: type[SoqlReport], table: Table) -> Table:
-    """``SoqlReport.COLUMN_NAMES`` に従って SOQL の結果列を人が読む見出しへ置き換える。
+def _apply_column_names(
+    report_cls: type[SoqlReport],
+    table: Table,
+    *,
+    extra: dict[str, str] | None = None,
+) -> Table:
+    """``SoqlReport.COLUMN_NAMES`` と ``extra`` をマージ（手書き優先）して
+    SOQL の結果列を人が読む見出しへ置き換える。
 
-    ``COLUMN_NAMES`` が空なら ``table`` をそのまま返す（従来どおりの出力）。
-    結果の列に無いキーは無視する（SOQL を後から変えても対応表を貼り直さずに
-    済むように）。列の並び順は元のまま。置き換え後の見出しが 2 つ以上
-    重なる場合は ``SoqlColumnNameConflictError`` を送出する（CSV は書かれ
-    ない）。
+    マージは ``{**extra, **report_cls.COLUMN_NAMES}`` の形で行うため、
+    同じキーが ``extra`` と ``COLUMN_NAMES`` の両方にあると
+    ``COLUMN_NAMES``（手書き）が勝つ。手書きは「直したい列だけ書けば
+    よい」を意図しているので、soql-collector が拾いそこねた列や、
+    意図的に別名にしている列が必ず反映される。
+
+    ``extra`` と ``COLUMN_NAMES`` がどちらも空なら ``table`` をそのまま
+    返す（API 名の見出しがそのまま CSV に出る）。
+
+    結果の列に無いキーは無視する（SOQL を後から変えても対応表を貼り直さ
+    ずに済むように）。列の並び順は元のまま。置き換え後の見出しが 2 つ
+    以上重なる場合は ``SoqlColumnNameConflictError`` を送出する
+    （CSV は書かれない）。
     """
-    column_names = report_cls.COLUMN_NAMES
+    # マージは手書き優先。手書きの ``COLUMN_NAMES`` が無いときだけ
+    # ``extra``（``列名の対応.csv`` 由来）が使われる形にする
+    column_names: dict[str, str] = dict(extra or {})
+    column_names.update(report_cls.COLUMN_NAMES)
     if not column_names:
         return table
-    # 元の列順を保ったまま、``COLUMN_NAMES`` にある列だけ表示名へ差し替える。
+    # 元の列順を保ったまま、マージ済みの対応にある列だけ表示名へ差し替える。
     new_columns = [column_names.get(col, col) for col in table.columns]
     # 衝突の見出しを先に集める（``table.select(...)`` に進む前に弾く）。
-    # 重複の判定は ``new_columns`` 全体に対して行う。``COLUMN_NAMES``
+    # 重複の判定は ``new_columns`` 全体に対して行う。 ``column_names``
     # に登録されていない列も、置き換え後の見出しが他と重なれば衝突になる
     # （CSV に同じ列名が 2 回現れて何が何だかにするため）。 ``sources``
     # には元の列名をそのまま入れる（登録しなかった列も「元はどの列だったか」

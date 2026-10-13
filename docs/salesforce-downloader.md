@@ -864,11 +864,24 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
 （`SELECT` を後から変えても対応表を貼り直さずに済む）。
 
+**2026-10 に `soql-collector` の出力から自動で置き換える方式を追加した。**
+`soql-collector` の出力先（`OUTPUT_DIR`）を
+[`COLUMN_NAMES_CSV_PATH`](../../sfdl-autocol/src/paths.py)（既定
+`\\server\share\tools\salesforce\soql-collector\列名の対応.csv`）
+のフォルダに合わせておけば、 `COLUMN_NAMES` を 1 つも書かなくても見出しが
+置き換わる。新しく SOQL にしたレポートや、レポートの列を変えたときは
+`soql-collector` を **1 回実行する**だけで `列名の対応.csv` に追記される
+（管理番号ごとのファイルを **増やさない**設計）。
+
+`COLUMN_NAMES` は **直したい列だけ書けばよい**。同じキーは手書きが
+`soql-collector` の対応に優先して勝つ（「ここだけ別名にしたい」という
+要望に、 `COLUMN_NAMES` への追記だけで応えられる）。
+
 ```python
 class LargeSalesReport(SoqlReport):
     KEY = "9001"
     COLUMN_NAMES = {
-        "Name": "商談名",
+        "Name": "商談名",  # 手書き: soql-collector の対応より優先
         "Amount": "金額",
         "Account.Name": "取引先名",
     }
@@ -880,7 +893,11 @@ class LargeSalesReport(SoqlReport):
 置き換え後の見出しが 2 つ以上重なると `SoqlColumnNameConflictError`（`DownloaderError` 系）
 で失敗扱いになり、CSV は書かれない。重なった見出しと元の列名はメッセージに出るので、
 `COLUMN_NAMES` を見直して別の見出しに分ける。
-`COLUMN_NAMES` が空（既定値）のときは何もしないので、既存のレポートはそのまま動く。
+`COLUMN_NAMES` も `列名の対応.csv` にも無い列は API 名のまま CSV に出る。
+`列名の対応.csv` が見つからない、または該当管理番号の行が無いときは WARNING を
+出して API 名のまま保存する（取得は止めない）。 `列名の対応.csv` の形式が壊れて
+いる（必要な列が無い、読めない）ときは `ColumnNamesCSVFormatError` で
+取得を止めるので、フォーマットを確認する。
 
 ### 取り方
 
@@ -905,12 +922,18 @@ URL・保存先・0件可否はすべて管理表の `ReportEntry` から取り�
 `MasterRowValueError` / `CachedReportNotFoundError` / `EmptyReportError` /
 `ReportFolderNotFoundError` / `ScheduledDownloadFailedError` /
 `BrowserFallbackFailedError` / `BrowserFallbackIncompleteError` /
-`SavedFileEmptyError`（いずれも `comken/exceptions/downloader.py` もしくは
+`SavedFileEmptyError` / `SoqlColumnNameConflictError` /
+`ColumnNamesCSVFormatError`（いずれも `comken/exceptions/downloader.py` もしくは
 `src/exceptions.py`）。`BrowserFallbackIncompleteError` は自動切替しても
 ブラウザで 2000 行以下しか取れなかったときに送出される
 （[自動切替](#自動切替) 参照）。`SavedFileEmptyError` は
 ファイル書き出し後に 0 バイトだったとき（保存先の同期・セキュリティ
 ソフト等の影響が疑われる）に送出される。
+`SoqlColumnNameConflictError` は [`COLUMN_NAMES`](#出力-csv-の見出しを人が読む列名に置き換えるcolumn_names)
+で置き換え後の見出しが 2 つ以上重なったとき。`ColumnNamesCSVFormatError` は
+`列名の対応.csv`（`soql-collector` が出す、SOQL 列名→表示名の対応表）
+のフォーマットが壊れている／読めないときに送出される（ファイルが無い／
+該当管理番号の行が無いケースは `WARNING` だけで取得は続く）。
 
 定期取得で 1 件以上失敗した場合は **取得できたものを保存したうえで**例外で知らせる
 （`DownloaderError` が SOQL 経路向けに担う。`SalesforceError` 経由で
