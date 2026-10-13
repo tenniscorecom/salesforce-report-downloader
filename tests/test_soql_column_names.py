@@ -1,7 +1,12 @@
 """``src.soql_reports.column_names`` の単体テスト。
 
-``soql-collector`` の出力 ``列名の対応.csv`` を読み、管理番号に対応する
+``soql-collector`` の出力 ``列名の対応.csv`` を読み、主オブジェクトに対応する
 ``{SOQL列名: 表示名}`` を返すヘルパーの挙動を確認する。
+
+**2026-10 改定:** ``列名の対応.csv`` は管理番号ごとのファイルではなく、
+**全体で 1 ファイル** にまとめた形式になった。 列は ``主オブジェクト, SOQL列名,
+表示名, 備考, 更新日`` の並びで、 ``(主オブジェクト, SOQL列名)`` が同じなら
+どのレポートでも同じ ``表示名`` を返す。 テストはこの新形式に合わせて書く。
 """
 
 from __future__ import annotations
@@ -18,21 +23,20 @@ from src import paths as paths_module
 from src.exceptions import ColumnNamesCSVFormatError
 from src.soql_reports import column_names as column_names_module
 from src.soql_reports.base import SoqlReport
-from src.soql_reports.column_names import load_column_names_for
+from src.soql_reports.column_names import extract_main_object, load_column_names_for
 from src.soql_reports.runner import _apply_column_names
 
-# テストで使う ``列名の対応.csv`` のヘッダ順。``column_names._REQUIRED_COLUMNS``
-# ＋「概要」。 soql-collector 側との取り決めで、人が「この行は何のレポートか」
-# を見るときに使う列
-_HEADER: list[str] = ["管理番号", "概要", "SOQL列名", "表示名", "備考"]
+# テストで使う ``列名の対応.csv`` のヘッダ順。 ``column_names._REQUIRED_COLUMNS``
+# ＋「備考」「更新日」。 人が読む列は ``soql-collector`` との取り決めで
+# 後ろに置く（= 必須列の先頭 ``主オブジェクト, SOQL列名, 表示名`` と区別する）。
+_HEADER: list[str] = ["主オブジェクト", "SOQL列名", "表示名", "備考", "更新日"]
 
 
 def _write_csv(path: Path, rows: list[list[str]]) -> None:
     """``列名の対応.csv`` を ``comken.toolbox.csv.CSV`` で書く（soql-collector と同じ形）。
 
-    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（``CSV`` クラスの既定）。
-    ヘッダは ``_HEADER`` の順で固定し、 ``rows`` はデータ行の ``list[list[str]]``
-    （呼び出し側の書き味を ``,`` 結合の手書きに揃えている）。
+    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（ ``CSV`` クラスの既定）。
+    ヘッダは ``_HEADER`` の順で固定し、 ``rows`` はデータ行の ``list[list[str]]`` 。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     dict_rows = [dict(zip(_HEADER, row, strict=True)) for row in rows]
@@ -40,35 +44,97 @@ def _write_csv(path: Path, rows: list[list[str]]) -> None:
         csv_file.replace(dict_rows)
 
 
+class TestExtractMainObject:
+    """``extract_main_object()`` の挙動確認。"""
+
+    def test_returns_first_from_keyword(self):
+        """``FROM Account`` から主オブジェクト ``Account`` を返す。"""
+        assert extract_main_object("SELECT Id, Name FROM Account") == "Account"
+
+    def test_handles_lowercase_from(self):
+        """小文字 ``from`` でも取り出せる（大文字小文字を区別しない）。"""
+        assert extract_main_object("SELECT Id, Name from account") == "account"
+
+    def test_handles_mixed_case(self):
+        """``From`` / ``FROM`` のような大小混在でも取り出せる。"""
+        assert extract_main_object("select id, name From Account") == "Account"
+
+    def test_handles_multiline_soql(self):
+        """改行を含む SOQL でも最初の ``FROM`` を取り出せる。"""
+        soql = (
+            "SELECT Id, Name,\n"
+            "       Account.Name\n"
+            "FROM Opportunity\n"
+            "WHERE CloseDate >= 2024-01-01"
+        )
+        assert extract_main_object(soql) == "Opportunity"
+
+    def test_handles_where_clause(self):
+        """``FROM Account WHERE ...`` のように ``WHERE`` が後ろでも問題ない。"""
+        assert (
+            extract_main_object("SELECT Id FROM Account WHERE CreatedDate = TODAY")
+            == "Account"
+        )
+
+    def test_handles_underscore_in_name(self):
+        """主オブジェクト名に ``_`` を含むパターンもそのまま取り出す。"""
+        assert extract_main_object("SELECT Id FROM Custom_Object__c") == "Custom_Object__c"
+
+    def test_returns_none_when_no_from(self):
+        """``FROM`` がない SOQL では ``None`` を返す。"""
+        assert extract_main_object("SELECT Id, Name") is None
+        assert extract_main_object("") is None
+
+    def test_first_from_wins(self):
+        """``FROM`` が複数あっても最初のものを返す。 通常は無い形だが、防御的に。"""
+        soql = "SELECT Id FROM Account WHERE Id IN (SELECT Id FROM Contact)"
+        assert extract_main_object(soql) == "Account"
+
+
 class TestLoadColumnNamesFor:
     """``load_column_names_for()`` の挙動確認。"""
 
-    def test_returns_matching_report_keys_only(self, csv_path: Path):
-        """複数管理番号が混在するファイルから ``report_key`` に該当する行だけを返す。"""
+    def test_returns_matching_main_object_only(self, csv_path: Path):
+        """複数主オブジェクトが混在するファイルから ``main_object`` に該当する行だけを返す。"""
         _write_csv(
             csv_path,
             [
-                ["9001", "顧客一覧", "Name", "名前", ""],
-                ["9002", "売上実績", "Amount", "金額", ""],
-                ["9001", "顧客一覧", "Amount", "金額", ""],
+                ["Account", "Name", "名前", "", "2026-10-01"],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
+                ["Account", "Industry", "業種", "", "2026-10-01"],
             ],
         )
-        result = load_column_names_for("9001")
+        result = load_column_names_for("Account")
 
-        assert result == {"Name": "名前", "Amount": "金額"}
+        assert result == {"Name": "名前", "Industry": "業種"}
 
-    def test_other_report_key_rows_are_ignored(self, csv_path: Path):
-        """他管理番号の行があっても ``report_key`` の行だけ返る（混入防止）。"""
+    def test_other_main_object_rows_are_ignored(self, csv_path: Path):
+        """他主オブジェクトの行があっても ``main_object`` の行だけ返る（混入防止）。"""
         _write_csv(
             csv_path,
             [
-                ["9002", "売上実績", "Amount", "金額", ""],
-                ["9003", "案件一覧", "Name", "名前", ""],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
+                ["Contact", "LastName", "姓", "", "2026-10-01"],
             ],
         )
-        result = load_column_names_for("9001")
-        # 9001 には何も無いので空 dict（行が無い旨の WARNING は下で検証）
+        result = load_column_names_for("Account")
+        # Account の行は無いので空 dict
         assert result == {}
+
+    def test_main_object_comparison_is_case_insensitive(self, csv_path: Path):
+        """主オブジェクト名は大文字小文字を区別しない（Salesforce の API 名仕様）。"""
+        # ファイル側は小文字
+        _write_csv(
+            csv_path,
+            [
+                ["account", "Name", "名前", "", "2026-10-01"],
+                ["account", "Industry", "業種", "", "2026-10-01"],
+            ],
+        )
+        # 引数側は大文字でも一致する
+        assert load_column_names_for("Account") == {"Name": "名前", "Industry": "業種"}
+        assert load_column_names_for("ACCOUNT") == {"Name": "名前", "Industry": "業種"}
+        assert load_column_names_for("account") == {"Name": "名前", "Industry": "業種"}
 
     def test_missing_file_returns_empty_with_warning(
         self, csv_path: Path, caplog: pytest.LogCaptureFixture,
@@ -77,7 +143,7 @@ class TestLoadColumnNamesFor:
         # csv_path は指すが実ファイルは作らない
         assert not csv_path.exists()
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            result = load_column_names_for("9001")
+            result = load_column_names_for("Account")
 
         assert result == {}
         # WARNING に「列名の対応ファイルがありません」「API 名のまま保存します」
@@ -86,22 +152,22 @@ class TestLoadColumnNamesFor:
         assert "API 名のまま保存します" in caplog.text
         assert str(csv_path) in caplog.text
 
-    def test_no_matching_report_key_returns_empty_with_warning(
+    def test_no_matching_main_object_returns_empty_with_warning(
         self, csv_path: Path, caplog: pytest.LogCaptureFixture,
     ):
-        """ファイルは有るが該当管理番号の行が無い → 空 dict + WARNING。"""
+        """ファイルは有るが該当主オブジェクトの行が無い → 空 dict + WARNING。"""
         _write_csv(
             csv_path,
             [
-                ["9002", "売上実績", "Amount", "金額", ""],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            result = load_column_names_for("9001")
+            result = load_column_names_for("Account")
 
         assert result == {}
-        # WARNING に「行がありません」「soql-collector で取ってください」が出ている
-        assert "9001" in caplog.text
+        # WARNING に「主オブジェクト=Account」「行がありません」「soql-collector で取ってください」
+        assert "Account" in caplog.text
         assert "行がありません" in caplog.text
         assert "soql-collector" in caplog.text
 
@@ -114,72 +180,103 @@ class TestLoadColumnNamesFor:
         _write_csv(csv_path, [])
 
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            result = load_column_names_for("9001")
+            result = load_column_names_for("Account")
 
         # 空 dict + 「行が無い」 WARNING。 取得は止めない
         assert result == {}
-        assert "9001" in caplog.text
+        assert "Account" in caplog.text
         assert "行がありません" in caplog.text
         assert "soql-collector" in caplog.text
-
-    def test_duplicate_rows_are_skipped(
-        self, csv_path: Path, caplog: pytest.LogCaptureFixture,
-    ):
-        """備考が ``表示名が重複`` の行はスキップされ、SOQL列名が WARNING に並ぶ。"""
-        _write_csv(
-            csv_path,
-            [
-                ["9001", "顧客一覧", "Name", "名前", ""],
-                ["9001", "顧客一覧", "Amount", "金額", ""],
-                ["9001", "顧客一覧", "Account.Name", "取引先名", "表示名が重複"],
-            ],
-        )
-        with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            result = load_column_names_for("9001")
-
-        assert result == {"Name": "名前", "Amount": "金額"}
-        assert "Account.Name" in caplog.text
-        assert "重複" in caplog.text
-        # Account.Name は結果に含まれない（重複行として除外された）
-        assert "Account.Name" not in result
 
     def test_empty_soql_or_display_rows_are_skipped(self, csv_path: Path):
         """SOQL列名または表示名が空の行は飛ばす（例外にはしない）。"""
         _write_csv(
             csv_path,
             [
-                ["9001", "顧客一覧", "Name", "名前", ""],
+                ["Account", "Name", "名前", "", "2026-10-01"],
                 # SOQL列名が空
-                ["9001", "顧客一覧", "", "取引先名", ""],
+                ["Account", "", "業種", "", "2026-10-01"],
                 # 表示名が空
-                ["9001", "顧客一覧", "Amount", "", ""],
+                ["Account", "Industry", "", "", "2026-10-01"],
             ],
         )
-        result = load_column_names_for("9001")
+        result = load_column_names_for("Account")
+        assert result == {"Name": "名前"}
+
+    def test_notes_and_updated_at_are_ignored(self, csv_path: Path):
+        """``備考`` と ``更新日`` 列は人が読むメタ列で、読み込みでは使わない。"""
+        _write_csv(
+            csv_path,
+            [
+                [
+                    "Account",
+                    "Name",
+                    "名前",
+                    "別の表示名あり: 取引先名",
+                    "2026-10-13",
+                ],
+            ],
+        )
+        result = load_column_names_for("Account")
         assert result == {"Name": "名前"}
 
     def test_format_error_raises_on_missing_required_column(self, csv_path: Path):
         """必要な列が無いファイルは ``ColumnNamesCSVFormatError`` で失敗させる。"""
-        # 「管理番号」列を抜いたヘッダー
+        # 「主オブジェクト」列を抜いたヘッダー（BOM は CSV クラスの既定で付く）
         path = csv_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        content = "﻿" + "概要,SOQL列名,表示名,備考\r\n顧客一覧,Name,名前,\r\n"
-        path.write_bytes(content.encode("utf-8"))
+        with CSV(path, columns=["SOQL列名", "表示名", "備考", "更新日"]) as csv_file:
+            csv_file.replace([{"SOQL列名": "Name", "表示名": "名前", "備考": "", "更新日": ""}])
 
         with pytest.raises(ColumnNamesCSVFormatError) as caught:
-            load_column_names_for("9001")
+            load_column_names_for("Account")
         message = str(caught.value)
-        assert "管理番号" in message
+        assert "主オブジェクト" in message
+        assert "SOQL列名" in message
+        assert "表示名" in message
         assert "対処" in message
         # パスも入っている（業務担当者が共有サーバーの障害に気づけるように）
         assert str(csv_path) in message
 
+    def test_old_format_header_raises_format_error(self, csv_path: Path):
+        """旧形式の見出し（ ``管理番号, 概要, SOQL列名, 表示名, 備考`` ）のファイルは
+        ``ColumnNamesCSVFormatError`` で止める（ ``主オブジェクト`` 列が無い）。
+
+        新規の ``soql-collector`` で取り直すまで、 CSV 形式の不一致を運用側に
+        気づかせるためのテスト。 旧形式のファイルは無視せず明示的に失敗させる。"""
+        path = csv_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with CSV(
+            path,
+            columns=["管理番号", "概要", "SOQL列名", "表示名", "備考"],
+        ) as csv_file:
+            csv_file.replace(
+                [
+                    {
+                        "管理番号": "9001",
+                        "概要": "顧客一覧",
+                        "SOQL列名": "Name",
+                        "表示名": "名前",
+                        "備考": "",
+                    },
+                ],
+            )
+
+        with pytest.raises(ColumnNamesCSVFormatError) as caught:
+            load_column_names_for("Account")
+        message = str(caught.value)
+        # 「対処」メッセージに新形式への切替を促す文言が出る
+        assert "対処" in message
+        assert "主オブジェクト" in message
+        # 新しい ``soql-collector`` を実行し直す手順が書かれている
+        assert "soql-collector" in message
+
     def test_format_error_raises_on_empty_file(self, csv_path: Path):
         """**本当に空**のファイル（BOM だけ or 0 バイト）もフォーマット不正として扱う。
 
-        見出しすら無いケースは、CSV 形式が壊れている運用上の問題として
+        見出しすら無いケースは、 CSV 形式が壊れている運用上の問題として
         ``ColumnNamesCSVFormatError`` で止める。 見出しはあるが行が無い
-        （``読み込み結果が空``）ケースは、 ``WARNING`` で「該当管理番号の
+        （``読み込み結果が空`` ）ケースは、 ``WARNING`` で「該当主オブジェクトの
         行が無い」を出して続行する。 ``test_header_only_file_returns_empty_with_warning``
         参照。
         """
@@ -190,18 +287,18 @@ class TestLoadColumnNamesFor:
         path.write_bytes(b"\xef\xbb\xbf")
 
         with pytest.raises(ColumnNamesCSVFormatError) as caught:
-            load_column_names_for("9001")
+            load_column_names_for("Account")
         message = str(caught.value)
         assert "対処" in message
 
     def test_format_error_on_unreadable_bytes(self, csv_path: Path):
-        """ファイルが壊れている（``UnicodeDecodeError``）ときもフォーマット不正で止まる。"""
+        """ファイルが壊れている（ ``UnicodeDecodeError`` ）ときもフォーマット不正で止まる。"""
         path = csv_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"\xff\xfe" + b"not utf-8 at all " * 4)
 
         with pytest.raises(ColumnNamesCSVFormatError) as caught:
-            load_column_names_for("9001")
+            load_column_names_for("Account")
         message = str(caught.value)
         assert "対処" in message
 
@@ -212,19 +309,19 @@ class TestLoadColumnNamesFor:
         _write_csv(
             csv_path,
             [
-                ["9001", "デフォルト", "Name", "名前", ""],
+                ["Account", "Name", "デフォルト名", "", "2026-10-01"],
             ],
         )
         override = tmp_path / "override.csv"
         _write_csv(
             override,
             [
-                ["9001", "上書き", "Amount", "金額", ""],
+                ["Account", "Name", "上書き名", "", "2026-10-01"],
             ],
         )
 
-        result = load_column_names_for("9001", csv_path=override)
-        assert result == {"Amount": "金額"}
+        result = load_column_names_for("Account", csv_path=override)
+        assert result == {"Name": "上書き名"}
 
 
 class _ColumnNamesManualReport(SoqlReport):
@@ -261,7 +358,7 @@ class TestApplyColumnNamesExtra:
     """``runner._apply_column_names()`` の ``extra`` 引数の挙動確認。"""
 
     def test_extra_overrides_column_names(self):
-        """``extra`` と ``COLUMN_NAMES`` で同じキーが衝突すると、``COLUMN_NAMES``
+        """``extra`` と ``COLUMN_NAMES`` で同じキーが衝突すると、 ``COLUMN_NAMES``
         （手書き）が勝つ。 ``_apply_column_names`` のマージ順 ``{**extra,
         **COLUMN_NAMES}`` に依存している。
         """
@@ -271,7 +368,7 @@ class TestApplyColumnNamesExtra:
         assert result.to_rows() == [{"Id": "1", "名前": "x"}]
 
     def test_extra_alone_works_when_column_names_empty(self):
-        """``extra`` 単独（``COLUMN_NAMES`` が空）でも動く。"""
+        """``extra`` 単独（ ``COLUMN_NAMES`` が空）でも動く。"""
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
         result = _apply_column_names(_ColumnNamesEmptyReport, table, extra={"Name": "名前"})
         assert result.columns == ["Id", "名前"]
@@ -303,7 +400,7 @@ def csv_path(tmp_path, monkeypatch) -> Path:
     """``paths.COLUMN_NAMES_CSV_PATH`` を ``tmp_path`` 配下に差し替える。
 
     ``column_names.py`` 側が ``from src.paths import COLUMN_NAMES_CSV_PATH`` で
-    モジュール変数を取り込んでいる（``paths.COLUMN_NAMES_CSV_PATH`` を直接
+    モジュール変数を取り込んでいる（ ``paths.COLUMN_NAMES_CSV_PATH`` を直接
     参照しているわけではない）。 両方を patch しないと ``load_column_names_for``
     が既定の UNC パスを読みに行くので注意。
     戻り値はテストが CSV を書き込むパス（実ファイルはまだ無い）。

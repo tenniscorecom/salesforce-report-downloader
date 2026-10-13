@@ -10,10 +10,12 @@
 適用する（Report API / ブラウザ経由では適用しない）。管理表ルートに統一して
 いるので、``SoqlReport`` 経由で取得した Table もここで同じ動きを保証する。
 
-2026-10 に ``soql-collector`` の ``列名の対応.csv`` からの自動取り込みを追加した。
-``_save()`` は ``COLUMN_NAMES`` の手書きに加えてこの CSV からも自動で見出しを
-差し替える。 手書きが優先される。 ファイルが無い/該当行が無いケースは WARNING
-だけで API 名保存に倒れる（テストでも検証する）。
+2026-10 に ``soql-collector`` の ``列名の対応.csv`` からの自動取り込みを
+``主オブジェクト × SOQL列名`` に切り替えた。 ``_save()`` は ``soql()``
+の ``FROM <名前>`` から主オブジェクトを取り、 ``COLUMN_NAMES`` の手書きに
+加えてこの CSV からも自動で見出しを差し替える。 手書きが優先される。
+ファイルが無い / 該当主オブジェクトの行が無い / 取れない SOQL ケースは
+WARNING だけで API 名保存に倒れる（テストでも検証する）。
 """
 
 import logging
@@ -188,16 +190,6 @@ class _ColumnNamesFromFileOnlyReport(SoqlReport):
         return "SELECT Id, Name, Amount FROM Opportunity"
 
 
-class _ColumnNamesOverlapFromFileReport(SoqlReport):
-    """``列名の対応.csv`` で同じ見出しに 2 列割り当てた衝突用のダミー。"""
-
-    KEY = "9202"
-    COLUMN_NAMES: ClassVar[dict[str, str]] = {}
-
-    def soql(self) -> str:
-        return "SELECT Id, Name, Account.Name FROM Opportunity"
-
-
 def _patched_registry(monkeypatch, *classes: type[SoqlReport]) -> None:
     """``_registry.registered_reports()`` をテスト用のクラス群に差し替える。"""
     monkeypatch.setattr(_registry, "registered_reports", lambda: classes)
@@ -210,14 +202,14 @@ def _patched_paths_output(monkeypatch, folder: Path, *, fixed_name: str | None =
     すっ飛ばして ``tmp_path`` 直下へ向ける。 ``fixed_name`` を指定すると
     ファイル名も固定できる（衝突テスト用）。
     """
-    from src import paths as paths_module
+    from src import paths as paths_module_inner
 
-    name = fixed_name or "9001_20240101_0900.csv"
+    name = fixed_name or "9201_20240101_0900.csv"
 
     def fake_output_path(entry, schedule_run_time=None, *, now=None):
         return folder / name
 
-    monkeypatch.setattr(paths_module, "output_path", fake_output_path)
+    monkeypatch.setattr(paths_module_inner, "output_path", fake_output_path)
 
 
 def _registered_for_save(monkeypatch, *classes: type[SoqlReport]) -> None:
@@ -290,7 +282,7 @@ class TestSaveAppliesColumnNames:
     ):
         """管理表ルートで見出しが衝突すると ``SoqlColumnNameConflictError`` で
         失敗し、 CSV が一切残らない（一時ファイルも本番ファイルも）。"""
-        from src import paths as paths_module
+        from src import paths as paths_module_inner
 
         _registered_for_save(monkeypatch, _ColumnNamesOverlapReport)
         entry = replace(SOQL_ENTRY, key=_ColumnNamesOverlapReport.KEY)
@@ -301,9 +293,9 @@ class TestSaveAppliesColumnNames:
 
         # 期待する本番パスとその一時ファイル（``~`` プレフィックス）が
         # 保存後に残らないことを確認する
-        final_csv = output_folder / "9001_20240101_0900.csv"
+        final_csv = output_folder / "9201_20240101_0900.csv"
         # 一時ファイル名のフォーマットは ``paths.make_temp_csv_path`` に従う
-        tmp_csv = paths_module.make_temp_csv_path(final_csv)
+        tmp_csv = paths_module_inner.make_temp_csv_path(final_csv)
 
         with pytest.raises(SoqlColumnNameConflictError) as caught:
             _save(entry, table)
@@ -321,16 +313,18 @@ class TestSaveAppliesColumnNames:
 
 # ---------------------------------------------------------------
 # 以下、_save() の ``列名の対応.csv`` 経由の COLUMN_NAMES 適用テスト
+# 2026-10 から (主オブジェクト, SOQL列名) で引く形になっている
 # ---------------------------------------------------------------
 
 
-_HEADER: list[str] = ["管理番号", "概要", "SOQL列名", "表示名", "備考"]
+# テストで使う ``列名の対応.csv`` のヘッダ順。 soql-collector との取り決め
+_HEADER: list[str] = ["主オブジェクト", "SOQL列名", "表示名", "備考", "更新日"]
 
 
 def _write_csv(path: Path, rows: list[list[str]]) -> None:
     """``列名の対応.csv`` を ``comken.toolbox.csv.CSV`` で書く（soql-collector と同じ形）。
 
-    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（``CSV`` クラスの既定）。
+    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（ ``CSV`` クラスの既定）。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     dict_rows = [dict(zip(_HEADER, row, strict=True)) for row in rows]
@@ -354,14 +348,17 @@ class TestSaveAppliesFileColumnNames:
     def test_save_applies_file_column_names_to_csv(
         self, monkeypatch, output_folder, column_csv_path,
     ):
-        """``COLUMN_NAMES`` が空のレポートでも、 ``列名の対応.csv`` に対応が
-        あれば保存 CSV の見出しが置き換わる。"""
+        """``COLUMN_NAMES`` が空のレポートでも、 そのレポートの SOQL の主オブジェクトに
+        該当する ``列名の対応.csv`` の対応があれば保存 CSV の見出しが置き換わる。
+
+        ``Opportunity`` が主オブジェクトなので、 ``Opportunity`` 行だけが残る形になっている。
+        """
         _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
         _write_csv(
             column_csv_path,
             [
-                [_ColumnNamesFromFileOnlyReport.KEY, "顧客一覧", "Name", "名前", ""],
-                [_ColumnNamesFromFileOnlyReport.KEY, "顧客一覧", "Amount", "金額", ""],
+                ["Opportunity", "Name", "名前", "", "2026-10-01"],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
         entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
@@ -377,6 +374,37 @@ class TestSaveAppliesFileColumnNames:
         assert result.columns == ["Id", "名前", "金額"]
         assert result.to_rows() == [{"Id": "001", "名前": "山田", "金額": "100"}]
 
+    def test_save_does_not_apply_other_main_object_rows(
+        self, monkeypatch, output_folder, column_csv_path,
+    ):
+        """``列名の対応.csv`` に他主オブジェクトの行があっても、 このレポートの
+        SOQL の主オブジェクトの行だけ使われる。"""
+        _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
+        _write_csv(
+            column_csv_path,
+            [
+                ["Account", "Name", "混入してはいけない名前", "", "2026-10-01"],
+                ["Account", "Amount", "混入してはいけない金額", "", "2026-10-01"],
+                ["Contact", "LastName", "姓", "", "2026-10-01"],
+                ["Opportunity", "Name", "名前", "", "2026-10-01"],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
+            ],
+        )
+        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
+        table = Table(
+            ["Id", "Name", "Amount"],
+            [{"Id": "001", "Name": "山田", "Amount": "100"}],
+        )
+
+        saved = _save(entry, table)
+
+        with CSV(saved, read_only=True) as csv_file:
+            result = csv_file.read()
+        # ``Opportunity`` の行だけ反映され、 ``Account`` 行は見出しに入らない
+        assert result.columns == ["Id", "名前", "金額"]
+        assert "混入してはいけない名前" not in result.columns
+        assert "混入してはいけない金額" not in result.columns
+
     def test_save_manual_column_names_wins_over_file(
         self, monkeypatch, output_folder, column_csv_path,
     ):
@@ -387,8 +415,8 @@ class TestSaveAppliesFileColumnNames:
         _write_csv(
             column_csv_path,
             [
-                [_ColumnNamesManualReport.KEY, "顧客一覧", "Name", "ファイル表示名", ""],
-                [_ColumnNamesManualReport.KEY, "顧客一覧", "Amount", "金額", ""],
+                ["Opportunity", "Name", "ファイル表示名", "", "2026-10-01"],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
         entry = replace(SOQL_ENTRY, key=_ColumnNamesManualReport.KEY)
@@ -406,36 +434,6 @@ class TestSaveAppliesFileColumnNames:
         assert result.to_rows() == [
             {"Id": "001", "名前（手書き）": "山田", "金額": "100"},
         ]
-
-    def test_save_other_report_key_rows_are_ignored(
-        self, monkeypatch, output_folder, column_csv_path,
-    ):
-        """``列名の対応.csv`` に他管理番号の行があっても、自分（ ``entry.key`` ）
-        の行だけ使われる。"""
-        _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
-        _write_csv(
-            column_csv_path,
-            [
-                ["9999", "別レポート", "Name", "混入してはいけない名前", ""],
-                ["9998", "別レポート", "Amount", "混入してはいけない金額", ""],
-                [_ColumnNamesFromFileOnlyReport.KEY, "顧客一覧", "Name", "名前", ""],
-                [_ColumnNamesFromFileOnlyReport.KEY, "顧客一覧", "Amount", "金額", ""],
-            ],
-        )
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
-        table = Table(
-            ["Id", "Name", "Amount"],
-            [{"Id": "001", "Name": "山田", "Amount": "100"}],
-        )
-
-        saved = _save(entry, table)
-
-        with CSV(saved, read_only=True) as csv_file:
-            result = csv_file.read()
-        # 9999 / 9998 の行は見出しに入っていない
-        assert result.columns == ["Id", "名前", "金額"]
-        assert "混入してはいけない名前" not in result.columns
-        assert "混入してはいけない金額" not in result.columns
 
     def test_save_missing_file_keeps_api_names_with_warning(
         self, monkeypatch, output_folder, column_csv_path, caplog,
@@ -461,15 +459,15 @@ class TestSaveAppliesFileColumnNames:
         # WARNING は出ている
         assert "列名の対応ファイルがありません" in caplog.text
 
-    def test_save_no_matching_report_key_keeps_api_names_with_warning(
+    def test_save_no_matching_main_object_keeps_api_names_with_warning(
         self, monkeypatch, output_folder, column_csv_path, caplog,
     ):
-        """``列名の対応.csv`` が有っても該当管理番号の行が無いときは API 名のまま
-        保存され、 WARNING が出る。"""
+        """``列名の対応.csv`` が有っても該当主オブジェクトの行が無いときは
+        API 名のまま保存され、 WARNING が出る。"""
         _write_csv(
             column_csv_path,
             [
-                ["9999", "別レポート", "Name", "混入してはいけない名前", ""],
+                ["Account", "Name", "混入してはいけない名前", "", "2026-10-01"],
             ],
         )
         _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
@@ -484,61 +482,37 @@ class TestSaveAppliesFileColumnNames:
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
+        # Opportunity の主オブジェクトには該当行が無いので API 名のまま
         assert result.columns == ["Id", "Name", "Amount"]
+        # WARNING に主オブジェクト名が出ている（ ``列名の対応に主オブジェクト=Opportunity`` ）
         assert (
-            "列名の対応に管理番号=" in caplog.text
+            "列名の対応に主オブジェクト=" in caplog.text
         )
-        assert (
-            _ColumnNamesFromFileOnlyReport.KEY in caplog.text
-        )
-
-    def test_save_skips_duplicate_rows_in_csv(
-        self, monkeypatch, output_folder, column_csv_path, caplog,
-    ):
-        """``列名の対応.csv`` で備考が ``表示名が重複`` の行は CSV の見出しに入らない
-        （衝突で失敗扱いにもならない=重複はあってもスキップで進む運用）。
-        """
-        _registered_for_save(monkeypatch, _ColumnNamesOverlapFromFileReport)
-        _write_csv(
-            column_csv_path,
-            [
-                [_ColumnNamesOverlapFromFileReport.KEY, "顧客一覧", "Name", "名称", ""],
-                [
-                    _ColumnNamesOverlapFromFileReport.KEY,
-                    "顧客一覧",
-                    "Account.Name",
-                    "名称",
-                    "表示名が重複",
-                ],
-            ],
-        )
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesOverlapFromFileReport.KEY)
-        table = Table(
-            ["Id", "Name", "Account.Name"],
-            [{"Id": "001", "Name": "x", "Account.Name": "y"}],
-        )
-
-        with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            saved = _save(entry, table)
-
-        with CSV(saved, read_only=True) as csv_file:
-            result = csv_file.read()
-        # Account.Name は重複で除外されたので API 名のまま
-        # （Name はファイルで「名称」に置換される）
-        assert result.columns == ["Id", "名称", "Account.Name"]
-        # WARNING に Account.Name が挙がっている
-        assert "Account.Name" in caplog.text
+        assert "Opportunity" in caplog.text
 
     def test_save_format_error_raises_and_does_not_write_csv(
         self, monkeypatch, output_folder, column_csv_path,
     ):
-        """``列名の対応.csv`` のフォーマットが壊れている（必要な列が無い）と
-        ``ColumnNamesCSVFormatError`` で失敗し、 CSV が一切残らない。"""
+        """``列名の対応.csv`` のフォーマットが壊れている（旧形式も見出しに必要な列が無い）
+        と ``ColumnNamesCSVFormatError`` で失敗し、 CSV が一切残らない。"""
         _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
-        # 「管理番号」を抜いたヘッダー（フォーマット不正）
+        # 旧形式の見出し（ ``主オブジェクト`` 列が無い）= フォーマット不正
         column_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        content = "﻿" + "概要,SOQL列名,表示名,備考" + "\r\n" + "顧客一覧,Name,名前," + "\r\n"
-        column_csv_path.write_bytes(content.encode("utf-8"))
+        with CSV(
+            column_csv_path,
+            columns=["管理番号", "概要", "SOQL列名", "表示名", "備考"],
+        ) as csv_file:
+            csv_file.replace(
+                [
+                    {
+                        "管理番号": _ColumnNamesFromFileOnlyReport.KEY,
+                        "概要": "案件一覧",
+                        "SOQL列名": "Name",
+                        "表示名": "名前",
+                        "備考": "",
+                    },
+                ],
+            )
         entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
@@ -547,7 +521,7 @@ class TestSaveAppliesFileColumnNames:
 
         # 期待する本番パスとその一時ファイルが保存後に残らないことを確認する
         from src import paths as paths_inner
-        final_csv = output_folder / "9001_20240101_0900.csv"
+        final_csv = output_folder / "9201_20240101_0900.csv"
         tmp_csv = paths_inner.make_temp_csv_path(final_csv)
 
         with pytest.raises(ColumnNamesCSVFormatError):
@@ -568,8 +542,8 @@ class TestSaveAppliesFileColumnNames:
         _write_csv(
             column_csv_path,
             [
-                [_ColumnNamesFromFileOnlyReport.KEY, "顧客一覧", "Name", "名前", ""],
-                [_ColumnNamesFromFileOnlyReport.KEY, "顧客一覧", "Amount", "金額", ""],
+                ["Opportunity", "Name", "名前", "", "2026-10-01"],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
         entry = replace(ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
@@ -595,8 +569,8 @@ class TestSaveAppliesFileColumnNames:
         _write_csv(
             column_csv_path,
             [
-                [_ColumnNamesManualReport.KEY, "顧客一覧", "Name", "ファイル表示名", ""],
-                [_ColumnNamesManualReport.KEY, "顧客一覧", "Amount", "金額", ""],
+                ["Opportunity", "Name", "ファイル表示名", "", "2026-10-01"],
+                ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
         entry = replace(SOQL_ENTRY, key=_ColumnNamesManualReport.KEY)
@@ -614,3 +588,96 @@ class TestSaveAppliesFileColumnNames:
         # Name は手書きで置換、 Amount はファイルから置換 → 両方カウント 1
         assert "ファイル=1" in caplog.text
         assert "手書き=1" in caplog.text
+
+
+class TestSaveNoFromInSoql:
+    """SOQL から主オブジェクトを取り出せないケース（ ``FROM`` が無い等）の挙動確認。
+
+    取得は失敗させず、 WARNING を 1 行出して API 名のまま保存する。
+    """
+
+    def test_save_soql_without_from_keeps_api_names_with_warning(
+        self, monkeypatch, output_folder, column_csv_path, caplog,
+    ):
+        """``FROM`` の無い SOQL では主オブジェクトが取れず、 API 名のまま保存される
+        （ ``column_names`` 側ではなく ``service._save()`` 側で WARNING が出る）。"""
+
+        class _NoFromReport(SoqlReport):
+            KEY = "9300"
+            COLUMN_NAMES: ClassVar[dict[str, str]] = {"Name": "名前"}
+
+            def soql(self) -> str:
+                # ``FROM`` が無い、壊れた SOQL
+                return "SELECT Id, Name"
+
+        _registered_for_save(monkeypatch, _NoFromReport)
+        # ファイルには Account 行を書いておくが、主オブジェクトが取れないので何も適用しない
+        _write_csv(
+            column_csv_path,
+            [
+                ["Account", "Name", "ファイル表示名", "", "2026-10-01"],
+            ],
+        )
+        entry = replace(SOQL_ENTRY, key=_NoFromReport.KEY)
+        table = Table(
+            ["Id", "Name"],
+            [{"Id": "001", "Name": "山田"}],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            saved = _save(entry, table)
+
+        with CSV(saved, read_only=True) as csv_file:
+            result = csv_file.read()
+        # 手書きの COLUMN_NAMES は適用されない（ extra が空のため ``_apply_column_names`` の
+        # 引数 ``extra={}`` で COLUMN_NAMES がそのまま使われるはずだが、
+        # バグが無いようにするためにも結果を確認）
+        assert result.columns == ["Id", "名前"]
+        # WARNING に ``SOQL から主オブジェクトを取り出せませんでした`` が出ている
+        assert "SOQL から主オブジェクトを取り出せませんでした" in caplog.text
+
+    def test_save_warning_does_not_leak_soql_body(
+        self, monkeypatch, output_folder, column_csv_path, caplog,
+    ):
+        """主オブジェクトが取り出せない SOQL の WARNING 本文に、 SOQL 本文
+        （WHERE の値等）が漏れていない。 SOQL 本文は同じ場所の DEBUG にだけ出る
+        （既存の ``logger.debug("SOQL: %s", ...)`` と同ルール）。"""
+
+        marker = "SECRET_LEAK_MARKER_value@example.com"
+
+        class _NoFromReport(SoqlReport):
+            KEY = "9301"
+            COLUMN_NAMES: ClassVar[dict[str, str]] = {}
+
+            def soql(self) -> str:
+                # ``FROM`` が無いので主オブジェクトが取れない壊れた SOQL。
+                # 本文に目印を入れて、 WARNING 以上に漏れないことを確認する
+                return f"SELECT Id, Name, {marker}"
+
+        _registered_for_save(monkeypatch, _NoFromReport)
+        entry = replace(SOQL_ENTRY, key=_NoFromReport.KEY)
+        table = Table(
+            ["Id", "Name"],
+            [{"Id": "001", "Name": "山田"}],
+        )
+
+        # DEBUG まで拾わないと SOQL 本文の DEBUG 記録を確認できない
+        with caplog.at_level(logging.DEBUG, logger="src.service"):
+            _save(entry, table)
+
+        service_records = [r for r in caplog.records if r.name == "src.service"]
+        warnings_and_above = [
+            r for r in service_records if r.levelno >= logging.WARNING
+        ]
+        debugs = [r for r in service_records if r.levelno == logging.DEBUG]
+
+        # WARNING 以上の ``src.service`` ログに、 SOQL 本文（目印）が含まれていない
+        for record in warnings_and_above:
+            assert marker not in record.getMessage(), (
+                f"WARNING 以上のログに SOQL 本文が漏れています: "
+                f"level={record.levelname}, message={record.getMessage()!r}"
+            )
+        # DEBUG には SOQL 本文が出ている（= DEBUG に移された動作も同時に検証）
+        assert any(marker in record.getMessage() for record in debugs), (
+            "DEBUG に SOQL 本文が出ていません"
+        )

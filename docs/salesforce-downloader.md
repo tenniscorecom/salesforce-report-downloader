@@ -858,30 +858,40 @@ class LargeSalesReport(SoqlReport):
 SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま返ってくる。
 レポートの元々の見出し（`金額`、`取引先名`）で出したい場合は、
 `SoqlReport.COLUMN_NAMES` に **API名→表示名** の対応を書く。
-**貼り付け元は soql-collector の対応表**の「対応フィールドAPI名」列。
+**貼り付け元は soql-collector の対応表**。
 `service._save()` が SOQL 経由のときだけ保存の直前にこの表を `Table.select()` に
 通して列名を差し替える（Report API 経由・ブラウザ経由では適用しない）。
 列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
 （`SELECT` を後から変えても対応表を貼り直さずに済む）。
 
-**2026-10 に `soql-collector` の出力から自動で置き換える方式を追加した。**
+**2026-10 に `soql-collector` の出力形式を「全体で 1 ファイル」に変更した。**
 `soql-collector` の出力先（`OUTPUT_DIR`）を
 [`COLUMN_NAMES_CSV_PATH`](../../sfdl-autocol/src/paths.py)（既定
 `\\server\share\tools\salesforce\soql-collector\列名の対応.csv`）
 のフォルダに合わせておけば、 `COLUMN_NAMES` を 1 つも書かなくても見出しが
-置き換わる。新しく SOQL にしたレポートや、レポートの列を変えたときは
-`soql-collector` を **1 回実行する**だけで `列名の対応.csv` に追記される
-（管理番号ごとのファイルを **増やさない**設計）。
+置き換わる。 新形式は **(主オブジェクト, SOQL列名) をキーに表示名を引く**形
+で、 列は **`主オブジェクト, SOQL列名, 表示名, 備考, 更新日`** の順
+（主オブジェクト列には `Opportunity` / `Account` のような Salesforce の
+オブジェクト API 名が入る）。 同じ列はどのレポートでも同じ表示名になるので、
+**レポートをまたいで管理表を作る必要が無い**。
 
-`COLUMN_NAMES` は **直したい列だけ書けばよい**。同じキーは手書きが
-`soql-collector` の対応に優先して勝つ（「ここだけ別名にしたい」という
-要望に、 `COLUMN_NAMES` への追記だけで応えられる）。
+`service._save()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
+を主オブジェクトとして取り出し、 `column_names.load_column_names_for(main_object)`
+で `{SOQL列名: 表示名}` を引いて手書きの `COLUMN_NAMES` とマージする
+（手書き優先）。主オブジェクト名の比較は大文字小文字を区別しない
+（Salesforce の API 名は大文字小文字を区別しないため）。
+
+`COLUMN_NAMES` は **そのレポートだけ変えたい列だけ書けばよい**。同じキーは
+手書きが `列名の対応.csv` の対応に優先して勝つ（「ここだけ別名にしたい」
+という要望に、 `COLUMN_NAMES` への追記だけで応えられる）。 新しく SOQL に
+したレポートや、レポートの列を変えたときは `soql-collector` を **1 回
+実行する**だけで `列名の対応.csv` に追記される。
 
 ```python
 class LargeSalesReport(SoqlReport):
     KEY = "9001"
     COLUMN_NAMES = {
-        "Name": "商談名",  # 手書き: soql-collector の対応より優先
+        "Name": "商談名",  # 手書き: 列名の対応.csv より優先
         "Amount": "金額",
         "Account.Name": "取引先名",
     }
@@ -894,10 +904,12 @@ class LargeSalesReport(SoqlReport):
 で失敗扱いになり、CSV は書かれない。重なった見出しと元の列名はメッセージに出るので、
 `COLUMN_NAMES` を見直して別の見出しに分ける。
 `COLUMN_NAMES` も `列名の対応.csv` にも無い列は API 名のまま CSV に出る。
-`列名の対応.csv` が見つからない、または該当管理番号の行が無いときは WARNING を
-出して API 名のまま保存する（取得は止めない）。 `列名の対応.csv` の形式が壊れて
-いる（必要な列が無い、読めない）ときは `ColumnNamesCSVFormatError` で
-取得を止めるので、フォーマットを確認する。
+`列名の対応.csv` が見つからない、または該当主オブジェクトの行が無いとき、
+もしくは SOQL から主オブジェクトを取り出せなかったときは WARNING を出して
+API 名のまま保存する（取得は止めない）。 `列名の対応.csv` の形式が壊れて
+いる（必要な列が無い、旧形式の見出しのまま、読めない）ときは
+`ColumnNamesCSVFormatError` で取得を止め、対処メッセージで
+`soql-collector` の新しい版での再生成を促す。
 
 ### 取り方
 
@@ -931,9 +943,10 @@ URL・保存先・0件可否はすべて管理表の `ReportEntry` から取り�
 ソフト等の影響が疑われる）に送出される。
 `SoqlColumnNameConflictError` は [`COLUMN_NAMES`](#出力-csv-の見出しを人が読む列名に置き換えるcolumn_names)
 で置き換え後の見出しが 2 つ以上重なったとき。`ColumnNamesCSVFormatError` は
-`列名の対応.csv`（`soql-collector` が出す、SOQL 列名→表示名の対応表）
-のフォーマットが壊れている／読めないときに送出される（ファイルが無い／
-該当管理番号の行が無いケースは `WARNING` だけで取得は続く）。
+`列名の対応.csv`（`soql-collector` が出す、**主オブジェクト × SOQL列名 → 表示名** の対応表）
+のフォーマットが壊れている／旧形式の見出しのまま／読めないときに
+送出される（ファイルが無い／該当主オブジェクトの行が無いケースは `WARNING`
+だけで取得は続く）。
 
 定期取得で 1 件以上失敗した場合は **取得できたものを保存したうえで**例外で知らせる
 （`DownloaderError` が SOQL 経路向けに担う。`SalesforceError` 経由で

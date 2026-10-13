@@ -98,7 +98,7 @@ from src.sheets.master import (
 )
 from src.sheets.schedule import ScheduleRule, load_schedule
 from src.soql_reports import soql_report_for
-from src.soql_reports.column_names import load_column_names_for
+from src.soql_reports.column_names import extract_main_object, load_column_names_for
 from src.soql_reports.runner import _apply_column_names
 
 if TYPE_CHECKING:
@@ -1163,11 +1163,30 @@ def _save(
         # 見ない）。
         if entry.use_soql:
             report_cls = soql_report_for(entry.key)
+            instance = report_cls()
             original_columns = list(table.columns)
-            # ``列名の対応.csv`` から、この管理番号に該当する行だけを引く。
-            # ファイルが無い / 該当行が無い / フォーマット不正はライブラリ側で
-            # WARNING or 例外に振り分けて、ここでは戻り値だけ受け取る
-            extra = load_column_names_for(entry.key)
+            # ``列名の対応.csv`` から、このレポートの主オブジェクト（ ``instance.soql()``
+            # の最初の ``FROM <名前>`` ）に該当する行だけを引く。 ファイルが無い /
+            # 該当行が無い / フォーマット不正はライブラリ側で WARNING or 例外に
+            # 振り分けて、ここでは戻り値だけ受け取る。
+            # 主オブジェクトが取れない（SOQL に ``FROM`` が無い等）ときは空 dict を
+            # 受け取り、 API 名のまま保存する（取得は失敗させない）。
+            soql_text = instance.soql()
+            main_object = extract_main_object(soql_text)
+            if main_object is None:
+                # WARNING には SOQL 本文（WHERE の値等）を出さない運用。
+                # SOQL 本文は同じ場所で DEBUG にだけ出す（既存の
+                # ``logger.debug("SOQL: %s", ...)`` と同ルール）。
+                logger.warning(
+                    "SOQL から主オブジェクトを取り出せませんでした。"
+                    "API 名のまま保存します: 管理番号=%s, クラス=%s",
+                    entry.key,
+                    report_cls.__name__,
+                )
+                logger.debug("SOQL: %s", soql_text)
+                extra: dict[str, str] = {}
+            else:
+                extra = load_column_names_for(main_object)
             table = _apply_column_names(report_cls, table, extra=extra)
             # 実際に置き換わった列数を出所別に数える（手書きが ``column_names``
             # に勝ち、かつ wins が元と変わった列だけが「手書きで置換」扱い）。
