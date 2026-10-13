@@ -173,19 +173,20 @@ class ColumnNamesCSVFormatError(DownloaderError):
     """``列名の対応.csv`` が読めない／必要な列が無い
 
     ``soql-collector`` が出す ``列名の対応.csv`` （UTF-8 BOM 付き CRLF の CSV。
-    列は ``管理番号, 概要, SOQL列名, 表示名, 備考``）を ``column_names.load_column_names_for()``
-    が読む。ファイルが読めない、必要な列が無い、見出しだけで行が無い場合は
-    **失敗として止める**（ファイルが無い／該当管理番号の行が無いケースは
-    WARNING だけで続行するが、フォーマット不正は止める。利用者が CSV 形式
-    を間違って作ったことに気づけるよう、``DownloaderError`` 系として
-    ``_failure_row()`` で「Salesforce」区分に入る）。
+    列は ``主オブジェクト, SOQL列名, 表示名, 備考, 更新日``）を
+    ``column_names.load_column_names_for()`` が読む。ファイルが読めない、
+    必要な列が無い、見出しだけで行が無い場合は **失敗として止める**（ファイル
+    が無い／該当主オブジェクトの行が無いケースは WARNING だけで続行するが、
+    フォーマット不正は止める。利用者が CSV 形式を間違って作ったことに
+    気づけるよう、 ``DownloaderError`` 系として ``_failure_row()`` で
+    「Salesforce」区分に入る）。
 
     発生箇所: ``src.soql_reports.column_names`` の ``_read_rows()``
 
     対処:
         ``列名の対応.csv`` を ``soql-collector`` で作り直す。フォーマットが
-        正しいか（UTF-8 BOM 付き CRLF、列名が ``管理番号, 概要, SOQL列名,
-        表示名, 備考``）を確認する
+        正しいか（UTF-8 BOM 付き CRLF、列名が ``主オブジェクト, SOQL列名,
+        表示名, 備考, 更新日``）を確認する
     """
 
     def __init__(self, message: str) -> None:

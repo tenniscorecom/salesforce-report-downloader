@@ -158,10 +158,10 @@ flowchart TD
 ```python
 from comken.services.salesforce_downloader import read_report, report_path
 
-CUSTOMER_LIST = "1001"    # 管理表の「ID」。意味の分かる名前を付ける
+CUSTOMER_LIST = "1001"  # 管理表の「ID」。意味の分かる名前を付ける
 
-table = read_report(CUSTOMER_LIST)   # 最新の取得が成功していれば、そのファイルを Table で返す
-path = report_path(CUSTOMER_LIST)    # ファイルのパスだけ欲しいとき。取れていなければ None
+table = read_report(CUSTOMER_LIST)  # 最新の取得が成功していれば、そのファイルを Table で返す
+path = report_path(CUSTOMER_LIST)  # ファイルのパスだけ欲しいとき。取れていなければ None
 ```
 
 **プロジェクトのコードに Salesforce の URL もレポート ID も書かない。** 書くのは管理番号だけ。
@@ -807,10 +807,10 @@ Report API（`sf.report.get()` / `download_scheduled()`）は **2000行が上限
 これを超えるレポートは、同じ内容を SOQL で取る `SoqlReport` を書いて置き換える。
 
 SOQL は人が組み立てる（レポートの列名と SOQL のフィールド名は 1 対 1 に対応しない）。
-組み立てるときは、レポートを実行せずに定義を読む `sf.report.describe()` と、
-列 → フィールド API 名の対応を出す `sf.report.describe_fields()` を使う
-（[salesforce.md「列-フィールド対応表」](salesforce.md#列-フィールド対応表describe_fields-describe_fields_csv)）。
-管理表の全件についての SOQL の下書きは、別プロジェクト（soql-collector）が作る。
+組み立てるときは、 soql-collector の `SOQL調査.xlsx` （項目の対応・条件・集計の
+シート）を AI に渡して組ませ、 人が確かめる。 取るたびにレポートの総件数と
+件数を比べ、 合わなければ保存しない（[前節](#件数の比較soql-経路2026-10-改定)）。
+soql-collector は SOQL を自動では作らない（2026-10-14 に撤去）。
 
 ### 書き方
 
@@ -830,7 +830,7 @@ from src.soql_reports.base import SoqlReport
 
 
 class LargeSalesReport(SoqlReport):
-    KEY = "9001"                                   # 社内で決める管理番号
+    KEY = "9001"  # 社内で決める管理番号
 
     def soql(self) -> str:
         return (

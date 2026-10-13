@@ -85,7 +85,8 @@ MASTER_PATH = SALESFORCE_DOWNLOADER_FOLDER / MASTER_FILENAME
 
 # ``soql-collector``（別プロジェクト）が出す列名の対応 CSV の置き場所。
 # 1 ファイルに全レポート分が積み上がる形式なので、管理番号ごとのファイルは
-# 持たない（``src.soql_reports.column_names`` が管理番号で絞り込んで読む）。
+# 持たない（``src.soql_reports.column_names`` が SOQL の ``FROM <名前>`` で
+# 取り出した **主オブジェクト** で引く）。
 # config.ini には出さない方針（``MASTER_PATH`` と同じ。配置時にエンジニアが
 # 決める値で、頻繁に動かすものではないため）。
 # テストでは ``monkeypatch.setattr(paths_module, "COLUMN_NAMES_CSV_PATH", ...)``
