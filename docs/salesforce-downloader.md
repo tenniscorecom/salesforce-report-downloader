@@ -316,11 +316,17 @@ from src.template_writer import create_combined_workbook
 create_combined_workbook("レポート管理表.xlsx")
 ```
 
-記入例2行と、各列の書き方をまとめた**「記入方法」シート**が入った状態で作られる。
-雛形から Excel テーブル（=行を足すのが楽になる構造）が作られ、`choices` を宣言した
-列には自動でドロップダウン（入力規則）が付く。雛形全体のフォントは Noto Sans JP
-（Windows 標準ではないため未導入 PC では Excel が代替フォントで代替表示する。
-動作には影響しない）。
+雛形には `src/initial_rows.py` の3リスト（`REPORT_ENTRIES` / `SCHEDULE_RULES` /
+`GROUP_SETTINGS`）で宣言した**「初期行」**がそのまま入る。初期行を入れなければ
+**見出しだけの雛形**ができる。`choices` を宣言した列には自動でドロップダウン
+（入力規則）が付き、各列の書き方をまとめた**「記入方法」シート**が1枚付属する。
+雛形から Excel テーブル（=行を足すのが楽になる構造）が作られ、雛形全体の
+フォントは Noto Sans JP（Windows 標準ではないため未導入 PC では Excel が代替
+フォントで代替表示する。動作には影響しない）。
+
+初期行は**コードで宣言する dataclass インスタンス**として書くので、書き方が
+1か所に揃う（雛形 Excel を開いて「手で直す」運用が要らない）。設定は
+`src/initial_rows.py` の docstring に書く例を参照。
 
 ### 編集したあとに確かめる
 

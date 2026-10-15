@@ -1,7 +1,7 @@
 """``src/template_writer`` の雛形生成を検証する。
 
 雛形と読み込みで列がズレないこと、`choices` 列にドロップダウンが付くこと、
-フォントが Noto Sans JP に揃うこと、記入例に背景色が付き「Sheet」が残らないこと、
+フォントが Noto Sans JP に揃うこと、初期行は背景色なしで「Sheet」が残らないこと、
 ``create_combined_workbook`` で3シート＋記入方法シートが1ブックにまとまること、
 ``create_template`` / ``create_combined_workbook`` が既存シートを新列構成に
 マイグレーションできることを確認する。
@@ -19,16 +19,14 @@ from openpyxl import load_workbook
 import src.paths as _paths_module
 from src.report_master import MasterRow, column
 from src.sheets.group_settings import GroupSetting
-from src.sheets.master import EXAMPLES, ReportEntry, load_master
+from src.sheets.master import ReportEntry, load_master
 from src.sheets.schedule import (
     SCHEDULE_SHEET_NAME,
     ScheduleRule,
     load_schedule,
 )
 from src.template_writer import (
-    GROUP_SETTING_EXAMPLES,
     REPORT_ENTRY_GUIDE_INTRO,
-    SCHEDULE_EXAMPLES,
     apply_schedule_dropdowns,
     create_combined_workbook,
     create_template,
@@ -48,6 +46,51 @@ SCHEDULE_HEADERS = [
 SETTINGS_HEADERS = ["グループ", "ベースURL"]
 
 
+# テストで使う「初期行」風データ。``ReportEntry`` / ``ScheduleRule`` / ``GroupSetting``
+# を直接組み立てる。テンプレート生成は「空でもエラーにならない」ことが設計目的なので、
+# ここで組み立てた値を `create_template` の ``rows`` に渡して検証する
+def _sample_report_entries() -> list[ReportEntry]:
+    return [
+        ReportEntry(
+            key="1001",
+            group="営業本部",
+            assignee="山田太郎",
+            summary="顧客一覧",
+            has_personal_info=True,
+            url="https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
+            "/00O5g00000ABCDE/view",
+            enabled=False,
+        ),
+        ReportEntry(
+            key="1002",
+            group="営業本部",
+            assignee="佐藤花子",
+            summary="売上実績",
+            has_personal_info=False,
+            url="https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
+            "/00O5g00000FGHIJ/view",
+            enabled=False,
+            allow_empty=True,
+        ),
+    ]
+
+
+def _sample_schedule_rules() -> list[ScheduleRule]:
+    return [
+        ScheduleRule(
+            schedule_key="S001",
+            report_key="1001",
+            frequency="毎日",
+            holiday_policy="取得しない",
+            enabled=True,
+        ),
+    ]
+
+
+def _sample_group_settings() -> list[GroupSetting]:
+    return [GroupSetting(group="営業本部", base_path=Path(r"\\server\share\営業本部"))]
+
+
 # ── 1クラス分の雛形 ─────────────────────────────────────────────────────
 
 
@@ -55,7 +98,7 @@ class TestCreateTemplateReportEntry:
     """`ReportEntry` の雛形が読み込みと往復できるか。"""
 
     def test_generated_template_can_be_loaded(self, tmp_path):
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
         entries = load_master(path)
         assert list(entries) == ["1001", "1002"]
 
@@ -83,17 +126,21 @@ class TestCreateTemplateReportEntry:
             "上書き",
         ]
 
-    def test_examples_point_at_different_reports(self, tmp_path):
-        """記入例が同じレポートを指していると、check が重複として報告してしまう。"""
+    def test_initial_rows_point_at_different_reports(self, tmp_path):
+        """雛形に入れた初期行が同じレポートを指していると、check が重複として報告してしまう。
+
+        雛形を「そのまま使う」ことを想定しているので、テストデータ側でも
+        別レポートを指すようにする。
+        """
         from src.sheets.master import shared_report_ids
 
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
         entries = load_master(path)
         assert shared_report_ids(entries) == {}
 
     def test_guide_sheet_is_included_with_intro(self, tmp_path):
         """非エンジニアが1枚で分かるよう、記入方法のシートを付け、先頭に案内を置く。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
         wb = load_workbook(path)
         assert "記入方法" in wb.sheetnames
         guide_text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
@@ -101,7 +148,7 @@ class TestCreateTemplateReportEntry:
 
     def test_choice_columns_get_dropdown(self, tmp_path):
         """`choices` のある列には Excel のドロップダウン（入力規則）が付く。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
         ws = load_workbook(path)["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
         # ReportEntry の `choices` 列は「個人情報」「有効」「0件あり」「2000件超」
@@ -117,26 +164,24 @@ class TestCreateTemplateReportEntry:
         assert "J2:J1003" in ranges  # SOQL
         assert "K2:K1003" in ranges  # 上書き
 
-    def test_examples_have_enabled_set_to_batsu(self, tmp_path):
-        """雛形の記入例は「有効」が ×（消し忘れても取得の対象にならない）。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
-        ws = load_workbook(path)["PY_管理表"]
-        # 「有効」列は G 列（ReportEntry の宣言順に基づく）。
-        # 記入例は 1001=2 行目, 1002=3 行目に置かれる
-        assert ws["G2"].value == "×"
-        assert ws["G3"].value == "×"
+    def test_initial_rows_have_no_fill(self, tmp_path):
+        """初期行は「本物の行」なので、記入例特有の薄い背景色は付かない。
 
-    def test_examples_load_with_enabled_false(self, tmp_path):
-        """雛形を読み込むと、記入例の enabled が False で取れる。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
-        entries = load_master(path)
-        assert entries["1001"].enabled is False
-        assert entries["1002"].enabled is False
+        旧仕様では ``_EXAMPLE_FILL`` で塗りつぶしていたが、初期行は**そのまま
+        業務データとして読まれる**ことが想定なので、白背景のままで出す。
+        """
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
+        ws = load_workbook(path)["PY_管理表"]
+        # 初期行（=2 行目, 3 行目）は白背景。``_is_example_fill`` が ``False``
+        # を返すことを確認する
+        for row_number in (2, 3):
+            cell = ws.cell(row=row_number, column=1)
+            assert not _is_example_fill(cell), f"行 {row_number} に背景色が残っている"
 
     def test_group_column_dropdown_skipped_when_settings_sheet_missing(self, tmp_path):
         """設定シートが無いブック（管理表の単独雛形）では「グループ」列のドロップダウンは
         付かず、処理も例外で止まらない。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
         ws = load_workbook(path)["PY_管理表"]
         ranges = {str(v.sqref) for v in ws.data_validations.dataValidation}
         # 「グループ」列は B 列。設定シートが無いので B 列向けのドロップダウンは付かない
@@ -146,20 +191,12 @@ class TestCreateTemplateReportEntry:
 
     def test_template_font_is_noto_sans_jp(self, tmp_path):
         """雛形（表シート・記入方法シートとも）のフォントが Noto Sans JP。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
         wb = load_workbook(path)
         assert wb["PY_管理表"]["A1"].font.name == "Noto Sans JP"
         for row in wb["記入方法"].iter_rows(min_row=1, max_row=10):
             for cell in row:
                 assert cell.font.name == "Noto Sans JP"
-
-    def test_example_rows_are_marked_with_fill(self, tmp_path):
-        """記入例全体に薄い背景色が付く。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
-        ws = load_workbook(path)["PY_管理表"]
-        fg = ws["A2"].fill.fgColor.value or ws["A2"].fill.fgColor.rgb
-        assert fg is not None
-        assert fg.endswith("D9D9D9") or fg == "00D9D9D9" or fg == "FFD9D9D9"
 
     def test_create_template_does_not_leave_default_sheet(self, tmp_path):
         """openpyxl が自動で作る「Sheet」が雛形に残らないこと。"""
@@ -168,7 +205,7 @@ class TestCreateTemplateReportEntry:
 
     def test_table_is_created_in_template(self, tmp_path):
         """Excel のテーブルにしておくと、行を足すのが楽になる。"""
-        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, EXAMPLES)
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
         assert "PY_T_ReportEntry" in load_workbook(path)["PY_管理表"].tables
 
 
@@ -176,7 +213,9 @@ class TestCreateTemplateGroupSetting:
     """`GroupSetting` の雛形がそのまま読み込めるか。"""
 
     def test_generated_template_can_be_loaded(self, tmp_path):
-        path = create_template(tmp_path / "設定.xlsx", GroupSetting, GROUP_SETTING_EXAMPLES)
+        path = create_template(
+            tmp_path / "設定.xlsx", GroupSetting, _sample_group_settings()
+        )
         rows = GroupSetting.load(path)
         assert len(rows) == 1
         assert rows[0].group == "営業本部"
@@ -190,8 +229,8 @@ class TestCreateTemplateGroupSetting:
             tmp_path / "設定.xlsx",
             GroupSetting,
             [
-                {"group": "営業本部", "base_path": Path(r"\\server\share\営業本部")},
-                {"group": "営業本部", "base_path": Path(r"\\server\share\営業本部B")},
+                GroupSetting(group="営業本部", base_path=Path(r"\\server\share\営業本部")),
+                GroupSetting(group="営業本部", base_path=Path(r"\\server\share\営業本部B")),
             ],
         )
         with pytest.raises(MasterDuplicateValueError):
@@ -202,7 +241,9 @@ class TestCreateTemplateScheduleRule:
     """`ScheduleRule` の雛形がそのまま読み込めるか。"""
 
     def test_generated_template_can_be_loaded(self, tmp_path):
-        path = create_template(tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES)
+        path = create_template(
+            tmp_path / "スケジュール.xlsx", ScheduleRule, _sample_schedule_rules()
+        )
         rules = ScheduleRule.load(path)
         assert [r.schedule_key for r in rules] == ["S001"]
         assert rules[0].report_key == "1001"
@@ -210,7 +251,9 @@ class TestCreateTemplateScheduleRule:
 
     def test_choice_columns_get_dropdown(self, tmp_path):
         """`choices` 列（「取得頻度」「曜日」「祝日対応」「有効」）だけにドロップダウンが付く。"""
-        path = create_template(tmp_path / "スケジュール.xlsx", ScheduleRule, SCHEDULE_EXAMPLES)
+        path = create_template(
+            tmp_path / "スケジュール.xlsx", ScheduleRule, _sample_schedule_rules()
+        )
         ws = load_workbook(path)[f"PY_{SCHEDULE_SHEET_NAME}"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
         # 取得頻度=C列, 曜日=F列, 祝日対応=H列, 有効=I列
@@ -349,30 +392,48 @@ def paths(tmp_path, monkeypatch):
     return master, history
 
 
+def _with_initial_rows(
+    monkeypatch,
+    *,
+    reports: list[ReportEntry] | None = None,
+    schedules: list[ScheduleRule] | None = None,
+    settings: list[GroupSetting] | None = None,
+) -> None:
+    """``src.initial_rows`` の3リストをテスト用に差し替える。
+
+    初期行を空にしたいケースと、特定の値を入れたいケースを1か所で切り替える。
+    """
+    monkeypatch.setattr("src.initial_rows.REPORT_ENTRIES", list(reports or []))
+    monkeypatch.setattr("src.initial_rows.SCHEDULE_RULES", list(schedules or []))
+    monkeypatch.setattr("src.initial_rows.GROUP_SETTINGS", list(settings or []))
+
+
 class TestCreateCombinedWorkbook:
-    def test_creates_three_data_sheets(self, tmp_path):
+    def test_creates_three_data_sheets(self, tmp_path, monkeypatch):
+        _with_initial_rows(monkeypatch)
         path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
         wb = load_workbook(path)
         assert f"PY_{ReportEntry.SHEET_NAME}" in wb.sheetnames
         assert f"PY_{ScheduleRule.SHEET_NAME}" in wb.sheetnames
         assert f"PY_{GroupSetting.SHEET_NAME}" in wb.sheetnames
 
-    def test_load_master_reads_report_entries(self, paths):
+    def test_load_master_reads_report_entries(self, paths, monkeypatch):
+        _with_initial_rows(monkeypatch, reports=_sample_report_entries())
         master_path, _ = paths
         create_combined_workbook(master_path)
         entries = load_master(master_path)
         assert list(entries) == ["1001", "1002"]
 
-    def test_load_schedule_reads_schedule_rules(self, paths):
+    def test_load_schedule_reads_schedule_rules(self, paths, monkeypatch):
+        _with_initial_rows(monkeypatch, schedules=_sample_schedule_rules())
         master_path, _ = paths
         create_combined_workbook(master_path)
         rules = load_schedule(master_path)
         assert [r.schedule_key for r in rules] == ["S001"]
 
-    def test_load_group_settings_reads_settings(self, paths):
-        from src.sheets.group_settings import (
-            load_group_settings,
-        )
+    def test_load_group_settings_reads_settings(self, paths, monkeypatch):
+        _with_initial_rows(monkeypatch, settings=_sample_group_settings())
+        from src.sheets.group_settings import load_group_settings
 
         master_path, _ = paths
         create_combined_workbook(master_path)
@@ -382,8 +443,9 @@ class TestCreateCombinedWorkbook:
         # load_group_settings() は MASTER_PATH 経由でも同じ結果を返す
         assert load_group_settings(master_path) == settings
 
-    def test_combined_guide_sheet_includes_all_classes(self, tmp_path):
+    def test_combined_guide_sheet_includes_all_classes(self, tmp_path, monkeypatch):
         """3クラスぶんの列説明が 1 つの「記入方法」シートに並ぶ。"""
+        _with_initial_rows(monkeypatch)
         path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
         wb = load_workbook(path)
         assert "記入方法" in wb.sheetnames
@@ -394,7 +456,12 @@ class TestCreateCombinedWorkbook:
         for header in ReportEntry.headers() + ScheduleRule.headers() + GroupSetting.headers():
             assert header in text, f"「{header}」が記入方法シートに出ていない"
 
-    def test_each_data_sheet_has_choices_dropdown(self, tmp_path):
+    def test_each_data_sheet_has_choices_dropdown(self, tmp_path, monkeypatch):
+        _with_initial_rows(
+            monkeypatch,
+            reports=_sample_report_entries(),
+            schedules=_sample_schedule_rules(),
+        )
         path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
         wb = load_workbook(path)
         report_ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
@@ -402,7 +469,7 @@ class TestCreateCombinedWorkbook:
         # `choices` 列は「個人情報」「有効」「0件あり」「2000件超」「SOQL」「上書き」
         # の 6 つ。 列宣言順は ID/グループ/担当者/概要/個人情報/Salesforce URL/
         # 有効/0件あり/2000件超/SOQL/上書き なのでドロップダウンは E, G〜K 列に付く
-        # （Salesforce URL=6 列目には付かない）
+        # （Salesforce URL=6 列目には付かない）。最終行は 2 + 2 - 1 + 1000 = 1003
         assert "E2:E1003" in report_ranges  # 個人情報
         assert "G2:G1003" in report_ranges  # 有効
         assert "H2:H1003" in report_ranges  # 0件あり
@@ -413,7 +480,7 @@ class TestCreateCombinedWorkbook:
         schedule_ranges = sorted(str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
         # スケジュール: 列宣言順は スケジュールキー/レポートキー/取得頻度/取得開始時刻/
         # 取得時刻/曜日/日付/祝日対応/有効。`choices` 列は 取得頻度(C) /
-        # 曜日(F) / 祝日対応(H) / 有効(I) の 4 つ
+        # 曜日(F) / 祝日対応(H) / 有効(I) の 4 つ。最終行は 2 + 1 - 1 + 1000 = 1002
         assert "C2:C1002" in schedule_ranges  # 取得頻度
         assert "F2:F1002" in schedule_ranges  # 曜日
         assert "H2:H1002" in schedule_ranges  # 祝日対応
@@ -422,16 +489,22 @@ class TestCreateCombinedWorkbook:
         settings_ws = wb[f"PY_{GroupSetting.SHEET_NAME}"]
         assert list(settings_ws.data_validations.dataValidation) == []
 
-    def test_report_group_column_dropdown_references_settings(self, tmp_path):
+    def test_report_group_column_dropdown_references_settings(self, tmp_path, monkeypatch):
         """管理表シートの「グループ」列に、設定シートの「グループ」列を参照する
-        リスト型入力規則が付く（formula1 が ``'PY_設定'!$A$2:$A$1002``）。"""
+        リスト型入力規則が付く（formula1 が ``'PY_設定'!$A$2:$A$1002``）。
+
+        初期行でレポートを入れると「グループ」列のドロップダウン最終行が伸びる
+        （行追加に備えて 1000 行ぶんの余裕＝初期行 N 件のとき 2 + N - 1 + 1000 行目まで）。
+        ここではレポートが 0 件なので最終行は 1001。
+        """
+        _with_initial_rows(monkeypatch, settings=_sample_group_settings())
         path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
         wb = load_workbook(path)
         ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         validations = {str(v.sqref): v for v in ws.data_validations.dataValidation}
         # 「グループ」列は B 列（宣言順で ID の次）
-        assert "B2:B1003" in validations, sorted(validations)
-        v = validations["B2:B1003"]
+        assert "B2:B1001" in validations, sorted(validations)
+        v = validations["B2:B1001"]
         assert v.type == "list"
         # 設定シートの実シート名（`PY_設定`）+ 「グループ」列（A 列）のデータ範囲
         # 最終行は _FIRST_DATA_ROW(2) + _DATA_VALIDATION_ROWS(1000) = 1002（将来の
@@ -449,24 +522,42 @@ class TestCreateCombinedWorkbook:
         settings_ws = wb[f"PY_{GroupSetting.SHEET_NAME}"]
         assert list(settings_ws.data_validations.dataValidation) == []
 
+    def test_report_group_column_dropdown_extends_when_initial_rows_exist(
+        self, tmp_path, monkeypatch
+    ):
+        """初期行が入ると「グループ」列のドロップダウン最終行も伸びる。"""
+        _with_initial_rows(
+            monkeypatch,
+            reports=_sample_report_entries(),
+            settings=_sample_group_settings(),
+        )
+        path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
+        wb = load_workbook(path)
+        ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
+        validations = {str(v.sqref): v for v in ws.data_validations.dataValidation}
+        # レポート 2 件 = 2 + 2 - 1 + 1000 = 1003
+        assert "B2:B1003" in validations, sorted(validations)
+
     def test_report_group_column_dropdown_also_applied_via_create_template(self, tmp_path):
         """`create_combined_workbook` 以外の経路でも、設定シート付きブックの
         管理表なら「グループ」列に設定シート参照ドロップダウンが付く。"""
         # 設定シートだけ先に作ってあるブックに、続けて管理表の雛形を生成
         path = tmp_path / "管理表.xlsx"
-        create_template(path, GroupSetting, GROUP_SETTING_EXAMPLES)
-        create_template(path, ReportEntry, EXAMPLES)
+        create_template(path, GroupSetting, _sample_group_settings())
+        create_template(path, ReportEntry, _sample_report_entries())
         wb = load_workbook(path)
         ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         validations = {str(v.sqref): v for v in ws.data_validations.dataValidation}
         assert "B2:B1003" in validations, sorted(validations)
         assert validations["B2:B1003"].formula1 == "'PY_設定'!$A$2:$A$1002"
 
-    def test_does_not_leave_default_sheet(self, tmp_path):
+    def test_does_not_leave_default_sheet(self, tmp_path, monkeypatch):
+        _with_initial_rows(monkeypatch)
         path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
         assert "Sheet" not in load_workbook(path).sheetnames
 
-    def test_font_is_noto_sans_jp_on_all_sheets(self, tmp_path):
+    def test_font_is_noto_sans_jp_on_all_sheets(self, tmp_path, monkeypatch):
+        _with_initial_rows(monkeypatch)
         path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
         wb = load_workbook(path)
         for sheet_name in (
@@ -482,27 +573,16 @@ class TestCreateCombinedWorkbook:
                         f"{sheet_name} の {cell.coordinate} のフォントが Noto Sans JP ではない"
                     )
 
-    def test_example_rows_have_fill_in_all_sheets(self, tmp_path):
-        """3シートそれぞれの記入例に薄い背景色が付く。"""
-        path = create_combined_workbook(tmp_path / "レポート管理表.xlsx")
-        wb = load_workbook(path)
-        for sheet_name in (
-            f"PY_{ReportEntry.SHEET_NAME}",
-            f"PY_{ScheduleRule.SHEET_NAME}",
-            f"PY_{GroupSetting.SHEET_NAME}",
-        ):
-            sheet = wb[sheet_name]
-            cell = sheet["A2"]
-            fg = cell.fill.fgColor.value or cell.fill.fgColor.rgb
-            assert fg is not None
-            assert fg.endswith("D9D9D9") or fg == "00D9D9D9" or fg == "FFD9D9D9"
-
 
 # ── 既存シートの自動マイグレーション ────────────────────────────────────────
 
 
 def _is_example_fill(cell) -> bool:
-    """薄い背景色（記入例マーク）が付いているか。"""
+    """薄い背景色（記入例マーク）が付いているか。
+
+    旧仕様で使われていた背景色 (``D9D9D9``) を検出する。今は塗りつぶし無いのが
+    正常なので、これが ``True`` になる行は想定外（残骸）。
+    """
     fg = cell.fill.fgColor.value or cell.fill.fgColor.rgb
     return bool(fg and (fg.endswith("D9D9D9") or fg == "00D9D9D9" or fg == "FFD9D9D9"))
 
@@ -529,17 +609,30 @@ class _LegacyReportEntry(MasterRow):
 class TestMigrateTemplate:
     """`create_template()` が既存シートを新列構成にマイグレーションできることを確認する。"""
 
-    def test_creates_from_examples_when_no_existing_file(self, tmp_path):
-        """ファイル・シートが存在しない場合は従来通り記入例で新規作成される。"""
+    def test_creates_from_initial_rows_when_no_existing_file(self, tmp_path):
+        """ファイル・シートが存在しない場合は ``rows`` で渡した初期行で新規作成される。"""
         path = tmp_path / "管理表.xlsx"
-        create_template(path, ReportEntry, EXAMPLES)
+        create_template(
+            path,
+            ReportEntry,
+            [
+                ReportEntry(
+                    key="1001",
+                    group="営業本部",
+                    assignee="山田",
+                    summary="顧客一覧",
+                    url="https://example/1001",
+                    enabled=True,
+                ),
+            ],
+        )
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
         assert sheet.cell(row=2, column=1).value == "1001"
-        # 記入例には背景色が付く（回帰確認）
-        assert _is_example_fill(sheet.cell(row=2, column=1))
+        # 初期行は「データ」なので背景色は付かない（回帰確認）
+        assert not _is_example_fill(sheet.cell(row=2, column=1))
 
-    def test_migrates_existing_data_without_examples(self, tmp_path):
+    def test_migrates_existing_data_without_initial_rows(self, tmp_path):
         """既存シートにデータがある状態で create_template() を呼ぶと、
         SheetAlreadyExistsError にならず、データが保持された新列構成のシートになる。"""
         path = tmp_path / "管理表.xlsx"
@@ -548,22 +641,22 @@ class TestMigrateTemplate:
             path,
             _LegacyReportEntry,
             [
-                {
-                    "key": "1001",
-                    "group": "営業本部",
-                    "assignee": "山田",
-                    "summary": "顧客一覧",
-                    "url": "https://example/1001",
-                    "enabled": True,
-                },
-                {
-                    "key": "1002",
-                    "group": "営業本部",
-                    "assignee": "佐藤",
-                    "summary": "売上実績",
-                    "url": "https://example/1002",
-                    "enabled": True,
-                },
+                ReportEntry(
+                    key="1001",
+                    group="営業本部",
+                    assignee="山田",
+                    summary="顧客一覧",
+                    url="https://example/1001",
+                    enabled=True,
+                ),
+                ReportEntry(
+                    key="1002",
+                    group="営業本部",
+                    assignee="佐藤",
+                    summary="売上実績",
+                    url="https://example/1002",
+                    enabled=True,
+                ),
             ],
         )
         # 新バージョン（9列）で同じパスに雛形生成。マイグレーションが走る
@@ -586,14 +679,14 @@ class TestMigrateTemplate:
             path,
             _LegacyReportEntry,
             [
-                {
-                    "key": "1001",
-                    "group": "営業本部",
-                    "assignee": "山田",
-                    "summary": "顧客一覧",
-                    "url": "https://example/1001",
-                    "enabled": True,
-                },
+                ReportEntry(
+                    key="1001",
+                    group="営業本部",
+                    assignee="山田",
+                    summary="顧客一覧",
+                    url="https://example/1001",
+                    enabled=True,
+                ),
             ],
         )
         create_template(path, ReportEntry)
@@ -612,7 +705,7 @@ class TestMigrateTemplate:
     def test_removed_columns_are_dropped(self, tmp_path):
         """旧シートに余分な列がある場合は捨てられて、新シートには現れない。"""
         path = tmp_path / "管理表.xlsx"
-        create_template(path, ReportEntry, EXAMPLES)
+        create_template(path, ReportEntry, _sample_report_entries())
         # 余分な列を追加して保存（手で列を足した想定）
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
@@ -637,33 +730,6 @@ class TestMigrateTemplate:
         # 捨てられた列のセル位置は空欄
         assert sheet.cell(row=2, column=10).value in (None, "")
         assert sheet.cell(row=2, column=11).value in (None, "")
-
-    def test_migrated_rows_have_no_example_fill(self, tmp_path):
-        """マイグレーションされた既存データの行には、記入例特有の薄い背景色が**付かない**。"""
-        path = tmp_path / "管理表.xlsx"
-        create_template(
-            path,
-            _LegacyReportEntry,
-            [
-                {
-                    "key": "1001",
-                    "group": "営業本部",
-                    "assignee": "山田",
-                    "summary": "顧客一覧",
-                    "url": "https://example/1001",
-                    "enabled": True,
-                },
-            ],
-        )
-        create_template(path, ReportEntry)
-        wb = load_workbook(path)
-        sheet = wb["PY_管理表"]
-        # マイグレーションされた行は白背景のまま
-        for row_number in (2,):
-            for col in range(1, len(ReportEntry.headers()) + 1):
-                assert not _is_example_fill(sheet.cell(row=row_number, column=col)), (
-                    f"マイグレーション行 {row_number} 列 {col} に背景色が残っている"
-                )
 
     def test_columns_in_declaration_order_after_migration(self, tmp_path):
         """マイグレーション後の列順は新しい宣言順になる（既存ファイルでの列順は問わない）。"""
@@ -705,22 +771,22 @@ class TestMigrateTemplate:
             path,
             _LegacyReportEntry,
             [
-                {
-                    "key": "1001",
-                    "group": "営業本部",
-                    "assignee": "山田",
-                    "summary": "顧客一覧",
-                    "url": "https://example/1001",
-                    "enabled": True,
-                },
-                {
-                    "key": "1002",
-                    "group": "営業本部",
-                    "assignee": "佐藤",
-                    "summary": "売上",
-                    "url": "https://example/1002",
-                    "enabled": True,
-                },
+                ReportEntry(
+                    key="1001",
+                    group="営業本部",
+                    assignee="山田",
+                    summary="顧客一覧",
+                    url="https://example/1001",
+                    enabled=True,
+                ),
+                ReportEntry(
+                    key="1002",
+                    group="営業本部",
+                    assignee="佐藤",
+                    summary="売上",
+                    url="https://example/1002",
+                    enabled=True,
+                ),
             ],
         )
         create_template(path, ReportEntry)
@@ -750,26 +816,94 @@ class TestMigrateTemplate:
     def test_idempotent_when_columns_unchanged(self, tmp_path):
         """列構成が変わらない再呼び出しでは、データは保持されて背景色も付かない。"""
         path = tmp_path / "管理表.xlsx"
-        create_template(path, _LegacyReportEntry, EXAMPLES)
-        # 同じクラスで 2 回目の create_template()。examples に上書きされないこと
-        create_template(path, _LegacyReportEntry, [{"key": "9999"}])
+        create_template(path, _LegacyReportEntry, _sample_report_entries())
+        # 同じクラスで 2 回目の create_template()。rows 渡しても既存データを上書きしないこと
+        create_template(
+            path,
+            _LegacyReportEntry,
+            [
+                ReportEntry(
+                    key="9999",
+                    group="営業本部",
+                    assignee="後発",
+                    summary="上書きされない",
+                    url="https://example/9999",
+                    enabled=True,
+                ),
+            ],
+        )
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
-        # examples ではなく既存の "1001" が残っている
+        # 既存（マイグレーション扱い）になった "1001" が残っている
         assert sheet.cell(row=2, column=1).value == "1001"
         # マイグレーション扱いで背景色は付かない
         assert not _is_example_fill(sheet.cell(row=2, column=1))
+
+    def test_initial_rows_are_ignored_when_existing_file(self, tmp_path, monkeypatch):
+        """既存ファイルがある場合は ``rows``（初期行）は無視され、マイグレーション優先。
+
+        「記入例を動かすと既存データが壊れる」を防ぐため、新しい機能でも
+        同じ方針を採る。
+        """
+        _with_initial_rows(
+            monkeypatch,
+            reports=[
+                ReportEntry(
+                    key="INITIAL",
+                    group="営業本部",
+                    assignee="初期",
+                    summary="これは無視される",
+                    url="https://example/initial",
+                    enabled=False,
+                ),
+            ],
+        )
+        path = tmp_path / "管理表.xlsx"
+        # 先にマイグレーション用の既存ファイルを作る
+        legacy_headers = ["有効", "Salesforce URL", "概要", "担当者", "グループ", "ID"]
+        with Excel(path) as book:
+            book.create_data_sheet("管理表").create_table(
+                "管理表",
+                Table(
+                    legacy_headers,
+                    [
+                        dict(
+                            zip(
+                                legacy_headers,
+                                ["○", "https://example/9999", "既存", "誰か", "営業", "9999"],
+                                strict=True,
+                            )
+                        ),
+                    ],
+                ),
+            )
+        create_combined_workbook(path)
+        wb = load_workbook(path)
+        sheet = wb["PY_管理表"]
+        # 既存の "9999" が残っており、初期行の "INITIAL" は入っていない
+        assert sheet.cell(row=2, column=1).value == "9999"
+        assert sheet.cell(row=2, column=1).value != "INITIAL"
 
 
 class TestMigrateCombinedWorkbook:
     """`create_combined_workbook()` でも 3シート単位でマイグレーションが効くことを確認する。"""
 
-    def test_migrates_only_existing_sheets(self, tmp_path):
-        """3シートのうち一部だけ既存データがあるケースでも、混在して扱える。"""
+    def test_migrates_only_existing_sheets(self, tmp_path, monkeypatch):
+        """3シートのうち一部だけ既存データがあるケースでも、混在して扱える。
+
+        このテストではスケジュール・設定に**初期行**を入れ、管理表だけ
+        既存ファイルで先に作る。「管理表はマイグレーション」「スケジュール・設定
+        は初期行から作成」の混在を確認する。
+        """
         path = tmp_path / "レポート管理表.xlsx"
-        # 管理表シートだけ先に作っておく（実データ入り）
-        create_template(path, ReportEntry, EXAMPLES)
-        # 結合ブックを実行 → スケジュールと設定は記入例から新規作成、管理表はマイグレーション
+        # 管理表シートだけ先に作っておく（実データ入り、初期行は渡さない）
+        create_template(path, ReportEntry, _sample_report_entries())
+        # スケジュール・設定に初期行を入れて、結合ブックを実行
+        _with_initial_rows(
+            monkeypatch,
+            schedules=_sample_schedule_rules(),
+            settings=_sample_group_settings(),
+        )
         create_combined_workbook(path)
         wb = load_workbook(path)
         assert f"PY_{ReportEntry.SHEET_NAME}" in wb.sheetnames
@@ -778,15 +912,16 @@ class TestMigrateCombinedWorkbook:
         # 管理表の実データは保持
         report_sheet = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         assert report_sheet.cell(row=2, column=1).value == "1001"
-        # スケジュール・設定は記入例から作られた
+        # スケジュール・設定は初期行から作られた
         schedule_sheet = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
         assert schedule_sheet.cell(row=2, column=1).value == "S001"
         settings_sheet = wb[f"PY_{GroupSetting.SHEET_NAME}"]
         assert settings_sheet.cell(row=2, column=1).value == "営業本部"
-        # 管理表（マイグレーション）は白背景、スケジュール・設定（記入例）は背景色あり
-        assert not _is_example_fill(report_sheet.cell(row=2, column=1))
-        assert _is_example_fill(schedule_sheet.cell(row=2, column=1))
-        assert _is_example_fill(settings_sheet.cell(row=2, column=1))
+        # どの行も背景色は付かない（初期行もマイグレーション行も「データ」）
+        for sheet in (report_sheet, schedule_sheet, settings_sheet):
+            assert not _is_example_fill(sheet.cell(row=2, column=1)), (
+                f"{sheet.title} のデータ行に背景色が残っている"
+            )
 
     def test_migrates_all_three_sheets_when_present(self, tmp_path):
         """3シート全てが既存の場合、すべてマイグレーションされる（背景色は付かない）。"""
@@ -835,17 +970,19 @@ class TestMigrateCombinedWorkbook:
         # 3クラス分の「記入方法」シートは1つにまとめ直されている
         assert wb["記入方法"]["A1"].value == REPORT_ENTRY_GUIDE_INTRO
 
-    def test_creates_combined_when_no_existing_file(self, tmp_path):
-        """既存ファイル無しの場合は従来通り3シートとも記入例で新規作成される（回帰確認）。"""
+    def test_creates_combined_with_empty_initial_rows(self, tmp_path, monkeypatch):
+        """初期行が空でも雛形生成はエラーにならない（既定挙動）。"""
+        _with_initial_rows(monkeypatch)
         path = tmp_path / "レポート管理表.xlsx"
         create_combined_workbook(path)
         wb = load_workbook(path)
-        # 全データシートの記入例に背景色が付く
+        # 3シートとも見出しだけで作成され、データ行は無い
         for sheet_name in (
             f"PY_{ReportEntry.SHEET_NAME}",
             f"PY_{ScheduleRule.SHEET_NAME}",
             f"PY_{GroupSetting.SHEET_NAME}",
         ):
-            assert _is_example_fill(wb[sheet_name].cell(row=2, column=1)), (
-                f"{sheet_name} の記入例に背景色が付いていない"
+            sheet = wb[sheet_name]
+            assert sheet.cell(row=2, column=1).value in (None, ""), (
+                f"{sheet_name} に初期行なしなのに 2 行目に値がある"
             )

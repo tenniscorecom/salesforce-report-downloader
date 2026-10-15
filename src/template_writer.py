@@ -5,23 +5,24 @@
 
 雛形は次の3つの関数で生成する:
 
-- `create_template(path, row_cls, examples)` — 1クラス分の雛形を生成
+- `create_template(path, row_cls, rows)` — 1クラス分の雛形を生成
 - `apply_schedule_dropdowns(path)` — 「スケジュール」シートにドロップダウンだけ後付け
 - `create_combined_workbook(path)` — 「管理表」「スケジュール」「設定」の3シートを
   1 つの Excel ブックにまとめて生成
 
-記入例の背景色・Noto Sans JP フォント・選択列のドロップダウンなどの挙動は
-旧 `MasterRow.create_template()` を踏襲する。
+初期行は `src.initial_rows` の3つのリストから取り込む（`create_combined_workbook`）。
+`create_template` 単体でも、`MasterRow` インスタンスの ``rows`` 引数で初期行を渡せる。
 """
 
 import dataclasses
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
 from comken.core.table.model import Table as CoreTable
 from comken.exceptions import ComkenFileNotFoundError, SheetNotFoundError
-from comken.toolbox.excel import Color, Excel
+from comken.toolbox.excel import Excel
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
@@ -35,7 +36,6 @@ from src.report_master import (
     read_raw_rows,
 )
 from src.sheets.group_settings import GroupSetting
-from src.sheets.master import EXAMPLES as REPORT_ENTRY_EXAMPLES
 from src.sheets.master import ReportEntry
 from src.sheets.schedule import SCHEDULE_SHEET_NAME, ScheduleRule
 
@@ -50,16 +50,11 @@ _TEMPLATE_FONT_NAME = "Noto Sans JP"
 # 想定行数より十分大きく取っておく（テンプレから1000行以上増える運用は基本無い）
 _DATA_VALIDATION_ROWS = 1000
 
-# 記入例の行に付ける背景色。本物のデータと見分けが付くよう、薄い灰色系で
-# `Color.LIGHT_GRAY` を使う（強く出すと「エラー行」に見えるため）
-_EXAMPLE_FILL_COLOR = Color.LIGHT_GRAY
-_EXAMPLE_FILL = PatternFill(fill_type="solid", fgColor=_EXAMPLE_FILL_COLOR)
-
 # 「スケジュール」シートで「取得頻度」と矛盾する「曜日」「日付」セルに付ける
 # エラー色（薄い赤 + 濃い赤文字）。``ScheduleRule.validate()`` で読み込み時に
 # エラー化されるので、ここでの色付けは **書き間違いを編集時点で気づかせる**
 # 補助。``choices`` のセルの塗りつぶし色（=エラー）として Excel の表示に
-# 馴染むよう、``Color.PINK`` 相当の薄い赤 + 濃い赤文字を使う
+# 馴染むよう、薄い赤 + 濃い赤文字を使う
 _ERROR_FILL = PatternFill(fill_type="solid", fgColor="FFC7CE")  # 薄い赤
 _ERROR_FONT = Font(color="9C0006")  # 濃い赤
 
@@ -76,40 +71,13 @@ REPORT_ENTRY_GUIDE_INTRO = (
     "プログラム（コード）を直す必要はありません。"
 )
 
-# 雛形用の「スケジュール」シート向け記入例（`ScheduleRule` に既存 EXAMPLES が無いので
-# ここで簡単なものを用意する）
-SCHEDULE_EXAMPLES: list[dict[str, Any]] = [
-    {
-        "schedule_key": "S001",
-        "report_key": "1001",
-        "frequency": "毎日",
-        "start_time": None,
-        "desired_time": None,
-        "raw_weekday": "",
-        "raw_day_of_month": "",
-        "holiday_policy": "取得しない",
-        "enabled": True,
-    },
-]
-
-# 雛形用の「設定」シート向け記入例
-GROUP_SETTING_EXAMPLES: list[dict[str, Any]] = [
-    {
-        "group": "営業本部",
-        "base_path": Path(r"\\server\share\営業本部"),
-    },
-]
-
 
 def create_template(
     path: str | Path,
     row_cls: type[MasterRow],
-    examples: list[dict] | None = None,
+    rows: Sequence[MasterRow] = (),
 ) -> Path:
-    """1クラス分の雛形（記入例・「記入方法」シート付き）を生成する。
-
-    **空の表を渡されるより、1行埋まっているほうが何をどう書くか伝わる**ので、
-    記入例を入れておく（使う前に消す案内も「記入方法」に書く）。
+    """1クラス分の雛形（初期行・「記入方法」シート付き）を生成する。
 
     **`choices` を宣言した列には、自動でドロップダウン（Excel の入力規則）が付く。**
     ドロップダウン・案内文・エラーメッセージは `column()` の `choices` と `help` から
@@ -122,13 +90,17 @@ def create_template(
     ``column()`` 宣言に列を追加・削除した直後でも、運用中の管理表に対してそのまま
     実行して良い。古いシートに書かれた実データは新しい列構成に揃え直して保持し、
     増えた列は空欄、減った列は捨てられる（既定値が無い必須列はユーザーが後で埋める）。
-    マイグレーションされた行は記入例と区別するため、薄い背景色は付けない。
+    マイグレーション時は ``rows``（初期行）は**無視**され、既存データが優先される。
+
+    **初期行は「データ」として扱う（=記入例ではない）。** 雛形に置いた時点で
+    本物の行なので、背景色は付けず `check` もそのまま通る想定（=ユーザーが
+    後で有効化してから取得する）。
 
     Args:
         path: 作成先（.xlsx）。
         row_cls: 雛形のもとになる `MasterRow` のサブクラス。
-        examples: 記入例。{Python の名前: 値} の形で渡す。
-            既存ファイルに対象シートがある場合は無視される（マイグレーション優先）。
+        rows: 初期行。`row_cls` のインスタンスの ``Sequence``。既存ファイルに
+            対象シートがある場合は無視される（マイグレーション優先）。
     """
     path = Path(path)
     specs = row_cls.column_specs()
@@ -136,26 +108,18 @@ def create_template(
 
     existing_rows = _existing_rows_or_none(path, row_cls, specs)
     if existing_rows is not None:
-        # 既存データを新しい列構成に揃え直す（増減は吸収、並び順は宣言順）
-        rows = existing_rows
-        mark_as_example = False
+        # 既存データを新しい列構成に揃え直す（増減は吸収、並び順は宣言順）。
+        # 初期行は無視する（既存ファイルがある＝マイグレーション優先）
+        rows_dicts = existing_rows
     else:
-        examples = examples or []
-        rows = [
-            {
-                spec.header: _to_cell(example.get(name, ""), spec, value_type)
-                for name, spec, value_type, _ in specs
-            }
-            for example in examples
-        ]
-        mark_as_example = True
+        rows_dicts = [_row_to_dict(row, specs) for row in rows]
     logger.debug(
         "雛形生成開始: class=%s, path=%s, sheet=%s, マイグレーション=%s, データ行=%d, 列=%d",
         row_cls.__name__,
         path,
         row_cls.SHEET_NAME,
         existing_rows is not None,
-        len(rows),
+        len(rows_dicts),
         len(headers),
     )
 
@@ -165,7 +129,7 @@ def create_template(
 
     # 空の雛形でも Excel テーブルを成立させるため、API が要求する見出しだけを
     # 持つ Table を作る。実データが無い場合の仮行は create_table が保持しない。
-    template_table = CoreTable(headers, rows)
+    template_table = CoreTable(headers, rows_dicts)
     with Excel(path) as excel:
         excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
     logger.debug("雛形: データシート作成: path=%s, sheet=%s", path, row_cls.SHEET_NAME)
@@ -175,39 +139,31 @@ def create_template(
 
     # **全セルに雛形用のフォントを当てる。** 既存のフォント属性（太字など）は
     # そのまま使い回し、`name` だけ書き換える（後勝ちで上書きすると太字まで消える）。
-    # データ行（見出し＋記入例＋将来の行追加ぶん）全体に適用するため
+    # データ行（見出し＋初期行＋将来の行追加ぶん）全体に適用するため
     # `_DATA_VALIDATION_ROWS` ぶんの余裕を足した範囲を渡す
-    _apply_template_font(sheet, len(rows) + _DATA_VALIDATION_ROWS)
+    _apply_template_font(sheet, len(rows_dicts) + _DATA_VALIDATION_ROWS)
     logger.debug(
-        "雛形: テンプレートフォント適用: sheet=%s, 対象=%d 行", row_cls.SHEET_NAME, len(rows)
+        "雛形: テンプレートフォント適用: sheet=%s, 対象=%d 行", row_cls.SHEET_NAME, len(rows_dicts)
     )
     # **`choices` がある列にドロップダウンを付ける。** データ行の先頭から
     # 十分な行数ぶんの範囲に適用し、あとから行を足しても効くようにする
-    _apply_choice_validations(sheet, specs, len(rows))
+    _apply_choice_validations(sheet, specs, len(rows_dicts))
 
     # 管理表シートの場合、同じブックに「設定」シートがあれば「グループ」列に
     # 「設定」シートの「グループ」列を参照するドロップダウンを追加で付ける
     # （スケジュール・設定シート単体の雛形では `row_cls` が違うので適用されない）
     if row_cls is ReportEntry:
-        group_last_row = _FIRST_DATA_ROW + len(rows) - 1 + _DATA_VALIDATION_ROWS
+        group_last_row = _FIRST_DATA_ROW + len(rows_dicts) - 1 + _DATA_VALIDATION_ROWS
         _apply_group_validation(book, sheet, group_last_row)
 
     # 「スケジュール」シートの場合、「取得頻度」と矛盾する「曜日」「日付」を
     # 赤く塗る条件付き書式を付ける（編集時点で気づかせるため）
     if row_cls is ScheduleRule:
-        schedule_last_row = _FIRST_DATA_ROW + len(rows) - 1 + _DATA_VALIDATION_ROWS
+        schedule_last_row = _FIRST_DATA_ROW + len(rows_dicts) - 1 + _DATA_VALIDATION_ROWS
         _apply_schedule_conditional_formatting(sheet, schedule_last_row, row_cls)
 
     _auto_width(sheet)
     sheet.freeze_panes = "A2"
-
-    # 記入例にのみ薄い背景色を付ける。マイグレーションされた既存データは
-    # 本物のデータなので、白背景のままにする（例として見間違えないように）。
-    if mark_as_example:
-        for offset in range(len(rows)):
-            row_number = _FIRST_DATA_ROW + offset
-            for col in range(1, len(headers) + 1):
-                sheet.cell(row=row_number, column=col).fill = _EXAMPLE_FILL
 
     _write_class_guide(book, row_cls, specs)
 
@@ -235,9 +191,11 @@ def create_combined_workbook(path: str | Path) -> Path:
     「管理表」シートの冒頭案内（`REPORT_ENTRY_GUIDE_INTRO`）は、3シートまとめた
     「記入方法」シートの先頭に置く（旧 `ReportEntry.GUIDE_INTRO` を移設したもの）。
 
-    **既存ファイルに対象シートがある場合はクラス単位で自動マイグレーションする。**
-    3クラスは互いに独立に判定するため、「管理表だけ既存データがある」「設定シートは
-    まだ無いので記入例から作る」のような混在もありえる。
+    **初期行は ``src.initial_rows`` から取る。** 3リスト（`REPORT_ENTRIES` /
+    `SCHEDULE_RULES` / `GROUP_SETTINGS`）の `MasterRow` インスタンスが雛形の
+    最初から入る。**既存ファイルに対象シートがある場合はマイグレーションが優先され、
+    初期行は無視される**（3クラスは互いに独立に判定するため、「管理表だけ既存
+    データがある」「設定シートはまだ無いので初期行から作る」のような混在もありえる）。
 
     Args:
         path: 作成先（.xlsx）。
@@ -250,6 +208,11 @@ def create_combined_workbook(path: str | Path) -> Path:
         を上書き生成する実行はしない。** 呼び出し側で運用判断の上、tmp_path
         等を渡して呼び出す想定。
     """
+    # 初期行は `src.initial_rows` から取る。**関数の入口で取り込む**のは、
+    # モジュール読込時に副作用（例: 空リスト以外の `REPORT_ENTRIES` が定義
+    # されている）を呼び出し側へ波及させないため。
+    from src.initial_rows import GROUP_SETTINGS, REPORT_ENTRIES, SCHEDULE_RULES
+
     path = Path(path)
     specs_report = ReportEntry.column_specs()
     specs_schedule = ScheduleRule.column_specs()
@@ -279,21 +242,21 @@ def create_combined_workbook(path: str | Path) -> Path:
         _write_data_sheet(
             excel,
             ReportEntry,
-            REPORT_ENTRY_EXAMPLES,
+            REPORT_ENTRIES,
             specs_report,
             existing_rows=existing_report,
         )
         _write_data_sheet(
             excel,
             ScheduleRule,
-            SCHEDULE_EXAMPLES,
+            SCHEDULE_RULES,
             specs_schedule,
             existing_rows=existing_schedule,
         )
         _write_data_sheet(
             excel,
             GroupSetting,
-            GROUP_SETTING_EXAMPLES,
+            GROUP_SETTINGS,
             specs_settings,
             existing_rows=existing_settings,
         )
@@ -304,24 +267,21 @@ def create_combined_workbook(path: str | Path) -> Path:
         book,
         f"PY_{ReportEntry.SHEET_NAME}",
         specs_report,
-        REPORT_ENTRY_EXAMPLES,
-        mark_as_example=existing_report is None,
+        REPORT_ENTRIES,
         row_cls=ReportEntry,
     )
     _finalize_sheet(
         book,
         f"PY_{ScheduleRule.SHEET_NAME}",
         specs_schedule,
-        SCHEDULE_EXAMPLES,
-        mark_as_example=existing_schedule is None,
+        SCHEDULE_RULES,
         row_cls=ScheduleRule,
     )
     _finalize_sheet(
         book,
         f"PY_{GroupSetting.SHEET_NAME}",
         specs_settings,
-        GROUP_SETTING_EXAMPLES,
-        mark_as_example=existing_settings is None,
+        GROUP_SETTINGS,
         row_cls=GroupSetting,
     )
 
@@ -445,7 +405,7 @@ def _existing_rows_or_none(
 ) -> list[dict] | None:
     """既存ファイルに対象シートがあれば、新しい列構成に合わせた行データを返す。
 
-    無ければ ``None``（呼び出し側は記入例で新規作成する）。
+    無ければ ``None``（呼び出し側は初期行で新規作成する）。
 
     - 既存シートの生データ（``read_raw_rows()``）を、新しい列の見出し順に
       再構成する。既存データに無い列は空文字、新しい列定義に無い既存列は捨てる
@@ -541,72 +501,71 @@ def _delete_existing_template_sheets(path: Path, data_sheet_names: list[str]) ->
 def _write_data_sheet(
     excel: Excel,
     row_cls: type[MasterRow],
-    examples: list[dict],
+    initial_rows: Sequence[MasterRow],
     specs: list[tuple[str, ColumnSpec, Any, Any]],
     *,
     existing_rows: list[dict] | None = None,
 ) -> None:
     """`excel` インスタンスへ1シート分のデータシートを書き出す。
 
-    ``existing_rows`` が ``None`` でなければ記入例の代わりにマイグレーション結果を
+    ``existing_rows`` が ``None`` でなければ初期行の代わりにマイグレーション結果を
     使う（増減した列を吸収済み・宣言順に並んだ行）。
     """
     headers = [spec.header for _, spec, _, _ in specs]
     if existing_rows is not None:
         rows = existing_rows
     else:
-        rows = [
-            {
-                spec.header: _to_cell(example.get(name, ""), spec, value_type)
-                for name, spec, value_type, _ in specs
-            }
-            for example in examples
-        ]
+        rows = [_row_to_dict(row, specs) for row in initial_rows]
     template_table = CoreTable(headers, rows)
     excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
+
+
+def _row_to_dict(
+    row: MasterRow, specs: list[tuple[str, ColumnSpec, Any, Any]]
+) -> dict[str, Any]:
+    """``MasterRow`` インスタンスを {Excel の見出し: 値} の ``dict`` に変換する。
+
+    ``dataclasses.asdict()`` は ``ScheduleRule.start_time`` の ``dt.time`` を
+    ``dict`` に分解してしまうので、列宣言で公開された属性だけを直接拾う
+    （``cached_property`` 由来の ``report_id`` のような計算値も混入しない）。
+    """
+    return {
+        spec.header: _to_cell(getattr(row, name), spec, value_type)
+        for name, spec, value_type, _ in specs
+    }
 
 
 def _finalize_sheet(
     book: Workbook,
     full_sheet_name: str,
     specs: list[tuple[str, ColumnSpec, Any, Any]],
-    examples: list[dict],
+    initial_rows: Sequence[MasterRow],
     *,
-    mark_as_example: bool = True,
     row_cls: type[MasterRow] | None = None,
 ) -> None:
     """`create_data_sheet` で書き出したシートに雛形用の装飾を後付けする。
 
-    ``mark_as_example=False`` のときは記入例用の薄い背景色を付けない
-    （マイグレーションされた実データは白背景のままにする）。
-
-    ``row_cls`` が ``ScheduleRule`` のときは「曜日」「日付」セルへの
-    条件付き書式（取得頻度との矛盾を赤く塗る）も追加する。
-    既存ブックへの後付け（``apply_schedule_dropdowns``）側と挙動を揃える
-    ため、同じ ``_apply_schedule_conditional_formatting`` を呼ぶ。
+    初期行は「本物のデータ」なので、背景色は付けない。``ScheduleRule`` の
+    ときは「曜日」「日付」セルへの条件付き書式（取得頻度との矛盾を赤く
+    塗る）も追加する。既存ブックへの後付け（``apply_schedule_dropdowns``）
+    側と挙動を揃えるため、同じ ``_apply_schedule_conditional_formatting`` を呼ぶ。
     """
     sheet = book[full_sheet_name]
-    headers = [spec.header for _, spec, _, _ in specs]
-    example_count = len(examples)
-    _apply_template_font(sheet, example_count + _DATA_VALIDATION_ROWS)
-    _apply_choice_validations(sheet, specs, example_count)
+    row_count = len(initial_rows)
+    _apply_template_font(sheet, row_count + _DATA_VALIDATION_ROWS)
+    _apply_choice_validations(sheet, specs, row_count)
     # 管理表シートだけに、設定シート参照の「グループ」列ドロップダウンを付ける
     if row_cls is ReportEntry:
-        group_last_row = _FIRST_DATA_ROW + example_count - 1 + _DATA_VALIDATION_ROWS
+        group_last_row = _FIRST_DATA_ROW + row_count - 1 + _DATA_VALIDATION_ROWS
         _apply_group_validation(book, sheet, group_last_row)
     if row_cls is ScheduleRule:
         # ドロップダウンと同じ最終行まで（=``_DATA_VALIDATION_ROWS`` ぶん余裕）
-        schedule_last_row = _FIRST_DATA_ROW + example_count - 1 + _DATA_VALIDATION_ROWS
+        schedule_last_row = _FIRST_DATA_ROW + row_count - 1 + _DATA_VALIDATION_ROWS
         _apply_schedule_conditional_formatting(
             sheet, schedule_last_row, cast("type[ScheduleRule]", row_cls)
         )
     _auto_width(sheet)
     sheet.freeze_panes = "A2"
-    if mark_as_example:
-        for offset in range(example_count):
-            row_number = _FIRST_DATA_ROW + offset
-            for col in range(1, len(headers) + 1):
-                sheet.cell(row=row_number, column=col).fill = _EXAMPLE_FILL
 
 
 def _write_class_guide(
@@ -641,11 +600,6 @@ def _write_class_guide(
     last = header_row + len(specs) + 2
     sheet.cell(row=last, column=1, value="注意")
     sheet.cell(row=last, column=2, value="1行目の見出しは変えないでください（列名で読みます）")
-    sheet.cell(
-        row=last + 1,
-        column=2,
-        value="記入例は『有効』が × なので、消し忘れても取得されません（不要なら消してください）",
-    )
     for column in range(1, 4):
         sheet.cell(row=header_row, column=column).font = Font(bold=True)
     _auto_width(sheet, max_width=80)
@@ -702,9 +656,7 @@ def _write_combined_guide(
     # 注意書き
     sheet.cell(row=current_row, column=1, value="注意").font = Font(bold=True)
     note1 = "1行目の見出しは変えないでください（列名で読みます）"
-    note2 = "記入例は『有効』が × なので、消し忘れても取得されません（不要なら消してください）"
     sheet.cell(row=current_row + 1, column=2, value=note1)
-    sheet.cell(row=current_row + 2, column=2, value=note2)
     _auto_width(sheet, max_width=80)
     sheet.freeze_panes = "A2"
     for row in sheet.iter_rows():
@@ -961,7 +913,7 @@ def _apply_template_font(sheet: Worksheet, example_count: int) -> None:
 
 
 def _to_cell(value: Any, spec: ColumnSpec, value_type: Any) -> Any:
-    """記入例をセルに書ける形にする。"""
+    """インスタンスの属性値をセルに書ける形に変換する。"""
     if isinstance(value, bool):
         if (value_type is bool or value_type == "bool") and spec.choices:
             return spec.choices[0] if value else spec.choices[1]
@@ -1002,8 +954,6 @@ def _auto_width(sheet: Worksheet, *, max_width: int | None = None) -> None:
 
 __all__ = [
     "REPORT_ENTRY_GUIDE_INTRO",
-    "SCHEDULE_EXAMPLES",
-    "GROUP_SETTING_EXAMPLES",
     "create_template",
     "create_combined_workbook",
     "apply_schedule_dropdowns",

@@ -55,40 +55,6 @@ from src.report_master import MasterRow, column
 
 logger = logging.getLogger(__name__)
 
-# 記入例（雛形に入れる）。2行目は別のレポートにする——同じ URL を並べると、
-# check が「同じレポートを指している」と報告してしまう
-_DOMAIN = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report"
-EXAMPLES = [
-    {
-        "key": "1001",
-        "group": "営業本部",
-        "assignee": "山田太郎",
-        "summary": "顧客一覧",
-        "has_personal_info": True,  # 氏名・電話・住所を含む例
-        "url": f"{_DOMAIN}/00O5g00000ABCDE/view",
-        # 記入例なので ×。消し忘れても取得の対象にならない
-        "enabled": False,
-        "allow_empty": False,  # 普段はデータがあるが、念のため「×」（既定）
-        "exceeds_row_limit": False,  # 2000行に収まる通常のレポート（既定）
-        "use_soql": False,  # Report API のまま（既定）
-        "overwrite": False,  # 毎回新しいファイルにする既定（×）
-    },
-    {
-        "key": "1002",
-        "group": "営業本部",
-        "assignee": "佐藤花子",
-        "summary": "売上実績",
-        "has_personal_info": False,  # 集計値のみで個人を特定する情報が無い例
-        "url": f"{_DOMAIN}/00O5g00000FGHIJ/view",
-        # 記入例なので ×。消し忘れても取得の対象にならない
-        "enabled": False,
-        "allow_empty": True,  # 「該当データ無し」が普通に起きるレポートの例
-        "exceeds_row_limit": False,
-        "use_soql": False,
-        "overwrite": False,
-    },
-]
-
 
 @dataclass(frozen=True, kw_only=True)
 class ReportEntry(MasterRow):
