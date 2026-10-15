@@ -21,6 +21,8 @@ __all__ = [
     "SoqlColumnNameConflictError",
     "SoqlCountMismatchError",
     "ColumnNamesCSVFormatError",
+    "SoqlTransformError",
+    "SoqlIncompleteError",
     "EmptyReportError",
     "ReportFolderNotFoundError",
     "ReportReservePathLimitError",
@@ -191,6 +193,89 @@ class ColumnNamesCSVFormatError(DownloaderError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class SoqlTransformError(DownloaderError):
+    """``SoqlReport.transform()`` の実行中に例外が起きた／戻り値が Table でない
+
+    ``transform()`` は ``SoqlReport`` のサブクラスで定義する「取得した Table
+    を加工して保存用の Table を返す」関数。 サマリーレポートを Python で
+    組み立てる用途に使う。 加工ロジックは人が書く Python コードなので、
+    ``KeyError`` / ``ValueError`` / ``ZeroDivisionError`` などの
+    ``ComkenError`` 系でない例外が出やすい。 既存の ``download_scheduled()``
+    は ``ComkenError`` 系だけを「想定した失敗」として次レポートへ続ける
+    設計のため、 そのままでは 1 本の加工のミスで他のレポートの取得が
+    止まってしまう。 そこで ``transform()`` の中で起きた例外は
+    ``DownloaderError`` 系（ ``ComkenError`` の subclass ）に包み直して、
+    取得フローがまとめて拾えるようにする。 ``_failure_row()`` 側では
+    ``ComkenError`` 系として「Salesforce」区分に入る。
+
+    戻り値が ``Table`` でない（ ``None`` を返した等）場合も同じ例外で
+    知らせる（保存に ``Table`` 以外を渡すと ``_write_csv`` が壊れるため、
+    手前で落とす）。
+
+    メッセージには **行の値は出さない**（ ``str(exc)`` の全文は載せない）。
+    元の例外クラス名と「加工に失敗した」事実だけを書き、 ``from exc``
+    で元の例外をつなぐ（ ``__cause__`` から辿れる）。
+
+    発生箇所: ``src.service._fetch_via_soql()`` （ ``bulk_query()`` の直後、
+    件数の比較（ ``CHECK_COUNT`` ）と同じ接続のうち、加工前の Table に対して
+    呼ばれる）。
+
+    対処:
+        ``reports/<ファイル>.py`` の ``transform()`` を見直す。 ``SoqlReport``
+        のどの ``KEY`` で起きたかがメッセージに書かれている。 ``from exc``
+        で元の例外が ``__cause__`` に繋がっているので、 合わせて辿ると
+        どこで何が起きたかが分かる。
+    """
+
+    def __init__(
+        self,
+        report_key: str,
+        summary: str,
+        report_class_name: str,
+        exc_type_name: str,
+        *,
+        reason: str = "加工中にエラーが発生しました",
+    ) -> None:
+        super().__init__(
+            f"SOQL の transform() で{reason}: 管理番号={report_key}（{summary}）"
+            f", クラス={report_class_name}, 種類={exc_type_name}"
+        )
+
+
+class SoqlIncompleteError(DownloaderError):
+    """soql-collector の下書きに未完成の印（ ``【未完成】`` ）が残っている
+
+    soql-collector は SOQL の下書きを出すときに、 補えなかった部分を
+    ``【未完成】`` で始まる行として残す。 その印のある SOQL はそのままでは
+    実行できない（=Salesforce に問い合わせる前に止める）。 印は 1 行目
+    （前後の空白を除く）に来る前提。 本文の途中（文字列値など）に
+    ``【未完成】`` が出てくるだけなら止めない。
+
+    ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に ``soql()`` の
+    本文を ``lstrip()`` して ``startswith()`` で判定する。 Salesforce
+    には問い合わせない。
+
+    印の文字列は ``src.service.INCOMPLETE_SOQL_MARKER`` の定数で、
+    soql-collector 側の ``INCOMPLETE_MARKER`` と同じ。 変えるときは
+    両方を同時に変える。
+
+    発生箇所: ``src.service._fetch_via_soql()`` （ ``bulk_query()`` を呼ぶ前）
+
+    対処:
+        soql-collector の下書きに作れなかった部分が残っています。
+        SOQL 資料の「作れなかった部分」を補い、 1 行目の ``【未完成】`` の行を
+        消してから使ってください。
+    """
+
+    def __init__(self, report_key: str, summary: str) -> None:
+        super().__init__(
+            f"SOQL の下書きに未完成の印があります: 管理番号={report_key}（{summary}）\n"
+            "soql-collector の下書きに作れなかった部分が残っています。"
+            "SOQL資料の『作れなかった部分』を補い、"
+            "1 行目の【未完成】の行を消してから使ってください。"
+        )
 
 
 class EmptyReportError(DownloaderError):

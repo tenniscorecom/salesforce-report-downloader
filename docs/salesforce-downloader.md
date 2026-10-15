@@ -952,6 +952,75 @@ SOQL の `len(table)` と比べる。
 詳細は `src/service.py` の `_fetch_via_soql()` / `_verify_soql_count()` /
 `SoqlCountMismatchError` の docstring を参照。
 
+### 加工 transform()（2026-10 改定）
+
+SOQL で取った結果は `SoqlReport.transform()` を通って保存される。 サマリー
+レポートを Python で組み立てる用途（今までサマリーレポートでやっていたものを
+Python で加工して代わりにする）に使う。 サブクラスで上書きしない限り、
+`transform()` は入力をそのまま返す（=既存の動きと同じ）。
+
+呼ばれる順番は次のとおり（`_fetch_via_soql()` 内）:
+
+1. `bulk_query()` で **生の Table** を取得
+2. 件数の比較（`CHECK_COUNT=True` のとき） — **加工前**の生の結果に対して
+   行う（レポートの総件数と比べられるのは加工前の件数のため）
+3. `transform()` を呼ぶ — **加工前の** Table を渡す
+4. 返ってきた Table を `_save()` で保存（このあと `COLUMN_NAMES` /
+   `列名の対応.csv` での見出しの差し替えが走る）
+
+**加工のミスは当該レポートだけの失敗になる。** `transform()` の中で起きた
+例外（`ComkenError` 系以外も含む）は `SoqlTransformError`
+（`DownloaderError` 系）に包み直される。`DownloaderError` 系は既存の取得失敗
+と同じ扱いで `download_scheduled()` が捕捉するため、**1 本の加工のミスで
+他のレポートの取得が止まらない**。加工結果が 0 行のときは既存の
+`ALLOW_EMPTY` 判定がそのまま動く。
+
+戻り値が `Table` でない（`None` を返した等）ときも `SoqlTransformError` で
+止める。 例外メッセージ・ログには **行の値は出さない**（`str(exc)` の全文を
+載せず、元の例外クラス名だけを伝える。`from exc` で `__cause__` に元の例外が
+繋がるので、合わせて辿れる）。
+
+pandas を使う例は次のとおり。`pandas` はこのダウンローダーの **必須依存では
+ない**（pandas が入っていない環境でも `Table` の標準 API
+（`filter` / `select` / `group_by`）だけで加工できる）ので、 pandas を
+使う `transform()` を書くときは pandas がその環境で使えるかを確認する
+こと。
+
+```python
+class OpportunityStageSummary(SoqlReport):
+    KEY = "9002"
+
+    def soql(self) -> str:
+        return "SELECT Id, StageName, Amount FROM Opportunity WHERE CloseDate >= 2024-01-01"
+
+    def transform(self, table):
+        df = table.to_dataframe()
+        summary = df.groupby("StageName", as_index=False)["Amount"].sum()
+        return Table.from_dataframe(summary)
+```
+
+動く例は [examples/soql_report_migration](../examples/soql_report_migration)
+の `opportunity_stage_summary.py`（`Table.group_by()` で加工するサンプル）と
+`large_sales_report.py`（`transform()` を使わない例）。
+
+### 未完成の SOQL を止める（2026-10 改定）
+
+soql-collector が下書きを出し直すとき、補えなかった部分がある SOQL には
+1 行目に **`【未完成】`** の印が付く（前後の空白は無視して判定）。
+そのままでは実行できないので、 `_fetch_via_soql()` が `bulk_query()` を呼ぶ
+**前**に `SoqlIncompleteError` で止める（`DownloaderError` 系なので
+履歴に失敗 1 行が残り、次のレポートの取得は続く）。 Salesforce には
+問い合わせない（`bulk_query()` が呼ばれない）。
+
+印の文字列は `src.service.INCOMPLETE_SOQL_MARKER` の定数で、 soql-collector
+側の `INCOMPLETE_MARKER` と同じ。 変えるときは **両方同時に** 変えること。
+
+印が 1 行目にあるときだけ止める（文字列値の中や 2 行目以降に同じ文字列が
+出ても止めない）。 例外メッセージに SOQL 本文は出さない（印の説明と管理番号・
+概要だけが書かれる）。
+
+サンプルは `tests/contract/未完成のSOQL.contract.txt` にある。
+
 ---
 
 ## エラー
@@ -964,6 +1033,7 @@ SOQL の `len(table)` と比べる。
 `ReportFolderNotFoundError` / `ScheduledDownloadFailedError` /
 `BrowserFallbackFailedError` / `BrowserFallbackIncompleteError` /
 `SavedFileEmptyError` / `SoqlColumnNameConflictError` /
+`SoqlTransformError` / `SoqlIncompleteError` /
 `ColumnNamesCSVFormatError`（いずれも `comken/exceptions/downloader.py` もしくは
 `src/exceptions.py`）。`BrowserFallbackIncompleteError` は自動切替しても
 ブラウザで 2000 行以下しか取れなかったときに送出される
@@ -971,7 +1041,11 @@ SOQL の `len(table)` と比べる。
 ファイル書き出し後に 0 バイトだったとき（保存先の同期・セキュリティ
 ソフト等の影響が疑われる）に送出される。
 `SoqlColumnNameConflictError` は [`COLUMN_NAMES`](#出力-csv-の見出しを人が読む列名に置き換えるcolumn_names)
-で置き換え後の見出しが 2 つ以上重なったとき。`ColumnNamesCSVFormatError` は
+で置き換え後の見出しが 2 つ以上重なったとき。`SoqlTransformError` は
+[`transform()`](#加工-transform2026-10-改定) の中で例外が起きた／戻り値が
+`Table` でないとき（メッセージに行の値は出さない）。`SoqlIncompleteError` は
+[`未完成の SOQL を止める`](#未完成の-soql-を止める2026-10-改定) で 1 行目に
+`【未完成】` の印があるとき。`ColumnNamesCSVFormatError` は
 `列名の対応.csv`（`soql-collector` が出す、**主オブジェクト × SOQL列名 → 表示名** の対応表）
 のフォーマットが壊れている／旧形式の見出しのまま／読めないときに
 送出される（ファイルが無い／該当主オブジェクトの行が無いケースは `WARNING`

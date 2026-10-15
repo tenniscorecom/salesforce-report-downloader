@@ -10,6 +10,12 @@
 変えたくなったら両リポジトリの ``tests/contract/列名の対応.contract.csv`` を
 **同時に** 変える（``tests/contract/README.md`` 参照）。 書き手側
 （soql-collector）のテストは別リポジトリで別途やる。
+
+``tests/contract/未完成のSOQL.contract.txt`` は soql-collector が SOQL の
+下書きを出し直すときに 1 行目に付ける ``【未完成】`` の印を含む見本。
+``src.service._fetch_via_soql()`` がこの印を検知して ``bulk_query()``
+の **前** に ``SoqlIncompleteError`` で止めることを確かめる。 soql-collector
+側にも同じファイルを置き、 両リポジトリで同じ見本を参照する。
 """
 
 from __future__ import annotations
@@ -18,13 +24,15 @@ import logging
 import os
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
 from comken.core.table import Table
 from comken.toolbox.csv import CSV
 
 from src import paths as paths_module
-from src.service import _save
+from src.exceptions import SoqlIncompleteError
+from src.service import _fetch_via_soql, _save
 from src.sheets.master import ReportEntry
 from src.soql_reports import _registry
 from src.soql_reports import column_names as column_names_module
@@ -256,4 +264,108 @@ class TestContractSamplesMatchAcrossRepos:
             f"このリポジトリのサンプル ({CONTRACT_CSV_PATH}) と "
             f"soql-collector 側のサンプル ({other}) がバイト単位で一致しません。"
             "両方の tests/contract/列名の対応.contract.csv を同じ内容にしてください。"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 未完成の SOQL（ ``tests/contract/未完成のSOQL.contract.txt`` ）
+# soql-collector が下書きを出し直すときに 1 行目に付ける ``【未完成】`` の印
+# を含む見本。 ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止める
+# ことを検証する。
+# ─────────────────────────────────────────────────────────────────────
+
+
+# サンプル TXT の絶対パス。 テストはこのファイルから SOQL テキストを読み、
+# ``SoqlReport.soql()`` として直接 ``_fetch_via_soql()`` に渡す。
+CONTRACT_INCOMPLETE_SOQL_PATH = (
+    Path(__file__).resolve().parent / "contract" / "未完成のSOQL.contract.txt"
+)
+
+
+def _soql_collector_incomplete_path() -> Path | None:
+    """soql-collector リポジトリの ``tests/contract/未完成のSOQL.contract.txt`` のパスを返す。
+
+    環境変数 ``SOQL_COLLECTOR_DIR`` があればそれを最優先、無ければこの
+    リポジトリの親フォルダの ``soql-collector`` を探す。 どちらにも該当
+    ファイルが無ければ ``None``（テストは skip する）。
+    """
+    env_dir = os.environ.get("SOQL_COLLECTOR_DIR")
+    if env_dir:
+        candidate = Path(env_dir) / "tests" / "contract" / "未完成のSOQL.contract.txt"
+        return candidate if candidate.exists() else None
+    sibling = Path(__file__).resolve().parents[2] / "soql-collector"
+    candidate = sibling / "tests" / "contract" / "未完成のSOQL.contract.txt"
+    return candidate if candidate.exists() else None
+
+
+class TestContractIncompleteSoql:
+    """``tests/contract/未完成のSOQL.contract.txt`` を使って
+    ``_fetch_via_soql()`` が印のある SOQL を実行前に止めることを確かめる。
+    """
+
+    def test_first_line_is_incomplete_marker(self):
+        """見本の 1 行目が ``【未完成】`` で始まる（前後の空白を除く）。"""
+        soql_text = CONTRACT_INCOMPLETE_SOQL_PATH.read_text(encoding="utf-8")
+        first_line = soql_text.lstrip().splitlines()[0]
+        assert first_line.startswith("【未完成】")
+
+    def test_incomplete_soql_stops_before_bulk_query(self):
+        """``_fetch_via_soql()`` は ``bulk_query()`` を呼ぶ前に ``SoqlIncompleteError``
+        で止める。 Salesforce には問い合わせない（= ``bulk_query()`` が呼ばれない）。"""
+        soql_text = CONTRACT_INCOMPLETE_SOQL_PATH.read_text(encoding="utf-8")
+
+        class _IncompleteContractReport(SoqlReport):
+            KEY = "9301"
+
+            def soql(self) -> str:
+                return soql_text
+
+        contract_entry = ReportEntry(
+            key=_IncompleteContractReport.KEY,
+            summary="契約テスト",
+            url=URL,
+            group="営業本部",
+            assignee="山田",
+            enabled=True,
+            allow_empty=False,
+            use_soql=True,
+        )
+
+        with (
+            patch(
+                "src.soql_reports._registry.registered_reports",
+                return_value=(_IncompleteContractReport,),
+            ),
+            patch("src.service.site_for") as site_for,
+        ):
+            with pytest.raises(SoqlIncompleteError) as caught:
+                _fetch_via_soql(contract_entry)
+
+        # ``site_for()`` 自体が呼ばれていない（=Salesforce に接続していない）
+        site_for.assert_not_called()
+        # メッセージに管理番号・概要・印の説明が出ている
+        message = str(caught.value)
+        assert "9301" in message
+        assert "契約テスト" in message
+        # **SOQL 本文は漏れていない** （ 2 行目以降の SOQL がメッセージに入っていない）
+        assert "SELECT" not in message
+        assert "Opportunity" not in message
+
+    def test_contract_samples_match_byte_for_byte(self):
+        """soql-collector 側に ``tests/contract/未完成のSOQL.contract.txt`` が
+        有れば、 このリポジトリの見本とバイト単位で一致する。 無ければ skip。"""
+        other = _soql_collector_incomplete_path()
+        if other is None:
+            pytest.skip(
+                "soql-collector 側の tests/contract/未完成のSOQL.contract.txt が見つかりません。"
+                "環境変数 SOQL_COLLECTOR_DIR で soql-collector リポジトリの"
+                "ルートフォルダを指すと検証できます。",
+            )
+
+        mine = CONTRACT_INCOMPLETE_SOQL_PATH.read_bytes()
+        theirs = other.read_bytes()
+        assert mine == theirs, (
+            f"このリポジトリのサンプル ({CONTRACT_INCOMPLETE_SOQL_PATH}) と "
+            f"soql-collector 側のサンプル ({other}) がバイト単位で一致しません。"
+            "両方の tests/contract/未完成のSOQL.contract.txt を同じ内容にしてください。"
         )

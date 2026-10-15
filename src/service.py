@@ -93,6 +93,8 @@ from src.exceptions import (
     SavedFileEmptyError,
     ScheduledDownloadFailedError,
     SoqlCountMismatchError,
+    SoqlIncompleteError,
+    SoqlTransformError,
 )
 from src.history import record
 from src.sheets.master import (
@@ -132,6 +134,12 @@ CAUSE_PROGRAM = "プログラム"
 # この行数以下しか取れなければ全件取れていない（``_fetch_with_auto_fallback()`` で
 # 判定して ``BrowserFallbackIncompleteError`` に流す）
 _REPORT_API_ROW_LIMIT = 2000
+
+# soql-collector の下書きが SOQL を完成できなかったときに 1 行目へ付ける印。
+# 1 行目（前後の空白を除く）がこの文字列で始まる SOQL はそのままでは Salesforce に
+# 問い合わせず、 ``SoqlIncompleteError`` で止める。 soql-collector 側の
+# ``INCOMPLETE_MARKER`` と同じ。 変えるときは両方同時に。
+INCOMPLETE_SOQL_MARKER = "【未完成】"
 
 
 def _history_path() -> Path:
@@ -913,6 +921,13 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     往復回数を抑えられる。集計関数・``GROUP BY`` 等 ``bulk_query()``
     が受け付けない SOQL はこの経路では使えない。
 
+    **未完成の SOQL の検知（2026-10 改定）:** ``soql()`` が返した本文の
+    先頭（前後の空白を除く）が ``INCOMPLETE_SOQL_MARKER`` で始まる SOQL は
+    そのままでは Salesforce に問い合わせられない。 ``bulk_query()`` を呼ぶ
+    **前**に ``SoqlIncompleteError`` で止める（Salesforce には問い合わせない）。
+    印の文字列は ``service.INCOMPLETE_SOQL_MARKER`` の定数で soql-collector 側の
+    ``INCOMPLETE_MARKER`` と同じ。
+
     **件数の比較（2026-10 改定）:** ``SoqlReport.CHECK_COUNT`` が ``True`` のとき
     （既定）、 ``bulk_query()`` の **直後** に **同じ接続のうち** にもう 1 度
     Report API を叩いて ``factMap["T!T"]["aggregates"]`` の ``RowCount`` を取り、
@@ -924,6 +939,16 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     Report API を 1 度も叩かずに ``bulk_query()`` の結果をそのまま返す
     （=レポートの GET が必要ないレポート向け）。**同じ接続のうち** に比較するため
     ``site_for()`` も 1 回しか呼ばれない（ログインは 1 回だけ）。
+
+    **加工 transform()（2026-10 改定）:** 件数の比較の **あと**に
+    ``SoqlReport.transform()`` を加工前の生の結果に対して呼ぶ。 件数の比較は
+    加工前の件数で行われる（レポートの総件数と比べられるのは加工前の件数
+    のため）。 加工後が 0 行のときは既存の ``ALLOW_EMPTY`` 判定がそのまま動く。
+    ``transform()`` の中で起きた例外（ ``ComkenError`` 系以外も含む）は
+    ``SoqlTransformError`` （ ``DownloaderError`` 系）に包み直す。 戻り値が
+    ``Table`` でない（ ``None`` を返した等）場合も ``SoqlTransformError``
+    で止める。 どちらも ``from exc`` で元の例外を繋ぐ。 メッセージには
+    **行の値や SOQL 本文を含めない** （ ``str(exc)`` をそのまま載せない）。
     """
     report_cls = soql_report_for(entry.key)
     instance = report_cls()
@@ -937,16 +962,42 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
         report_cls.__module__,
         entry.key,
     )
-    logger.debug("SOQL: %s", instance.soql())
+    soql_text = instance.soql()
+    logger.debug("SOQL: %s", soql_text)
+    # 未完成の印（先頭・空白無視）。本文の途中（文字列値）に同じ文字列が
+    # 出ても止めない。Salesforce には問い合わせない
+    if soql_text.lstrip().startswith(INCOMPLETE_SOQL_MARKER):
+        raise SoqlIncompleteError(entry.key, entry.summary)
     site = site_for(entry.url)
     with site() as salesforce:
-        table = salesforce.bulk_query(instance.soql())
+        table = salesforce.bulk_query(soql_text)
         # 件数の比較。 ``CHECK_COUNT=False`` のときは Report API を 1 度も叩かない。
         # 同じ接続のうちに行うので、 1 レポートあたり ``site_for()`` が 2 回
-        # （=ログイン 2 回）にならない。
+        # （=ログイン 2 回）にならない。 比較は **加工前** の生の結果で行う。
         if report_cls.CHECK_COUNT:
             _verify_soql_count(entry, table, salesforce)
-    return table
+        # 加工（ transform() ）。 例外／非 Table 戻り値は ``SoqlTransformError``
+        # に包み直して、 当該レポートだけの失敗として記録させる（次レポートへ続く）。
+        # 元の例外クラス名だけをメッセージに含め、 ``str(exc)`` の全文は載せない
+        # （行の値／ SOQL 本文が漏れないため）。
+        try:
+            transformed = instance.transform(table)
+        except Exception as exc:
+            raise SoqlTransformError(
+                entry.key,
+                entry.summary,
+                report_cls.__name__,
+                type(exc).__name__,
+            ) from exc
+        if not isinstance(transformed, Table):
+            raise SoqlTransformError(
+                entry.key,
+                entry.summary,
+                report_cls.__name__,
+                type(transformed).__name__,
+                reason="transform() の戻り値が Table ではありません",
+            )
+        return transformed
 
 
 def _verify_soql_count(entry: ReportEntry, table: Table, salesforce: Any) -> None:

@@ -15,9 +15,15 @@
 引かれる。同じ ``(主オブジェクト, SOQL列名)`` ならどのレポートでも同じ
 表示名が引かれるので、 レポートごとの表示名の差はこの ``COLUMN_NAMES``
 で揃える。
+
+``transform()`` を上書きすると、SOQL の生データを Python で加工して保存できる
+（サマリーレポートを Python で組み立てる用途）。 既定のままで動くなら
+上書きしなくてよい。 詳細は ``SoqlReport.transform()`` / ``docs`` 参照。
 """
 
 from typing import ClassVar
+
+from comken.core.table.model import Table
 
 from src.soql_reports.base import SoqlReport
 
@@ -48,3 +54,32 @@ class NewReport(SoqlReport):
         ここには書かない。
         """
         raise NotImplementedError("TODO: SOQL文をここに書く")
+
+    # 任意: 取得した ``Table`` を Python で加工して保存する。 既定は何もしない。
+    # サマリーレポートを Python で組み立てる用途（今までサマリーレポートで
+    # やっていたものを Python で加工して代わりにする）以外は上書きしなくてよい。
+    # 列名の置き換え（ ``COLUMN_NAMES`` / ``列名の対応.csv`` ）はこのあとに
+    # ``_save()`` が保存直前に適用するため、 加工後の列名がそのまま CSV に出る。
+    #
+    # 例 1: Table の ``filter`` で行を絞る
+    #
+    #     def transform(self, table: Table) -> Table:
+    #         return table.filter(lambda row: row["StageName"] == "Closed Won")
+    #
+    # 例 2: Table の ``select`` で列を絞る
+    #
+    #     def transform(self, table: Table) -> Table:
+    #         return table.select("Id", "Name", "Amount")
+    #
+    # 例 3: pandas で group_by する（pandas がインストールされている環境のみ）
+    #
+    #     def transform(self, table: Table) -> Table:
+    #         df = table.to_dataframe()
+    #         summary = df.groupby("StageName", as_index=False)["Amount"].sum()
+    #         return Table.from_dataframe(summary)
+    #
+    # 加工中の例外は ``SoqlTransformError`` （ ``DownloaderError`` 系）に包まれ、
+    # そのレポートだけの失敗として記録される（次レポートの取得は続く）。
+    def transform(self, table: Table) -> Table:
+        """TODO: 必要なら取得した ``Table`` を加工して返す（上書きは任意）。"""
+        return table

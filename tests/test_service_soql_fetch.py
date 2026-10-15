@@ -16,6 +16,15 @@
 加えてこの CSV からも自動で見出しを差し替える。 手書きが優先される。
 ファイルが無い / 該当主オブジェクトの行が無い / 取れない SOQL ケースは
 WARNING だけで API 名保存に倒れる（テストでも検証する）。
+
+2026-10 に ``SoqlReport.transform()`` を追加し、 ``bulk_query()`` の結果
+（加工前の生データ）に対して ``transform()`` を呼んで保存用 Table を得る形に
+した。 加工の例外／非 Table 戻り値は ``SoqlTransformError`` に包まれ、
+当該レポートだけの失敗として記録される。 未完成の SOQL（ ``1 行目に
+【未完成】`` の印）は ``_fetch_via_soql()`` の ``bulk_query()`` 呼び出し前
+に ``SoqlIncompleteError`` で止める。 いずれも ``_failure_row()`` で
+「Salesforce」区分に入り、 履歴に失敗 1 行が残る（ ``download_scheduled()``
+は次のレポートの取得を続ける）。
 """
 
 import logging
@@ -34,9 +43,12 @@ from src.exceptions import (
     ColumnNamesCSVFormatError,
     SoqlColumnNameConflictError,
     SoqlCountMismatchError,
+    SoqlIncompleteError,
     SoqlReportNotRegisteredError,
+    SoqlTransformError,
 )
 from src.service import (
+    INCOMPLETE_SOQL_MARKER,
     _fetch,
     _fetch_via_soql,
     _save,
@@ -121,7 +133,7 @@ class TestFetchViaSoql:
     """_fetch_via_soql() — SOQL経由で取得し、_fetch() と同じ Table を返す。"""
 
     def test_returns_table_from_bulk_query(self):
-        table = MagicMock()
+        table = Table(["Id", "Name"], [{"Id": "001", "Name": "山田"}])
         client = MagicMock()
         client.__enter__.return_value.bulk_query.return_value = table
         # 件数の比較でレポート API の総件数を取りに行く。``_StubReport`` の
@@ -148,12 +160,13 @@ class TestFetchViaSoql:
         )
         # 比較も同じ ``salesforce.request()`` を 1 回叩く
         client.__enter__.return_value.request.assert_called_once()
+        # 既定の transform() は入力をそのまま返す（= ``bulk_query()`` の結果と同じ）
         assert result is table
 
     def test_returns_table_when_count_check_disabled(self):
         """``SoqlReport.CHECK_COUNT=False`` のときはレポート API を叩かず ``bulk_query()`` の
         結果をそのまま返す（``request()`` が呼ばれない）。"""
-        table = MagicMock()
+        table = Table(["Id", "Name"], [{"Id": "001", "Name": "山田"}])
         client = MagicMock()
         client.__enter__.return_value.bulk_query.return_value = table
         site = MagicMock(return_value=client)
@@ -1121,3 +1134,530 @@ class TestCountCheckSanityCheck:
         # 「壊した実装（何もしない関数）で不一致ケースを呼んでも例外が出ない」こと
         # を直接 assert することで、 本物の実装が呼ばれていないことを保証する。
         # 元の実装がモンキーパッチで漏れていた場合はここで例外が出て落ちる
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ``SoqlReport.transform()`` の挙動（2026-10 追加）
+#
+# 加工は ``bulk_query()`` → 件数比較 → ``transform()`` の順で行われ、
+# 件数の比較は **加工前** の生の結果に対して行われる（=レポートの総件数と
+# 比べられるのは加工前の件数）。 加工後の結果は保存 CSV にそのまま書かれ、
+# ``_save()`` の ``COLUMN_NAMES`` 適用はこの **あと** で行われる。
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _soql_table_with_rows() -> Table:
+    """テスト用に ``bulk_query()`` が返す既定の Table。"""
+    return Table(
+        ["Id", "StageName", "Amount"],
+        [
+            {"Id": "001", "StageName": "Closed Won", "Amount": "100"},
+            {"Id": "002", "StageName": "Closed Lost", "Amount": "200"},
+            {"Id": "003", "StageName": "Closed Won", "Amount": "50"},
+        ],
+    )
+
+
+def _patch_soql_registry(monkeypatch, *classes: type[SoqlReport]) -> None:
+    """``_registry.registered_reports()`` をテスト用クラス群に差し替えるヘルパー。"""
+    monkeypatch.setattr(_registry, "registered_reports", lambda: classes)
+
+
+def _patched_soql_client(table: Table) -> MagicMock:
+    """``bulk_query()`` が ``table`` を返す偽クライアントを作る。
+    件数比較の ``request()`` は ``RowCount`` が無い形にして WARNING で握りつぶす。"""
+    client = MagicMock()
+    client.__enter__.return_value.bulk_query.return_value = table
+    client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+        f"/services/data/v67.0{suffix}"
+    )
+    client.__enter__.return_value.request.return_value = (
+        {"reportMetadata": {"aggregates": []}, "factMap": {}},
+        {},
+    )
+    return MagicMock(return_value=client)
+
+
+class TestFetchViaSoqlTransform:
+    """``SoqlReport.transform()`` の既定・上書きの挙動。"""
+
+    def test_default_transform_returns_input_unchanged(self, monkeypatch):
+        """``transform()`` を上書きしない ``SoqlReport`` では ``bulk_query()`` の
+        結果がそのまま返る（既定の transform が入力テーブルをそのまま返すため）。"""
+
+        class _PlainReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _PlainReport)
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            result = _fetch_via_soql(SOQL_ENTRY)
+
+        # 加工していないので ``bulk_query()`` の戻り値と一致（同じオブジェクト）
+        assert result is table
+
+    def test_transform_filters_rows(self, monkeypatch):
+        """``transform()`` で ``filter`` した結果が返る（行数・値）。"""
+
+        class _FilterReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:
+                return table.filter(lambda row: row["StageName"] == "Closed Won")
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _FilterReport)
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            result = _fetch_via_soql(SOQL_ENTRY)
+
+        # 行が絞られ、 値もそのまま
+        assert result.columns == ["Id", "StageName", "Amount"]
+        assert result.to_rows() == [
+            {"Id": "001", "StageName": "Closed Won", "Amount": "100"},
+            {"Id": "003", "StageName": "Closed Won", "Amount": "50"},
+        ]
+
+    def test_count_check_uses_pre_transform_count(self, monkeypatch, caplog):
+        """件数の比較は加工前の生の結果に対して行われる。
+
+        ``bulk_query()`` が 3 件を返し、 ``Report API`` の ``RowCount`` が 3。
+        ``transform()`` が 2 行に絞っても、 比較は加工前の 3 件で行われるので
+        不一致にならず保存に進む（ ``SoqlCountMismatchError`` が出ない）。
+        """
+
+        class _FilterReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:
+                # 加工後は 2 行になる
+                return table.filter(lambda row: row["StageName"] == "Closed Won")
+
+        table = _soql_table_with_rows()
+        client = MagicMock()
+        client.__enter__.return_value.bulk_query.return_value = table
+        client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+            f"/services/data/v67.0{suffix}"
+        )
+        # レポート API 側は 3 件と返す（=加工前の件数）
+        client.__enter__.return_value.request.return_value = _payload_with_row_count(3)
+        site = MagicMock(return_value=client)
+
+        _patch_soql_registry(monkeypatch, _FilterReport)
+        with caplog.at_level(logging.INFO, logger="src.service"):
+            with patch("src.service.site_for", return_value=site):
+                # 例外が出ずに Table が返る
+                result = _fetch_via_soql(SOQL_ENTRY)
+
+        # 件数一致のログが出ている（件数=3 = 加工前の件数）
+        assert "SOQL 件数がレポート総件数と一致しました" in caplog.text
+        assert "件数=3" in caplog.text
+        # 返ってきた Table は加工後の 2 行
+        assert len(result) == 2
+
+    def test_transform_exception_becomes_soql_transform_error(self, monkeypatch):
+        """``transform()`` の中で ``ValueError`` が出ると ``SoqlTransformError``
+        に包まれる。 ``from exc`` で元の例外が ``__cause__`` に繋がり、
+        メッセージに元の例外の種類（ ``ValueError`` ）が含まれる。"""
+
+        marker = "TRANSFORM_VALUE_MARKER_in_row"
+
+        class _RaisingReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:
+                # 行の値を ``str(exc)`` に含めて例外を投げる。 ``SoqlTransformError``
+                # 側で ``str(exc)`` を載せない作りなので、 メッセージにもログにも
+                # このマーカーは漏れない
+                for row in table:
+                    if row["StageName"] == marker:
+                        raise ValueError(f"bad row: {row}")
+                return table
+
+        table = Table(
+            ["Id", "StageName", "Amount"],
+            [{"Id": "001", "StageName": marker, "Amount": "100"}],
+        )
+        _patch_soql_registry(monkeypatch, _RaisingReport)
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            with pytest.raises(SoqlTransformError) as caught:
+                _fetch_via_soql(SOQL_ENTRY)
+
+        # 元の例外が ``__cause__`` に繋がっている
+        assert isinstance(caught.value.__cause__, ValueError)
+        # メッセージに元の例外の種類（ ``ValueError`` ）が入っている
+        message = str(caught.value)
+        assert "ValueError" in message
+        assert "9001" in message
+        # **メッセージ・ログに行の値が漏れていない** （マーカーが出ていないこと）
+        assert marker not in message
+
+    def test_transform_exception_does_not_leak_row_value_to_log(self, monkeypatch, caplog):
+        """``transform()`` が ``ValueError`` を投げてもログに行の値が漏れない
+        （マーカーで検証）。 INFO / WARNING 以上の双方を確認するため、
+        DEBUG まで含めて ``src.service`` のログを見る。"""
+
+        marker = "LOG_TRANSFORM_MARKER_in_log"
+
+        class _RaisingReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:
+                raise ValueError(f"bad row: {marker}")
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _RaisingReport)
+        with caplog.at_level(logging.DEBUG, logger="src.service"):
+            with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+                with pytest.raises(SoqlTransformError):
+                    _fetch_via_soql(SOQL_ENTRY)
+
+        # ``src.service`` 由来の全ログ（ DEBUG 含む） に行のマーカーが漏れていない
+        service_records = [r for r in caplog.records if r.name == "src.service"]
+        for record in service_records:
+            assert marker not in record.getMessage(), (
+                f"行の値が漏れています: level={record.levelname}, message={record.getMessage()!r}"
+            )
+
+    def test_transform_returning_none_raises(self, monkeypatch):
+        """``transform()`` が ``None`` を返すと ``SoqlTransformError`` で止める。"""
+
+        class _NoneTransformReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:  # type: ignore[override]
+                return None  # type: ignore[return-value]
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _NoneTransformReport)
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            with pytest.raises(SoqlTransformError) as caught:
+                _fetch_via_soql(SOQL_ENTRY)
+
+        message = str(caught.value)
+        assert "NoneType" in message
+        assert "9001" in message
+        assert "戻り値が Table ではありません" in message
+
+    def test_transform_returning_non_table_raises(self, monkeypatch):
+        """``transform()`` が ``Table`` 以外（辞書など）を返しても ``SoqlTransformError``。"""
+
+        class _DictTransformReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:  # type: ignore[override]
+                return {"not": "a table"}  # type: ignore[return-value]
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _DictTransformReport)
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            with pytest.raises(SoqlTransformError) as caught:
+                _fetch_via_soql(SOQL_ENTRY)
+
+        assert "dict" in str(caught.value)
+        assert "戻り値が Table ではありません" in str(caught.value)
+
+    def test_transform_does_not_run_when_count_mismatch_raises(self, monkeypatch):
+        """件数の比較で ``SoqlCountMismatchError`` が起きると ``transform()`` は
+        呼ばれない（比較は加工前の件数で行われるので、 不一致なら加工する意味がない）。"""
+        transform_called = []
+
+        class _FilterReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:
+                transform_called.append(True)
+                return table
+
+        table = _soql_table_with_rows()
+        client = MagicMock()
+        client.__enter__.return_value.bulk_query.return_value = table
+        client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+            f"/services/data/v67.0{suffix}"
+        )
+        # レポート API 側は 99 件（=不一致）
+        client.__enter__.return_value.request.return_value = _payload_with_row_count(99)
+        site = MagicMock(return_value=client)
+
+        _patch_soql_registry(monkeypatch, _FilterReport)
+        with patch("src.service.site_for", return_value=site):
+            with pytest.raises(SoqlCountMismatchError):
+                _fetch_via_soql(SOQL_ENTRY)
+
+        # 不一致で先に落ちるので transform() は呼ばれない
+        assert transform_called == []
+
+    def test_transform_zero_rows_with_allow_empty_false_is_empty_error_in_save(
+        self, monkeypatch, output_folder
+    ):
+        """``transform()`` が 0 行を返したときは、 既存の ``_save()`` の
+        ``ALLOW_EMPTY=False`` の判定がそのまま動く。
+
+        ここでは ``_save()`` まで動かして ``EmptyReportError`` で保存されないことを
+        検証する。  ``_fetch_via_soql()`` だけでは ``ALLOW_EMPTY`` 判定は走らない
+        （判定は保存時の責務） 。"""
+        from src.exceptions import EmptyReportError
+
+        class _EmptyTransformReport(SoqlReport):
+            KEY = "9100"
+
+            def soql(self) -> str:
+                return "SELECT Id, StageName, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:
+                # 0 行にする
+                return table.filter(lambda row: False)
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _EmptyTransformReport)
+        # ``_save()`` は ``soql_report_for(entry.key)`` でクラスを引くので
+        # ``_registry`` 経由でこのテスト用クラスが見える必要がある
+        entry = replace(SOQL_ENTRY, key=_EmptyTransformReport.KEY)
+
+        # SOQL 取得フェーズは fake を渡す
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            fetched = _fetch_via_soql(entry)
+        # 加工後は 0 行
+        assert len(fetched) == 0
+
+        # 保存フェーズで ``allow_empty=False`` のまま ``EmptyReportError`` が出る
+        with pytest.raises(EmptyReportError):
+            _save(entry, fetched)
+
+    def test_transform_failure_row_uses_salesforce_cause(self):
+        """``SoqlTransformError`` は ``ComkenError`` 系なので ``_failure_row()``
+        で「Salesforce」区分に入る。"""
+        from src.service import _failure_row
+
+        exc = SoqlTransformError("9001", "顧客一覧", "MyReport", "ValueError")
+        row = _failure_row(exc, 1.5, schedule_key="S001", route="SOQL")
+        assert row.cause == "Salesforce"
+        assert row.error_code == "SoqlTransformError"
+        assert row.succeeded is False
+        # ``DownloadedComkenError`` 系の取り決めに従い ``fetched_from_salesforce``
+        # は ``False``（ ``_failure_row()`` は例外の型だけから組み立てる）。
+        # 技術的には ``bulk_query()`` が成功してから失敗しているのでデータ自体は
+        # 取れているが、 既存の 3 状態（ ``fetched`` / ``saved`` ）の単純化は
+        # 維持する（ ``cause`` で Salesforce 区分に入れば履歴から追える）
+        assert row.fetched_from_salesforce is False
+        assert row.saved_to_file is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 未完成の SOQL（ ``1 行目に【未完成】`` ）の停止（2026-10 追加）
+#
+# soql-collector が下書きを出し直すときに 1 行目に付ける印。
+# ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止まる。
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFetchViaSoqlIncompleteMarker:
+    """``soql()`` の 1 行目（前後の空白を除く）が ``INCOMPLETE_SOQL_MARKER``
+    で始まるとき、 ``bulk_query()`` を呼ばずに ``SoqlIncompleteError`` で止める。"""
+
+    def test_marker_at_first_line_raises(self, monkeypatch):
+        """印が 1 行目の先頭に付いていると ``SoqlIncompleteError`` で停止。"""
+
+        class _IncompleteReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return f"{INCOMPLETE_SOQL_MARKER}\nSELECT Id, StageName FROM Opportunity"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _IncompleteReport)
+        client = _patched_soql_client(table)
+        with patch("src.service.site_for", return_value=client):
+            with pytest.raises(SoqlIncompleteError) as caught:
+                _fetch_via_soql(SOQL_ENTRY)
+
+        # メッセージに管理番号・概要・印の説明が出ている
+        message = str(caught.value)
+        assert "9001" in message
+        assert "顧客一覧" in message
+        assert INCOMPLETE_SOQL_MARKER in message
+        # **SOQL 本文は漏れていない** （ ``bulk_query()`` が受け取る予定の SOQL の
+        # 2 行目以降がメッセージに入っていないこと）
+        assert "SELECT Id, StageName FROM Opportunity" not in message
+        # ``bulk_query()`` が呼ばれていない（=Salesforce に問い合わせていない）
+        client.__enter__.return_value.bulk_query.assert_not_called()
+
+    def test_marker_after_leading_whitespace_raises(self, monkeypatch):
+        """印が 1 行目にあるが前後に空白・改行があっても止まる。"""
+
+        class _IncompleteReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return f"  \n\t{INCOMPLETE_SOQL_MARKER}\nSELECT Id FROM Opportunity"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _IncompleteReport)
+        client = _patched_soql_client(table)
+        with patch("src.service.site_for", return_value=client):
+            with pytest.raises(SoqlIncompleteError):
+                _fetch_via_soql(SOQL_ENTRY)
+
+        client.__enter__.return_value.bulk_query.assert_not_called()
+
+    def test_marker_inside_value_does_not_stop(self, monkeypatch):
+        """印が本文の途中（ ``WHERE 名前 = '【未完成】'`` のような文字列値）に
+        出るだけなら止まらない（ 1 行目が ``SELECT`` で始まっているため）。"""
+
+        class _OkReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return f"SELECT Id FROM Account WHERE Name = '{INCOMPLETE_SOQL_MARKER}'"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _OkReport)
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            # 止まらずに進む
+            result = _fetch_via_soql(SOQL_ENTRY)
+
+        assert result is table
+
+    def test_marker_on_later_line_does_not_stop(self, monkeypatch):
+        """印が 2 行目以降にあるだけなら止まらない（ 1 行目は ``SELECT`` ）。"""
+
+        class _OkReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return f"SELECT Id\n-- {INCOMPLETE_SOQL_MARKER}\nFROM Account"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _OkReport)
+        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            result = _fetch_via_soql(SOQL_ENTRY)
+
+        assert result is table
+
+    def test_marker_uses_comkenerror_cause_in_failure_row(self):
+        """``SoqlIncompleteError`` も ``DownloaderError`` 系なので ``_failure_row()``
+        で「Salesforce」区分に入る。"""
+        from src.service import _failure_row
+
+        exc = SoqlIncompleteError("9001", "顧客一覧")
+        row = _failure_row(exc, 0.5, schedule_key="S001", route="SOQL")
+        assert row.cause == "Salesforce"
+        assert row.error_code == "SoqlIncompleteError"
+        assert row.succeeded is False
+        assert row.fetched_from_salesforce is False
+        assert row.saved_to_file is None
+
+
+class TestFetchViaSoqlIncompleteSanityCheck:
+    """未完成のチェックを意図的に外したときに、 該当テストが落ちることを確認
+    するサニティチェック（一度確かめて戻す）。"""
+
+    def test_sanity_check_detects_when_marker_check_disabled(self):
+        """``INCOMPLETE_SOQL_MARKER`` のチェックを実質「常に偽」にした（印を
+        元の値と違う文字列に差し替え） ``_fetch_via_soql()`` の挙動を確認する。
+        印のある SOQL でも ``bulk_query()`` が呼ばれること（=印チェックで
+        止まっていないこと）を確かめ、 元の実装が印チェックを実際に
+        していることを保証する。"""
+
+        from src import service as service_module
+
+        original = service_module.INCOMPLETE_SOQL_MARKER
+        # 印を違う文字列にしてチェックを「常に偽」にする（=元の印では止まらない）
+        service_module.INCOMPLETE_SOQL_MARKER = "X_NO_MATCH_NEVER_MATCHES"
+        try:
+
+            class _IncompleteReport(SoqlReport):
+                KEY = "9001"
+
+                def soql(self) -> str:
+                    # 1 行目は本物の印で始まるが、 印チェックは無効化されている
+                    return f"{original}\nSELECT Id FROM Opportunity"
+
+            with patch(
+                "src.soql_reports._registry.registered_reports",
+                return_value=(_IncompleteReport,),
+            ):
+                table = _soql_table_with_rows()
+                site = _patched_soql_client(table)
+                # 印チェックを通り抜けたので ``bulk_query()`` が呼ばれる
+                with patch("src.service.site_for", return_value=site):
+                    _fetch_via_soql(SOQL_ENTRY)
+
+                # ``site`` は ``MagicMock(return_value=client)`` の形なので、
+                # 実クライアントは ``site.return_value`` にある
+                site.return_value.__enter__.return_value.bulk_query.assert_called_once()
+        finally:
+            service_module.INCOMPLETE_SOQL_MARKER = original
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ``transform()`` を呼ばない壊し方をしたときに、 該当テストが落ちることを確認
+# (T_Transform 型検証)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestTransformSanityCheck:
+    """``transform()`` を呼ばない実装で差し替えたとき、 加工が効かなくなること
+    を確認するサニティチェック。 元の実装が ``_fetch_via_soql()`` の中で
+    ``instance.transform(table)`` を呼んでいることを保証する。"""
+
+    def test_sanity_check_detects_when_transform_skipped(self, monkeypatch):
+        from src import service as service_module
+
+        original = service_module._fetch_via_soql
+
+        def _bypass_transform(*args, **kwargs):
+            # ``transform()`` を呼ばずに ``bulk_query()`` の結果をそのまま返す実装
+            report_cls = service_module.soql_report_for(args[0].key)
+            instance = report_cls()
+            site = service_module.site_for(args[0].url)
+            with site() as salesforce:
+                return salesforce.bulk_query(instance.soql())
+
+        service_module._fetch_via_soql = _bypass_transform
+        try:
+            # 加工を期待しているケースで、 加工後の Table ではなく加工前のものが返る
+            class _FilterReport(SoqlReport):
+                KEY = "9001"
+
+                def soql(self) -> str:
+                    return "SELECT Id, StageName, Amount FROM Opportunity"
+
+                def transform(self, table: Table) -> Table:
+                    return table.filter(lambda row: row["StageName"] == "Closed Won")
+
+            table = _soql_table_with_rows()
+            with patch(
+                "src.soql_reports._registry.registered_reports",
+                return_value=(_FilterReport,),
+            ):
+                with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+                    result = service_module._fetch_via_soql(SOQL_ENTRY)
+
+            # 壊した実装では ``transform()`` が呼ばれず、 全件が返る
+            assert len(result) == 3
+        finally:
+            service_module._fetch_via_soql = original

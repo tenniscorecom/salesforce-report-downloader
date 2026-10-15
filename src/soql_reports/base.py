@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from comken.core.table.model import Table
+
 
 class SoqlReport:
     """Report API（2000行上限）で取れない大きなレポートを SOQL で取る基底クラス。
@@ -81,3 +83,38 @@ class SoqlReport:
     def soql(self) -> str:
         """実行する SOQL クエリ文字列を返す。サブクラスで実装する。"""
         raise NotImplementedError
+
+    def transform(self, table: Table) -> Table:
+        """SOQL で取った Table を保存用に加工して返す。
+
+        ``_fetch_via_soql()`` の中で ``bulk_query()`` の直後、 件数の比較
+        （ ``CHECK_COUNT`` ）と同じ接続のうち、 **加工前の生の結果**に
+        対して呼ばれる（レポートの総件数と比べられるのは加工前の件数のため）。
+        返した Table がそのまま CSV に書かれる。
+
+        受け取る ``table`` の列名は SOQL の API 名（ ``Amount`` 、
+        ``Account.Name`` ）。 返した ``Table`` には加工で新しく作った列が
+        残っていてもよく、 列名の置き換え（ ``COLUMN_NAMES`` /
+        ``列名の対応.csv`` ）はこのあと ``_save()`` が保存直前に適用する。
+
+        **既定は何もしない**（受け取った ``table`` をそのまま返す）。 サマリー
+        レポートを Python で組み立てる用途（今までサマリーレポートでやって
+        いたものを Python で加工して代わりにする）以外は上書きしなくてよい。
+        例外が起きた／ ``Table`` 以外を返した場合は ``SoqlTransformError``
+        に包まれて、 そのレポートだけの失敗として記録される（次レポートの取得は続く）。
+        0 行を返したときは既存の ``ALLOW_EMPTY`` 判定がそのまま動く。
+
+        Examples:
+            ``Table`` の ``filter`` / ``select`` / ``group_by`` を使う::
+
+                def transform(self, table):
+                    return table.filter(lambda r: r["StageName"] == "Closed Won")
+
+            pandas（ ``to_dataframe()`` → 加工 → ``from_dataframe()`` ）を使う::
+
+                def transform(self, table):
+                    df = table.to_dataframe()
+                    summary = df.groupby("StageName")["Amount"].sum().reset_index()
+                    return Table.from_dataframe(summary)
+        """
+        return table
