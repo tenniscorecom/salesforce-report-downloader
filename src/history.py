@@ -14,7 +14,6 @@ import datetime as dt
 import logging
 from pathlib import Path
 
-from comken.core.dates import now
 from comken.services.salesforce_downloader.history import (
     COLUMNS,
     FAILURE,
@@ -23,9 +22,11 @@ from comken.services.salesforce_downloader.history import (
     ROUTE_SOQL,
     SUCCESS,
     HistoryRow,
+    append_history,
 )
 
 from src.exceptions import GroupNotRegisteredError
+from src.paths import output_path
 from src.sheets.master import ReportEntry
 
 logger = logging.getLogger(__name__)
@@ -37,8 +38,8 @@ def record(
     entry: ReportEntry,
     project: str,
     row: HistoryRow,
-    executed_at: dt.datetime | None = None,
-    folder: str | Path | None = None,
+    executed_at: dt.datetime,
+    folder: str | Path,
 ) -> None:
     """履歴を1行追記する。ファイルが無ければ見出し行から作る。
 
@@ -53,25 +54,20 @@ def record(
     Args:
         path: 履歴 CSV のパス。
         entry: 管理表1行。管理番号・概要・レポートID・URLはこの中身を履歴に出す。
-            保存先は ``folder`` が指定されていればその値を、指定が無ければ
-            ``output_path()`` で組み立て直した値を出す（`_resolved_folder()`）。
         project: 呼び出したプロジェクト名。
         row: 履歴1行の本体（成否・各段階の結果・件数・エラー）。型は comken 側の
             ``HistoryRow``（``src.history.HistoryRow`` は同じ型を再エクスポート）。
         executed_at: 「実行日時」列に書く値。**その実行の開始時刻**を 1 実行で
             固定して渡すことで、23:59 に始まった実行が日付をまたいでも、判定・
-            ファイル名・履歴のすべてが開始日で揃う。``None`` のときは従来どおり
-            ``now()``（呼び出した瞬間の時刻）で書く（テストなど、時刻固定が
-            不要な呼び出し側の後方互換）。
+            ファイル名・履歴のすべてが開始日で揃う。
         folder: 履歴の「保存先」列に書く値。**実際にファイルを置いたフォルダ**
-            （``ベース/概要``）を文字列で渡す。``None`` のときは ``output_path()``
-            で組み立て直す（失敗の履歴など、ファイル未保存のケースの後方互換用）。
+            （``ベース/概要``）を文字列で渡す。失敗の履歴など、ファイル未保存の
+            ケースでは呼び出し側が ``resolved_folder()`` で作った
+            ``(保存先を組み立てられません: ...)`` 文字列をそのまま渡す。
             概要のフォルダは出力パス組み立て時に動的に決まるので、 ``_save()`` から
             実保存パス（``path.parent``）を渡してもらう形にすると「概要の決定
             ロジック」が履歴側に漏れ出さない。
     """
-    from comken.services.salesforce_downloader.history import append_history
-
     path = Path(path)
     logger.debug(
         "履歴追記開始: path=%s, 管理番号=%s, schedule_key=%s, project=%s",
@@ -80,7 +76,6 @@ def record(
         row.schedule_key,
         project,
     )
-    timestamp = now() if executed_at is None else executed_at
     values: dict[str, object] = {
         "管理番号": entry.key,
         "スケジュールキー": row.schedule_key,
@@ -91,7 +86,7 @@ def record(
         "成否": SUCCESS if row.succeeded else FAILURE,
         "Salesforce取得結果": _stage(row.fetched_from_salesforce),
         "保存結果": _stage(row.saved_to_file),
-        "保存先": str(folder) if folder is not None else _resolved_folder(entry),
+        "保存先": str(folder),
         "ファイル名": row.file_name,
         "取得件数": "" if row.row_count is None else row.row_count,
         "処理秒数": f"{row.seconds:.2f}",
@@ -108,22 +103,21 @@ def record(
     }
     # ``append_history()`` が ``COLUMNS`` に無いキーを ``InvalidTableInputError``
     # で止めるので、``COLUMNS`` 順の dict へ並べ直す（``実行日時`` は ``append_history``
-    # 側で ``timestamp`` から組み立てるため、ここでは含めない）
+    # 側で ``executed_at`` から組み立てるため、ここでは含めない）
     values = {column: values.get(column, "") for column in COLUMNS if column != "実行日時"}
-    append_history(path, values, executed_at=timestamp)
+    append_history(path, values, executed_at=executed_at)
     logger.debug("履歴追記完了: path=%s", path)
 
 
-def _resolved_folder(entry: ReportEntry) -> str:
-    """保存先フォルダを文字列にする。
+def resolved_folder(entry: ReportEntry) -> str:
+    """失敗履歴用に保存先フォルダ文字列を組み立てる。
 
     ``output_path()`` は管理表の「グループ」列が設定シートに無いと
     ``GroupNotRegisteredError`` を送出する。**失敗の履歴記録中にこのエラーで
     さらに失敗すると、本来の失敗原因（Salesforce側のエラー等）ごと履歴に残せず、
     誰も追跡できなくなる**ため、ここでは握りつぶして理由を文字列として残す。
+    成功時は ``output_path(entry).parent`` を文字列化して返す。
     """
-    from src.paths import output_path
-
     try:
         return str(output_path(entry).parent)
     except GroupNotRegisteredError as exc:
@@ -158,4 +152,4 @@ def _route_of(entry: ReportEntry) -> str:
     return ROUTE_API
 
 
-__all__ = ["record", "HistoryRow"]
+__all__ = ["record", "resolved_folder", "HistoryRow"]

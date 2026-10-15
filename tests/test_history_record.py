@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from comken.services.salesforce_downloader.history import COLUMNS, FAILURE, SUCCESS, HistoryRow
 
-from src.history import record
+from src.history import record, resolved_folder
 from src.sheets.master import ReportEntry
 
 
@@ -105,6 +105,10 @@ def _row_bytes_from_record(
             route=row_data.get("route", ""),
         ),
         executed_at=row_data["executed_at"],
+        # ``entry`` のグループが未登録なので ``resolved_folder()`` はエラー文字列を返す。
+        # ``record()`` 側に「``folder`` が未指定なら ``resolved_folder()`` を呼ぶ」分岐は
+        # もう無いので、ここで組み立てて渡す
+        folder=resolved_folder(entry),
     )
     return history_path.read_bytes()
 
@@ -112,7 +116,7 @@ def _row_bytes_from_record(
 @pytest.fixture
 def entry() -> ReportEntry:
     """テスト用の管理表1行。「グループ」を存在しない値にして、
-    ``_resolved_folder()`` が ``GroupNotRegisteredError`` を ``output_path()``
+    ``resolved_folder()`` が ``GroupNotRegisteredError`` を ``output_path()``
     内で発生させ、文字列化される経路をテストする。
     """
     return ReportEntry(
@@ -136,7 +140,7 @@ def test_record_writes_byte_identical_row_to_history_csv(
     手作業で書き起こしたもの — ``record()`` の実装が変わったら期待値の
     組み立て方も変える必要があるため、両者が食い違うと検出できる。
     """
-    # ``_resolved_folder()`` が ``output_path().parent`` を経由するため、
+    # ``resolved_folder()`` が ``output_path().parent`` を経由するため、
     # 管理表 + 設定シート（``load_group_settings`` が読む）を作っておく。
     # 「グループ」を登録しないでおき、``output_path()`` が
     # ``GroupNotRegisteredError`` を上げる経路を踏ませる。
@@ -154,7 +158,7 @@ def test_record_writes_byte_identical_row_to_history_csv(
     )
 
     history_path = tmp_path / "履歴.csv"
-    # ``_resolved_folder()`` が生成する文字列を、``output_path()`` を呼んで
+    # ``resolved_folder()`` が生成する文字列を、``output_path()`` を呼んで
     # 実際の ``GroupNotRegisteredError`` メッセージから組み立てる。
     # 期待値はその文字列を含めてから組み立てる（先に作らないと、
     # ``_expected_row_bytes`` を呼んだあとに ``record()`` が
@@ -245,6 +249,8 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
             schedule_key="",
         ),
         executed_at=dt.datetime(2026, 9, 26, 11, 0, 0),  # noqa: DTZ001
+        # ``entry`` のグループが未登録なので ``resolved_folder()`` はエラー文字列を返す
+        folder=resolved_folder(entry),
     )
 
     # 書き出された CSV を ``csv.DictReader`` で読み、列順が ``COLUMNS`` と一致し、
@@ -266,7 +272,7 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
     assert row["原因区分"] == "設定"
     assert row["エラーコード"] == "ReportFolderNotFoundError"
     assert row["エラー内容"] == "保存先のフォルダがありません: 1001"
-    # 保存先フォルダは ``_resolved_folder()`` が例外を握りつぶして文字列化した値
+    # 保存先フォルダは ``resolved_folder()`` が例外を握りつぶして文字列化した値
     assert row["保存先"].startswith("(保存先を組み立てられません")
 
 
@@ -309,11 +315,11 @@ def history_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     既存ファイルが残ったままだと「マイグレーションして追記」の経路に入り、
     「取得経路」列を 1 段ずらしたテストが分岐を跨ぎにくくなるので、毎回
-    空のパスを渡す。 ``MASTER_PATH`` は ``_resolved_folder()`` が
+    空のパスを渡す。 ``MASTER_PATH`` は ``resolved_folder()`` が
     ``output_path()`` 経由で読むため、空の ``設定`` シートだけ持つ
     管理表を ``tmp_path`` 配下に置いて ``output_path()`` が
     ``GroupNotRegisteredError`` を上げる経路に持ち込む（``GroupNotRegisteredError``
-    以外の例外を ``_resolved_folder()`` がそのまま伝播するため、設定シートの
+    以外の例外を ``resolved_folder()`` がそのまま伝播するため、設定シートの
     「グループ」列に登録が無い状態で呼び出される必要がある）。
     """
     from comken.core.table import Table
@@ -335,7 +341,9 @@ def history_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_record_writes_soql_when_entry_uses_soql(
-    history_path: Path, monkeypatch: pytest.MonkeyPatch
+    history_path: Path,
+    default_executed_at: dt.datetime,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``entry.use_soql`` が真の entry では「取得経路」に ``SOQL`` が書かれる。
 
@@ -352,12 +360,16 @@ def test_record_writes_soql_when_entry_uses_soql(
             fetched_from_salesforce=True,
             saved_to_file=True,
         ),
+        executed_at=default_executed_at,
+        folder=resolved_folder(entry),
     )
     assert _read_route(history_path) == "SOQL"
 
 
 def test_record_writes_browser_when_entry_exceeds_row_limit(
-    history_path: Path, monkeypatch: pytest.MonkeyPatch
+    history_path: Path,
+    default_executed_at: dt.datetime,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``entry.exceeds_row_limit`` が真の entry では「取得経路」に ``ブラウザ`` が書かれる。
 
@@ -374,12 +386,16 @@ def test_record_writes_browser_when_entry_exceeds_row_limit(
             fetched_from_salesforce=True,
             saved_to_file=True,
         ),
+        executed_at=default_executed_at,
+        folder=resolved_folder(entry),
     )
     assert _read_route(history_path) == "ブラウザ"
 
 
 def test_record_writes_api_when_no_special_flags(
-    history_path: Path, monkeypatch: pytest.MonkeyPatch
+    history_path: Path,
+    default_executed_at: dt.datetime,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``use_soql=False`` / ``exceeds_row_limit=False`` の entry では
     「取得経路」に ``API`` が書かれる（既定値ケース）。
@@ -397,12 +413,16 @@ def test_record_writes_api_when_no_special_flags(
             fetched_from_salesforce=True,
             saved_to_file=True,
         ),
+        executed_at=default_executed_at,
+        folder=resolved_folder(entry),
     )
     assert _read_route(history_path) == "API"
 
 
 def test_record_prefers_row_route_over_entry(
-    history_path: Path, monkeypatch: pytest.MonkeyPatch
+    history_path: Path,
+    default_executed_at: dt.datetime,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``row.route`` に値を入れて渡すと、``_route_of(entry)`` の結果より
     ``row.route`` が優先される。
@@ -422,12 +442,16 @@ def test_record_prefers_row_route_over_entry(
             saved_to_file=True,
             route="ブラウザ",
         ),
+        executed_at=default_executed_at,
+        folder=resolved_folder(entry),
     )
     assert _read_route(history_path) == "ブラウザ"
 
 
 def test_record_soql_takes_priority_over_browser(
-    history_path: Path, monkeypatch: pytest.MonkeyPatch
+    history_path: Path,
+    default_executed_at: dt.datetime,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``use_soql=True`` と ``exceeds_row_limit=True`` が同時に真のとき、
     SOQL が優先される（``src.service._fetch()`` と同じ優先順位）。
@@ -445,5 +469,7 @@ def test_record_soql_takes_priority_over_browser(
             fetched_from_salesforce=True,
             saved_to_file=True,
         ),
+        executed_at=default_executed_at,
+        folder=resolved_folder(entry),
     )
     assert _read_route(history_path) == "SOQL"

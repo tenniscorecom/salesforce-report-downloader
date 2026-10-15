@@ -96,7 +96,7 @@ from src.exceptions import (
     SoqlIncompleteError,
     SoqlTransformError,
 )
-from src.history import record
+from src.history import record, resolved_folder
 from src.sheets.master import (
     ReportEntry,
     load_master,
@@ -413,7 +413,7 @@ class _Attempt:
         history_path: Path,
         schedule_key: str = "",
         *,
-        executed_at: dt.datetime | None = None,
+        executed_at: dt.datetime,
     ) -> None:
         self._entry = entry
         self._project = project
@@ -443,6 +443,10 @@ class _Attempt:
             project=self._project,
             row=row,
             executed_at=self._executed_at,
+            # ファイル未保存のケース。``resolved_folder()`` が ``output_path()``
+            # を呼んで ``GroupNotRegisteredError`` を文字列化する（履歴記録中に
+            # 失敗すると元の失敗原因ごと残せなくなるため）。
+            folder=resolved_folder(self._entry),
         )
 
     def record_success(
@@ -488,7 +492,7 @@ class _Attempt:
         rows: Table,
         *,
         route: str,
-        executed_at: dt.datetime | None,
+        executed_at: dt.datetime,
     ) -> None:
         """成功履歴の記録（自動切替で経路を上書きする）。
 
