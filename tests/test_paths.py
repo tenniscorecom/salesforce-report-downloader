@@ -253,7 +253,7 @@ class TestOutputPath:
 
         「スケジュール」シートが無いレポートは取らない実装だが、 ``output_path()``
         単体としては ``schedule_run_time=None`` で ``now`` だけ渡されたケースを
-        受けて組み立てられる契約（``_resolved_folder()`` などの履歴側経路で
+        受けて組み立てられる契約（``resolved_folder()`` などの履歴側経路で
         ``schedule_run_time`` が空のまま呼ばれることが無くなった場合でも、
         関数自体は安全なファイル名を返す）。
         """

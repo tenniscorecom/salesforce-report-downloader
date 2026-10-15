@@ -43,6 +43,10 @@ URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/0
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
 ROWS = [{"名前": "山田", "金額": "100"}, {"名前": "鈴木", "金額": "200"}]
 
+# ``_record_for`` ヘルパーが ``record()`` に渡す ``executed_at`` の固定値。
+# ``test_history_record.py`` と揃えると、タイムスタンプ由来の偶発的差分を疑わずに済む
+_RECORD_FOR_EXECUTED_AT = dt.datetime(2026, 9, 26, 10, 0, 0)  # noqa: DTZ001
+
 HEADERS = [
     "ID",
     "グループ",
@@ -1192,12 +1196,12 @@ class TestHistory:
     ) -> None:
         """テスト用: ``record()`` を ``paths`` fixture の差し替え経由で呼ぶ。
 
-        ``_resolved_folder()`` が ``paths.output_path()`` を経由するため、
-        管理表が ``MASTER_PATH`` に実在しないと ``ComkenFileNotFoundError``
-        に近い失敗をする。fixture 経由で ``MASTER_PATH`` / ``HISTORY_PATH`` を
-        差し替えてから呼ぶ。
+        ``record()`` の ``folder`` 引数は必須になったので、 ``output_path()``
+        で組み立てた実パス（=``ベース / 概要``）を ``str()`` で渡す。fixture 経由で
+        ``MASTER_PATH`` / ``HISTORY_PATH`` を差し替えてから呼ぶ。
         """
         from src.history import record
+        from src.paths import output_path
         from src.sheets.master import ReportEntry
 
         entry = ReportEntry(
@@ -1221,6 +1225,8 @@ class TestHistory:
                 row_count=2,
                 seconds=0.20,
             ),
+            executed_at=_RECORD_FOR_EXECUTED_AT,
+            folder=str(output_path(entry).parent),
         )
 
     def test_record_migrates_legacy_header_with_extra_column(self, tmp_path, monkeypatch):
@@ -1950,6 +1956,7 @@ class TestHistory:
         ``?`` に置換せず ``HistoryWriteError`` になり、履歴ファイルは不変。
         """
         from src.history import record
+        from src.paths import output_path
         from src.sheets.master import ReportEntry
 
         history_path = self._cp932_history(tmp_path, monkeypatch, header=list(history.COLUMNS))
@@ -1975,6 +1982,8 @@ class TestHistory:
                     saved_to_file=None,
                     error="失敗😀",
                 ),
+                executed_at=_RECORD_FOR_EXECUTED_AT,
+                folder=str(output_path(entry).parent),
             )
 
         assert history_path.read_bytes() == before
