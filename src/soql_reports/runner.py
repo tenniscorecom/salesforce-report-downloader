@@ -61,10 +61,11 @@ def _apply_column_names(
     # 衝突の解消で困らないよう含める）。
     conflicts: dict[str, list[str]] = {}
     for original, new in zip(table.columns, new_columns, strict=True):
-        # ``new_columns`` は ``str`` のリストだが Pyright の推論上 ``str | None``
-        # になり得るので ``str`` だと確定させてから ``setdefault`` に渡す。
-        assert new is not None
-        conflicts.setdefault(new, []).append(original)
+        # ``column_names.get(col, col)`` の ``col`` は ``str`` なので結果は常に
+        # ``str``（ ``None`` にはならない）。 Pyright は ``str | None`` と推論する
+        # ことがあるので、 ``key: str = ...`` でローカル束縛して型を確定させる
+        key: str = new
+        conflicts.setdefault(key, []).append(original)
     duplicated = {header: sources for header, sources in conflicts.items() if len(sources) >= 2}
     if duplicated:
         raise SoqlColumnNameConflictError(report_key=report_cls.KEY, conflicts=duplicated)

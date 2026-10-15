@@ -44,6 +44,7 @@ Excel の読み書きそのものの仕組みは含めない（`src.report_maste
 
 import logging
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 from comken.core.timer import measure
@@ -209,9 +210,16 @@ class ReportEntry(MasterRow):
         "「×」は取得ごとに日時付きの別ファイルを作ります",
     )
 
-    @property
+    @cached_property
     def report_id(self) -> str:
         """URL から取り出した Salesforce のレポート ID。
+
+        ``cached_property`` で **同じ entry について 1 回だけ** URL をパースする。
+        取得系の ``entry.report_id`` は 1 件のダウンロード内で複数回参照される
+        （API 呼び出し・履歴書き込みなど）ので、毎回 ``report_id_from_url`` を
+        走らせないためにキャッシュしている。例外時はキャッシュせず、毎回
+        同じメッセージで上がる（``cached_property`` の既定動作）。
+        frozen dataclass でも ``__dict__`` を直接触るため動作する。
 
         **行番号ではなく管理番号で示す。** 空行を飛ばして読むので行番号はズレうるが、
         管理番号なら管理表を検索して一発で見つかる。

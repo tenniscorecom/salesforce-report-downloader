@@ -7,6 +7,7 @@
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from comken.core.table import Table
@@ -191,3 +192,83 @@ class TestDirectConstruction:
         )
         assert entry.exceeds_row_limit is False
         assert entry.use_soql is False
+
+
+class TestReportIdCaching:
+    """``ReportEntry.report_id`` は同じ entry について 1 回だけ URL をパースする
+    （``cached_property`` でキャッシュする）。 一度のダウンロード内で
+    ``entry.report_id`` は API 呼び出しと履歴書き込みの両方から参照されるので、
+    毎回 URL を再パースしないよう抑える。"""
+
+    def test_report_id_from_url_is_called_once_per_entry(self):
+        """同じ entry の ``report_id`` を複数回参照しても ``report_id_from_url``
+        は 1 回しか呼ばれない。"""
+        entry = ReportEntry(
+            key="1001",
+            summary="顧客一覧",
+            url=URL,
+            group="営業本部",
+            assignee="山田太郎",
+            enabled=True,
+            allow_empty=False,
+        )
+        with patch("src.sheets.master.report_id_from_url") as parse:
+            parse.return_value = "00O5g00000ABCDE"
+            # 実際の取得系＋履歴書き込み系を想定して複数回参照する
+            first = entry.report_id
+            second = entry.report_id
+            third = entry.report_id
+
+        assert first == second == third == "00O5g00000ABCDE"
+        assert parse.call_count == 1
+
+    def test_report_id_recomputes_when_exception_raised(self):
+        """``report_id_from_url`` が例外を出してもキャッシュせず、 次の参照で再度
+        同じ例外が出る（ ``cached_property`` の既定動作）。 1 回目のメッセージに
+        管理番号を添える契約はそのまま。"""
+        entry = ReportEntry(
+            key="1001",
+            summary="顧客一覧",
+            url=URL,
+            group="営業本部",
+            assignee="山田太郎",
+            enabled=True,
+            allow_empty=False,
+        )
+        with patch(
+            "src.sheets.master.report_id_from_url",
+            side_effect=SalesforceReportIDNotFoundError(URL),
+        ) as parse:
+            with pytest.raises(SalesforceReportIDNotFoundError) as first_exc:
+                # 直接 ``entry.report_id`` と書くと B018 が立つので、
+                # 取り出してすぐ捨てる形に。 副作用（= URL パースの再実行）が目的で、
+                # 値を使う必要はない
+                _value = entry.report_id
+                del _value
+            with pytest.raises(SalesforceReportIDNotFoundError) as second_exc:
+                _value = entry.report_id
+                del _value
+
+        # 2 回とも呼ぶ（ = キャッシュしない）
+        assert parse.call_count == 2
+        # どちらも管理番号を添えたメッセージのまま
+        assert "管理番号 1001" in str(first_exc.value)
+        assert "管理番号 1001" in str(second_exc.value)
+
+    def test_load_master_triggers_caching(self):
+        """``load_master()`` が ``entry.report_id`` を評価した時点でキャッシュされ、
+        直後に同じ entry から ``report_id`` を引いても ``report_id_from_url`` は
+        追加で呼ばれない。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            master = make_master(
+                Path(tmpdir) / "管理表.xlsx", HEADERS, [_row(exceeds="×", soql="×")]
+            )
+            with patch("src.sheets.master.report_id_from_url") as parse:
+                parse.return_value = "00O5g00000ABCDE"
+                entries = load_master(master)
+
+        assert parse.call_count == 1
+        # 同じ entry から取り出しても parse は再呼ばれない（ = キャッシュ済み）
+        assert entries["1001"].report_id == "00O5g00000ABCDE"

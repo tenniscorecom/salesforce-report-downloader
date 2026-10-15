@@ -280,7 +280,9 @@ def _download_scheduled_locked(
     # 日付とは別物として、``time.perf_counter()`` を使う）
     run_started = time.perf_counter()
 
-    targets, already_failed, skipped = _select_targets(entries, rules_by_report, current)
+    targets, _already_failed, skipped = _select_targets(entries, rules_by_report, current)
+    # ``_already_failed`` は ``_select_targets()`` の戻り値で常に空リスト（=何件も
+    # 残らない契約）なので使わない。 下で ``failed: list[str]`` を組み立て直す形にした
     enabled_count = sum(1 for entry in entries.values() if entry.enabled)
     logger.info(
         "定期取得を開始します: 管理表=%s, 全 %d 件 / 有効 %d 件 / 対象 %d 件",
@@ -309,8 +311,10 @@ def _download_scheduled_locked(
 
     saved: list[Path] = []
     # 1件失敗したら ``failed`` に積む。RPA 基盤から「失敗扱い」を判断できるよう、
-    # 末尾で ``ScheduledDownloadFailedError`` を送出して終了コード1 にする
-    failed: list[str] = list(already_failed)
+    # 末尾で ``ScheduledDownloadFailedError`` を送出して終了コード1 にする。
+    # ``already_failed`` は ``_select_targets()`` の戻り値で常に空リスト（= 何件も
+    # 残らない）なので、単純な空リストでよい
+    failed: list[str] = []
     # 失敗時に ``ScheduledDownloadFailedError`` から ``__cause__`` で辿れるよう、
     # 直近の捕捉した例外を覚えておく（同じ失敗が複数件あっても、最後の1件だけを
     # 連鎖させる）。``None`` のままだと「原因例外が無い」ことを示す
@@ -359,8 +363,10 @@ def _download_scheduled_locked(
         # 使い回していたブラウザを全部閉じる。``_fetch_via_browser()`` 側で取得中に
         # 例外が出たものは既に dict から外して ``__exit__()`` を呼んでいるので、
         # ここに残っているのは「成功裡に使い終わったブラウザ」だけ。
-        # 想定外例外が ``for`` ループを抜けた場合もこの ``finally`` で閉じる
-        for sf in list(browser_sessions.values()):
+        # 想定外例外が ``for`` ループを抜けた場合もこの ``finally`` で閉じる。
+        # ``finally`` のこの時点で ``browser_sessions`` はもう書き変わらないので、
+        # ループ用に ``list()`` で複製する必要は無い
+        for sf in browser_sessions.values():
             try:
                 # ``exc_type`` は ``None`` を渡す（``type(None)`` ≒ ``NoneType`` を
                 # 渡すと、comken の ``BrowserSession.__exit__`` 側で
@@ -817,9 +823,9 @@ def _fetch_with_auto_fallback(
         # 空ファイル（``allow_empty=True``）でも取り返さずにエラー扱い（空ファイルを
         # 残すと利用側が「データが無い日」と「取得失敗」を区別できなくなるため）。
         # ``except`` の外で判定・送出する（上の ``except Exception as browser_exc`` で
-        # ``BrowserFallbackFailedError`` に化けないように）
-        if len(browser_table) <= _REPORT_API_ROW_LIMIT:
-            browser_row_count = len(browser_table)
+        # ``BrowserFallbackFailedError`` に化けないように）。 件数は 1 回だけ数える
+        browser_row_count = len(browser_table)
+        if browser_row_count <= _REPORT_API_ROW_LIMIT:
             logger.warning(
                 "Report API では 2000 件超でしたが、ブラウザで取り直した結果も %d 行でした。"
                 "全件取れていないため失敗にします: %s（%s）",
@@ -1394,15 +1400,16 @@ def _save(
         # 見ない）。
         if entry.use_soql:
             report_cls = soql_report_for(entry.key)
-            instance = report_cls()
-            original_columns = list(table.columns)
-            # ``列名の対応.csv`` から、このレポートの主オブジェクト（ ``instance.soql()``
-            # の最初の ``FROM <名前>`` ）に該当する行だけを引く。 ファイルが無い /
-            # 該当行が無い / フォーマット不正はライブラリ側で WARNING or 例外に
-            # 振り分けて、ここでは戻り値だけ受け取る。
-            # 主オブジェクトが取れない（SOQL に ``FROM`` が無い等）ときは空 dict を
-            # 受け取り、 API 名のまま保存する（取得は失敗させない）。
-            soql_text = instance.soql()
+            # ``table.columns`` は ``Table`` が所有する ``list`` で、 後続の
+            # ``_apply_column_names()`` は新しい Table を返すので元の list は
+            # 書き変わらない。 コピーは不要
+            original_columns = table.columns
+            soql_text = report_cls().soql()
+            # ``列名の対応.csv`` から、このレポートの主オブジェクト（ SOQL の最初の
+            # ``FROM <名前>`` ）に該当する行だけを引く。 ファイルが無い / 該当行が無い
+            # / フォーマット不正はライブラリ側で WARNING or 例外に振り分けて、 ここでは
+            # 戻り値だけ受け取る。 主オブジェクトが取れない（ SOQL に ``FROM`` が無い等）
+            # ときは空 dict を受け取り、 API 名のまま保存する（取得は失敗させない）
             main_object = extract_main_object(soql_text)
             if main_object is None:
                 # WARNING には SOQL 本文（WHERE の値等）を出さない運用。
@@ -1544,25 +1551,28 @@ def _matched_schedule_key(
     （23:59 をまたぐ実行で「判定は開始日・履歴は翌日」となる事故を防ぐ）。
     """
     # スケジュール行が無いレポートは ``due_rules`` が空になり、取らない。警告ログは
-    # ``_select_targets()`` 側で出す
-    due_rules = [
+    # ``_select_targets()`` 側で出す。 ``is_due()`` と ``rules_by_report.get()`` は
+    # ここで 1 回ずつだけ評価し、 戻り値（ ``due_rules`` ）から後の判定を組み立てる
+    # ——元の実装は ``due_rules`` のリスト内包と末尾の ``any(...)`` で同じ評価を
+    # 2 回ずつ走らせていた
+    rules = rules_by_report.get(entry.key, ())
+    due_rules: list[ScheduleRule] = [rule for rule in rules if rule.is_due(current)]
+    due_and_unsucceeded = [
         rule
-        for rule in rules_by_report.get(entry.key, ())
-        if rule.is_due(current)
-        and not history.schedule_succeeded_today(
+        for rule in due_rules
+        if not history.schedule_succeeded_today(
             _history_path(), rule.schedule_key, date=current.date()
         )
     ]
-    if due_rules:
+    if due_and_unsucceeded:
         # ``start_time is None`` の行は具体的な時刻より優先度が低い（時刻条件なしの行で
         # 取得すると、後の時刻の行を再評価する余地がなくなるため）。
-        latest = max(due_rules, key=lambda rule: rule.start_time or dt.time.min)
+        latest = max(due_and_unsucceeded, key=lambda rule: rule.start_time or dt.time.min)
         return True, latest.schedule_key, ""
     # 取らない理由を「予定外」と「当日取得済」に分ける。後者は is_due は真だが
     # 同日内に既に成功履歴があるケースで、再実行で黙って取られなくなる事故の兆候を
-    # 拾えるように区別する
-    any_due = any(rule.is_due(current) for rule in rules_by_report.get(entry.key, ()))
-    if any_due:
+    # 拾えるように区別する。 is_due は上で 1 回だけ評価済み
+    if due_rules:
         return False, "", "当日取得済"
     return False, "", "予定外"
 
