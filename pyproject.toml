@@ -5,7 +5,7 @@ target-version = "py311"
 extend-exclude = [".pytest-tmp", ".pytest-*", "_scripts"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "C4", "LOG", "G", "DTZ", "RUF", "TID"]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "C90", "LOG", "G", "DTZ", "RUF", "TID"]
 ignore = [
     # 日本語のコード・コメント・docstring を「紛らわしい文字」として大量に誤検知するため
     "RUF001", "RUF002", "RUF003",
@@ -27,9 +27,8 @@ ban-relative-imports = "all"
 
 [tool.ruff.lint.mccabe]
 # 分岐の絡み合いの上限。
-# 10 は「いま全部通る一番きつい値」。測ったら最大が 10 だったので、
-# これ以上ややこしくなった時点で落ちる。
-max-complexity = 10
+# 現状の最大値で止めている。関数を分割するたびに下げる（目標 10）。
+max-complexity = 17
 
 [tool.ruff.lint.per-file-ignores]
 # テストは assert のための仮実装・cleanup の try/except が読みやすさ優先で残るため、
