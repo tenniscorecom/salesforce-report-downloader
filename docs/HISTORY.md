@@ -112,10 +112,11 @@
 - 日付: 2026-10
 - 以前の考え: なし。
 - いまの考え: ``SoqlReport.soql()`` が返した本文の先頭（前後の空白を除く）
-  が ``INCOMPLETE_SOQL_MARKER`` で始まる SOQL は ``bulk_query()`` を呼ぶ
+  が ``INCOMPLETE_MARKER_PREFIX`` で始まる SOQL は ``bulk_query()`` を呼ぶ
   **前**に ``SoqlIncompleteError`` で止める（Salesforce には問い合わせない）。
-  印の文字列は ``soql.INCOMPLETE_SOQL_MARKER`` の定数で soql-collector 側の
-  ``INCOMPLETE_MARKER`` と同じ。
+  印の文字列は comken の
+  ``comken.services.salesforce_downloader.contract.INCOMPLETE_MARKER_PREFIX``
+  の定数（ soql-collector とダウンローダーは同じ定数を import して使う）。
 - 理由: 下書き中の SOQL をうっかり保存先に流して「0 件が常に返る」状態に
   なるのを防ぐため、印のあるものは Salesforce に問い合わせる前に止める。
 

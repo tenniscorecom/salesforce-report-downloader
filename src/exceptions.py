@@ -10,6 +10,7 @@ DownloaderError`` を直接書いてください）。
 from pathlib import Path
 
 from comken.exceptions import ComkenError, DownloaderError
+from comken.services.salesforce_downloader.contract import INCOMPLETE_MARKER_PREFIX
 from comken.services.salesforce_downloader.history import (
     ROUTE_BROWSER_FALLBACK_TRUNCATED,
 )
@@ -244,27 +245,28 @@ class SoqlTransformError(DownloaderError):
 
 
 class SoqlIncompleteError(DownloaderError):
-    """soql-collector の下書きに未完成の印（ ``【未完成】`` ）が残っている
+    """soql-collector の下書きに未完成の印（ ``INCOMPLETE_MARKER_PREFIX`` ）が残っている
 
     soql-collector は SOQL の下書きを出すときに、 補えなかった部分を
-    ``【未完成】`` で始まる行として残す。 その印のある SOQL はそのままでは
+    ``INCOMPLETE_MARKER_PREFIX`` で始まる行として残す。 その印のある SOQL はそのままでは
     実行できない（=Salesforce に問い合わせる前に止める）。 印は 1 行目
     （前後の空白を除く）に来る前提。 本文の途中（文字列値など）に
-    ``【未完成】`` が出てくるだけなら止めない。
+    ``INCOMPLETE_MARKER_PREFIX`` が出てくるだけなら止めない。
 
     ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に ``soql()`` の
     本文を ``lstrip()`` して ``startswith()`` で判定する。 Salesforce
     には問い合わせない。
 
-    印の文字列は ``src.service.INCOMPLETE_SOQL_MARKER`` の定数で、
-    soql-collector 側の ``INCOMPLETE_MARKER`` と同じ。 変えるときは
-    両方を同時に変える。
+    印の文字列は comken の
+    ``comken.services.salesforce_downloader.contract.INCOMPLETE_MARKER_PREFIX``
+    の定数。 契約は comken の ``comken.services.salesforce_downloader.contract``
+    が正（ soql-collector とダウンローダーは同じ定数を import して使う）。
 
     発生箇所: ``src.service._fetch_via_soql()`` （ ``bulk_query()`` を呼ぶ前）
 
     対処:
         soql-collector の下書きに作れなかった部分が残っています。
-        SOQL 資料の「作れなかった部分」を補い、 1 行目の ``【未完成】`` の行を
+        SOQL 資料の「作れなかった部分」を補い、 1 行目の ``INCOMPLETE_MARKER_PREFIX`` の行を
         消してから使ってください。
     """
 
@@ -273,7 +275,7 @@ class SoqlIncompleteError(DownloaderError):
             f"SOQL の下書きに未完成の印があります: 管理番号={report_key}（{summary}）\n"
             "soql-collector の下書きに作れなかった部分が残っています。"
             "SOQL資料の『作れなかった部分』を補い、"
-            "1 行目の【未完成】の行を消してから使ってください。"
+            f"1 行目の{INCOMPLETE_MARKER_PREFIX}の行を消してから使ってください。"
         )
 
 

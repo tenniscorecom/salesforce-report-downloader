@@ -1,5 +1,0 @@
-﻿主オブジェクト,SOQL列名,表示名,備考,更新日
-Opportunity,Account.Name,取引先名,,2026-10-14
-Opportunity,Amount,金額,別の表示名あり: 売上金額（1002）,2026-10-14
-Opportunity,Name,商談名,,2026-10-14
-Task,Subject,件名,,2026-10-14

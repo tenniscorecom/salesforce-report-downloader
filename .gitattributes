@@ -1,2 +1,0 @@
-# 契約の見本は BOM・CRLF までバイト単位で比べるので、改行を変換しない
-tests/contract/*.csv -text

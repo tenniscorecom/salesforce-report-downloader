@@ -21,7 +21,7 @@ WARNING だけで API 名保存に倒れる（テストでも検証する）。
 （加工前の生データ）に対して ``transform()`` を呼んで保存用 Table を得る形に
 した。 加工の例外／非 Table 戻り値は ``SoqlTransformError`` に包まれ、
 当該レポートだけの失敗として記録される。 未完成の SOQL（ ``1 行目に
-【未完成】`` の印）は ``_fetch_via_soql()`` の ``bulk_query()`` 呼び出し前
+INCOMPLETE_MARKER_PREFIX`` の印）は ``_fetch_via_soql()`` の ``bulk_query()`` 呼び出し前
 に ``SoqlIncompleteError`` で止める。 いずれも ``_failure_row()`` で
 「Salesforce」区分に入り、 履歴に失敗 1 行が残る（ ``download_scheduled()``
 は次のレポートの取得を続ける）。
@@ -36,6 +36,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from comken.core.table import Table
 from comken.exceptions import SalesforceError, SalesforceRequestError
+from comken.services.salesforce_downloader.contract import (
+    COLUMN_NAMES_CSV_COLUMNS,
+    INCOMPLETE_MARKER_PREFIX,
+)
 from comken.toolbox.csv import CSV
 
 from src import paths as paths_module
@@ -50,7 +54,6 @@ from src.exceptions import (
 from src.service.routes import _fetch
 from src.service.save import _save
 from src.service.soql import (
-    INCOMPLETE_SOQL_MARKER,
     _fetch_via_soql,
     _verify_soql_count,
 )
@@ -381,8 +384,10 @@ class TestSaveAppliesColumnNames:
 # ---------------------------------------------------------------
 
 
-# テストで使う ``列名の対応.csv`` のヘッダ順。 soql-collector との取り決め
-_HEADER: list[str] = ["主オブジェクト", "SOQL列名", "表示名", "備考", "更新日"]
+# テストで使う ``列名の対応.csv`` のヘッダ順。 ``COLUMN_NAMES_CSV_COLUMNS``
+# から取る（契約は comken の ``comken.services.salesforce_downloader.contract``
+# が正）。
+_HEADER: list[str] = list(COLUMN_NAMES_CSV_COLUMNS)
 
 
 def _write_csv(path: Path, rows: list[list[str]]) -> None:
@@ -1468,7 +1473,7 @@ class TestFetchViaSoqlTransform:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 未完成の SOQL（ ``1 行目に【未完成】`` ）の停止（2026-10 追加）
+# 未完成の SOQL（ ``1 行目にINCOMPLETE_MARKER_PREFIX`` ）の停止（2026-10 追加）
 #
 # soql-collector が下書きを出し直すときに 1 行目に付ける印。
 # ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止まる。
@@ -1476,7 +1481,7 @@ class TestFetchViaSoqlTransform:
 
 
 class TestFetchViaSoqlIncompleteMarker:
-    """``soql()`` の 1 行目（前後の空白を除く）が ``INCOMPLETE_SOQL_MARKER``
+    """``soql()`` の 1 行目（前後の空白を除く）が ``INCOMPLETE_MARKER_PREFIX``
     で始まるとき、 ``bulk_query()`` を呼ばずに ``SoqlIncompleteError`` で止める。"""
 
     def test_marker_at_first_line_raises(self, monkeypatch):
@@ -1486,7 +1491,7 @@ class TestFetchViaSoqlIncompleteMarker:
             KEY = "9001"
 
             def soql(self) -> str:
-                return f"{INCOMPLETE_SOQL_MARKER}\nSELECT Id, StageName FROM Opportunity"
+                return f"{INCOMPLETE_MARKER_PREFIX}\nSELECT Id, StageName FROM Opportunity"
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _IncompleteReport)
@@ -1499,7 +1504,7 @@ class TestFetchViaSoqlIncompleteMarker:
         message = str(caught.value)
         assert "9001" in message
         assert "顧客一覧" in message
-        assert INCOMPLETE_SOQL_MARKER in message
+        assert INCOMPLETE_MARKER_PREFIX in message
         # **SOQL 本文は漏れていない** （ ``bulk_query()`` が受け取る予定の SOQL の
         # 2 行目以降がメッセージに入っていないこと）
         assert "SELECT Id, StageName FROM Opportunity" not in message
@@ -1513,7 +1518,7 @@ class TestFetchViaSoqlIncompleteMarker:
             KEY = "9001"
 
             def soql(self) -> str:
-                return f"  \n\t{INCOMPLETE_SOQL_MARKER}\nSELECT Id FROM Opportunity"
+                return f"  \n\t{INCOMPLETE_MARKER_PREFIX}\nSELECT Id FROM Opportunity"
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _IncompleteReport)
@@ -1525,14 +1530,14 @@ class TestFetchViaSoqlIncompleteMarker:
         client.__enter__.return_value.bulk_query.assert_not_called()
 
     def test_marker_inside_value_does_not_stop(self, monkeypatch):
-        """印が本文の途中（ ``WHERE 名前 = '【未完成】'`` のような文字列値）に
+        """印が本文の途中（ ``WHERE 名前 = 'INCOMPLETE_MARKER_PREFIX'`` のような文字列値）に
         出るだけなら止まらない（ 1 行目が ``SELECT`` で始まっているため）。"""
 
         class _OkReport(SoqlReport):
             KEY = "9001"
 
             def soql(self) -> str:
-                return f"SELECT Id FROM Account WHERE Name = '{INCOMPLETE_SOQL_MARKER}'"
+                return f"SELECT Id FROM Account WHERE Name = '{INCOMPLETE_MARKER_PREFIX}'"
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _OkReport)
@@ -1549,7 +1554,7 @@ class TestFetchViaSoqlIncompleteMarker:
             KEY = "9001"
 
             def soql(self) -> str:
-                return f"SELECT Id\n-- {INCOMPLETE_SOQL_MARKER}\nFROM Account"
+                return f"SELECT Id\n-- {INCOMPLETE_MARKER_PREFIX}\nFROM Account"
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _OkReport)
@@ -1576,42 +1581,54 @@ class TestFetchViaSoqlIncompleteSanityCheck:
     """未完成のチェックを意図的に外したときに、 該当テストが落ちることを確認
     するサニティチェック（一度確かめて戻す）。"""
 
-    def test_sanity_check_detects_when_marker_check_disabled(self):
-        """``INCOMPLETE_SOQL_MARKER`` のチェックを実質「常に偽」にした（印を
+    def test_sanity_check_detects_when_marker_check_disabled(self, monkeypatch):
+        """``INCOMPLETE_MARKER_PREFIX`` のチェックを実質「常に偽」にした（印を
         元の値と違う文字列に差し替え） ``_fetch_via_soql()`` の挙動を確認する。
         印のある SOQL でも ``bulk_query()`` が呼ばれること（=印チェックで
         止まっていないこと）を確かめ、 元の実装が印チェックを実際に
-        していることを保証する。"""
+        していることを保証する。
 
+        ``src.service.soql`` は ``INCOMPLETE_MARKER_PREFIX`` を import で
+        バインドしているので、 monkeypatch で ``src.service.soql`` モジュール
+        側の属性を差し替えれば ``_fetch_via_soql()`` 内の ``startswith()``
+        は差し替え後の値を見る（元の文字列と差し替え後の値が同じオブジェクト
+        ではなくなるので、 ``startswith()`` は偽になる）。
+        """
+
+        # ``src.service.soql`` を明示 import してから ``monkeypatch.setattr``
+        # する。 ``src/__init__.py`` は ``service`` を re-export していないので、
+        # 文字列ターゲットだけで辿ろうとすると ``module 'src' has no attribute
+        # 'service'`` で ``monkeypatch`` が解決に失敗する。
         from src.service import soql as service_module
 
-        original = service_module.INCOMPLETE_SOQL_MARKER
         # 印を違う文字列にしてチェックを「常に偽」にする（=元の印では止まらない）
-        service_module.INCOMPLETE_SOQL_MARKER = "X_NO_MATCH_NEVER_MATCHES"
-        try:
+        # ``monkeypatch`` でテスト後に自動で戻す
+        monkeypatch.setattr(
+            service_module,
+            "INCOMPLETE_MARKER_PREFIX",
+            "X_NO_MATCH_NEVER_MATCHES",
+        )
 
-            class _IncompleteReport(SoqlReport):
-                KEY = "9001"
+        class _IncompleteReport(SoqlReport):
+            KEY = "9001"
 
-                def soql(self) -> str:
-                    # 1 行目は本物の印で始まるが、 印チェックは無効化されている
-                    return f"{original}\nSELECT Id FROM Opportunity"
+            def soql(self) -> str:
+                # 1 行目は本物の印で始まるが、 印チェックは無効化されている
+                return f"{INCOMPLETE_MARKER_PREFIX}\nSELECT Id FROM Opportunity"
 
-            with patch(
-                "src.soql_reports._registry.registered_reports",
-                return_value=(_IncompleteReport,),
-            ):
-                table = _soql_table_with_rows()
-                site = _patched_soql_client(table)
-                # 印チェックを通り抜けたので ``bulk_query()`` が呼ばれる
-                with patch("src.service.soql.site_for", return_value=site):
-                    _fetch_via_soql(SOQL_ENTRY)
+        with patch(
+            "src.soql_reports._registry.registered_reports",
+            return_value=(_IncompleteReport,),
+        ):
+            table = _soql_table_with_rows()
+            site = _patched_soql_client(table)
+            # 印チェックを通り抜けたので ``bulk_query()`` が呼ばれる
+            with patch("src.service.soql.site_for", return_value=site):
+                _fetch_via_soql(SOQL_ENTRY)
 
-                # ``site`` は ``MagicMock(return_value=client)`` の形なので、
-                # 実クライアントは ``site.return_value`` にある
-                site.return_value.__enter__.return_value.bulk_query.assert_called_once()
-        finally:
-            service_module.INCOMPLETE_SOQL_MARKER = original
+            # ``site`` は ``MagicMock(return_value=client)`` の形なので、
+            # 実クライアントは ``site.return_value`` にある
+            site.return_value.__enter__.return_value.bulk_query.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────

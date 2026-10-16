@@ -36,6 +36,7 @@ import re
 from pathlib import Path
 
 from comken.exceptions import CSVError
+from comken.services.salesforce_downloader.contract import COLUMN_NAMES_CSV_COLUMNS
 from comken.toolbox.csv import CSV
 
 from src.exceptions import ColumnNamesCSVFormatError
@@ -44,12 +45,13 @@ from src.paths import COLUMN_NAMES_CSV_PATH
 logger = logging.getLogger(__name__)
 
 
-# ``列名の対応.csv`` の必須列名。 ``soql-collector`` との取り決め。
-# 名前を変えると soql-collector 側と合わなくなるので、テストの
-# フィクスチャ CSV も含めてすべてこの文字列を使う。
+# ``列名の対応.csv`` の必須列名。 ``COLUMN_NAMES_CSV_COLUMNS`` の先頭 3 列
+# （ ``主オブジェクト, SOQL列名, 表示名`` ）を使う。 契約は comken の
+# ``comken.services.salesforce_downloader.contract`` が正（ soql-collector と
+# ダウンローダーは同じ定数を import して使う）。
 # 「備考」「更新日」は人が読むメタ列なので必須扱いにはしない
 # （「別の表示名あり: …」のようなメモ用途）。
-_REQUIRED_COLUMNS: tuple[str, ...] = ("主オブジェクト", "SOQL列名", "表示名")
+_REQUIRED_COLUMNS: tuple[str, ...] = COLUMN_NAMES_CSV_COLUMNS[:3]
 
 # SOQL から最初の ``FROM <名前>`` を取り出す正規表現。
 # - ``\bFROM\b`` で大文字小文字を区別しない（``from`` / ``From`` も対象）
@@ -129,7 +131,7 @@ def _read_rows(csv_path: Path) -> list[dict[str, str]]:
             f"不足列: {', '.join(missing)}\n"
             f"現在の見出し: {joined_header}\n"
             "対処: ファイルが UTF-8 BOM 付き CRLF の CSV で、"
-            "列名が「主オブジェクト, SOQL列名, 表示名, 備考, 更新日」であることを確認してください。"
+            f"列名が「{', '.join(COLUMN_NAMES_CSV_COLUMNS)}」であることを確認してください。"
             " 旧形式（管理番号 / 概要 を含む列構成）のファイルが残っていないか確認し、"
             "soql-collector を新しい版で実行し直して 列名の対応.csv を再生成してください。"
         )
