@@ -430,7 +430,14 @@ def _default_of(cls: type[MasterRow], name: str) -> Any:
 
 
 def _convert(value: Any, value_type: Any, spec: ColumnSpec, row: int, cls: type) -> Any:
-    """セルの値を、宣言した型へ変換する。空欄なら _EMPTY を返す。"""
+    """セルの値を、宣言した型へ変換する。空欄なら _EMPTY を返す。
+
+    型ごとの変換処理は ``_CONVERTERS`` の dict に委譲する。 ``_convert`` 本体は
+    「空欄チェック → choices チェック → 型分岐のディスパッチ」だけに専念し、
+    複雑度を下げる。 各変換関数（ ``_convert_bool`` / ``_convert_int`` など）は
+    引数シグネチャを ``(value, text, spec, row)`` で統一し、 ``_CONVERTERS``
+    から同じ呼び出し方で使えるようにする。
+    """
     if value is None or (isinstance(value, str) and not value.strip()):
         return _EMPTY
 
@@ -441,34 +448,88 @@ def _convert(value: Any, value_type: Any, spec: ColumnSpec, row: int, cls: type)
         )
 
     candidate_types = _candidate_types(value_type)
+    for t in candidate_types:
+        converter = _CONVERTERS.get(t)
+        if converter is not None:
+            return converter(value, text, spec, row)
 
-    if bool in candidate_types or value_type is bool or value_type == "bool":
-        return is_enabled_mark(value)
-    if int in candidate_types or value_type is int or value_type == "int":
-        return _to_int(value, text, spec, row)
-    if Path in candidate_types or value_type is Path or value_type == "Path":
-        return Path(text)
-    if dt.time in candidate_types or value_type is dt.time or value_type == "dt.time":
-        try:
-            return _to_time(value)
-        except ValueError:
-            # **素の ValueError をそのまま上げると「どの行の、どの列で起きたか」が
-            # 業務担当者に届かない。** ``_to_time`` の例外は ``int`` の範囲外や
-            # フォーマット不一致など「ユーザー入力の問題」だけなので、ここで
-            # 行番号・列名を必ず付ける
-            raise MasterRowValueError(
-                row,
-                spec.header,
-                value,
-                "時刻は「9:00」「09:00:00」のように書いてください。",
-            ) from None
-    if str in candidate_types or value_type is str or value_type == "str":
-        # **Excel は数値セルを float で返すことがある。** そのまま `str()` すると
-        # `1001` が `"1001.0"` になるため、整数値は整数文字列として返す
-        if isinstance(value, float) and value.is_integer():
-            return str(int(value))
-        return text
+    # 文字列で渡された型ヒント（``from __future__ import annotations`` 経由）は
+    # ``_candidate_types`` が空タプルを返すため、上で見つからない。ここで
+    # ``"bool"`` / ``"int"`` 等の名前からもう一度引き直す
+    if isinstance(value_type, str):
+        named_cls = _CONVERTER_KEYS_BY_NAME.get(value_type)
+        if named_cls is not None:
+            return _CONVERTERS[named_cls](value, text, spec, row)
     return text
+
+
+def _convert_bool(value: Any, text: str, spec: ColumnSpec, row: int) -> bool:
+    """``_CONVERTERS`` の bool 変換。語集合は comken の ``is_enabled_mark`` に
+    集約してあるため、ここではそのまま委譲するのみ。"""
+    return is_enabled_mark(value)
+
+
+def _convert_int(value: Any, text: str, spec: ColumnSpec, row: int) -> int:
+    """``_CONVERTERS`` の int 変換。 ``bool`` を int 扱いにしないよう先に弾き、
+    Excel の小数表現（ ``1001.0`` ）は整数に丸める。"""
+    if isinstance(value, bool):
+        raise MasterRowValueError(row, spec.header, value, "数字を入れてください。")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)  # Excel は数値を小数で返すことがある
+    if not text.isdigit():
+        raise MasterRowValueError(row, spec.header, value, "数字だけで書いてください（例: 1001）。")
+    return int(text)
+
+
+def _convert_path(value: Any, text: str, spec: ColumnSpec, row: int) -> Path:
+    """``_CONVERTERS`` の Path 変換。空白を ``strip()`` 済みなのでそのまま渡す。"""
+    return Path(text)
+
+
+def _convert_time(value: Any, text: str, spec: ColumnSpec, row: int) -> dt.time:
+    """``_CONVERTERS`` の ``dt.time`` 変換。
+
+    ``_to_time`` の ``ValueError`` は「ユーザー入力の問題」だけ。 業務担当者に
+    「どの行のどの列で何が起きているか」が届くよう、 ここで必ず行番号・列名を
+    付けた ``MasterRowValueError`` に変換する。
+    """
+    try:
+        return _to_time(value)
+    except ValueError:
+        raise MasterRowValueError(
+            row,
+            spec.header,
+            value,
+            "時刻は「9:00」「09:00:00」のように書いてください。",
+        ) from None
+
+
+def _convert_str(value: Any, text: str, spec: ColumnSpec, row: int) -> str:
+    """``_CONVERTERS`` の str 変換。 Excel が数値セルを ``float`` で返すため、
+    ``1001`` が ``"1001.0"`` に化けないよう整数 ``float`` は整数文字列として返す。"""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return text
+
+
+# ``_convert`` が型から変換関数を引き直すための dict。 キーは変換対象の型そのもの。
+# 値はシグネチャ ``(value, text, spec, row)`` の呼び出し可能オブジェクト。
+# 新しい型を足すときは、ここに関数を登録するだけで ``_convert`` 本体の分岐は
+# 増やさずに済む（ ``_convert`` の複雑度を下げるための仕掛け）。
+_CONVERTERS: dict[type, Any] = {
+    bool: _convert_bool,
+    int: _convert_int,
+    Path: _convert_path,
+    dt.time: _convert_time,
+    str: _convert_str,
+}
+
+# ``from __future__ import annotations`` 経由の文字列型ヒント（ ``"bool"`` など）は
+# ``_candidate_types`` が空タプルを返すため ``_CONVERTERS`` のキー引きでヒットしない。
+# そこで「 ``__name__`` が一致する型」を名前で引ける索引も 1 つ用意する。
+_CONVERTER_KEYS_BY_NAME: dict[str, type] = {cls.__name__: cls for cls in _CONVERTERS}
 
 
 def _candidate_types(value_type: Any) -> tuple[type, ...]:
@@ -526,15 +587,3 @@ def _to_time(value: Any) -> dt.time | None:
         raise ValueError(f"invalid time value: {text!r}") from None
     hour, minute, second = match.groups()
     return dt.time(int(hour), int(minute), int(second) if second else 0)
-
-
-def _to_int(value: Any, text: str, spec: ColumnSpec, row: int) -> int:
-    if isinstance(value, bool):
-        raise MasterRowValueError(row, spec.header, value, "数字を入れてください。")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)  # Excel は数値を小数で返すことがある
-    if not text.isdigit():
-        raise MasterRowValueError(row, spec.header, value, "数字だけで書いてください（例: 1001）。")
-    return int(text)
