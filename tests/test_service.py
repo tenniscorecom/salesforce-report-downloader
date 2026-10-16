@@ -3950,7 +3950,9 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             ),
         ):
             with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
-                attempt_module._download(entry, "定期実行", history_path)
+                attempt_module._download(
+                    entry, "定期実行", history_path, current=_RECORD_FOR_EXECUTED_AT
+                )
 
         # 呼ばれた時点で「取得開始」ログが既に出ていた（=問い合わせの後ろではない）
         start_records = [r for r in captured if "取得開始" in r.message]
@@ -3987,7 +3989,9 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             ),
         ):
             with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
-                attempt_module._download(entry, "定期実行", history_path)
+                attempt_module._download(
+                    entry, "定期実行", history_path, current=_RECORD_FOR_EXECUTED_AT
+                )
 
         start_records = [r for r in captured if "取得開始" in r.message]
         assert len(start_records) == 1
@@ -4016,7 +4020,9 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             ),
         ):
             with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
-                attempt_module._download(entry, "定期実行", history_path)
+                attempt_module._download(
+                    entry, "定期実行", history_path, current=_RECORD_FOR_EXECUTED_AT
+                )
 
         start_records = [r for r in captured if "取得開始" in r.message]
         assert len(start_records) == 1

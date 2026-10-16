@@ -599,7 +599,7 @@ def _download(
     *,
     schedule_run_time: dt.time | None = None,
     filters: list[dict] | None = None,
-    current: dt.datetime | None = None,
+    current: dt.datetime,
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,
     progress: tuple[int, int] | None = None,
 ) -> Path:
@@ -700,7 +700,7 @@ def _try_empty_report_browser_fallback(
     *,
     filters: list[dict] | None,
     schedule_run_time: dt.time | None,
-    current: dt.datetime | None,
+    current: dt.datetime,
     attempt: _Attempt,
     route: str,
 ) -> Path | None:

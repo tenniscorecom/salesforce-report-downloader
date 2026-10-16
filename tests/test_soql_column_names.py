@@ -18,6 +18,7 @@ from typing import ClassVar
 import pytest
 from comken.core.table import Table
 from comken.toolbox.csv import CSV
+from comken.toolbox.csv.file import Value
 
 from src import paths as paths_module
 from src.exceptions import ColumnNamesCSVFormatError
@@ -39,7 +40,7 @@ def _write_csv(path: Path, rows: list[list[str]]) -> None:
     ヘッダは ``_HEADER`` の順で固定し、 ``rows`` はデータ行の ``list[list[str]]`` 。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    dict_rows = [dict(zip(_HEADER, row, strict=True)) for row in rows]
+    dict_rows: list[dict[str, Value]] = [dict(zip(_HEADER, row, strict=True)) for row in rows]
     with CSV(path, columns=_HEADER) as csv_file:
         csv_file.replace(dict_rows)
 

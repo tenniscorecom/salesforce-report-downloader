@@ -496,14 +496,17 @@ def _convert_time(value: Any, text: str, spec: ColumnSpec, row: int) -> dt.time:
     付けた ``MasterRowValueError`` に変換する。
     """
     try:
-        return _to_time(value)
+        converted = _to_time(value)
     except ValueError:
+        converted = None
+    if converted is None:
         raise MasterRowValueError(
             row,
             spec.header,
             value,
             "時刻は「9:00」「09:00:00」のように書いてください。",
         ) from None
+    return converted
 
 
 def _convert_str(value: Any, text: str, spec: ColumnSpec, row: int) -> str:
