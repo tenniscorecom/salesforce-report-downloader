@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+defaults:
+  run:
+    # このリポジトリのソース・pyproject は checkout 1 回目のディレクトリ配下。
+    # comken は ../comken に並列 checkout しているので、relative path の基準を
+    # 自分側に固定して、以降のステップで常に salesforce-report-downloader/ を
+    # 起点に動かす。
+    working-directory: salesforce-report-downloader
+
+jobs:
+  test:
+    # pywin32 を使う comken を ``pip install -e ../comken`` で入れるため、
+    # Windows ランナーで検証する（comken と同じ趣旨）。
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: salesforce-report-downloader
+
+      # comken（GitHub: tenniscorecom/comken）は PyPI に無く、隣接チェックアウト
+      # で ``pip install -e ../comken`` するために並列に置く。テスト本体は
+      # tests/conftest.py が sys.path を調整して ../comken も src/ も解決する。
+      - uses: actions/checkout@v7
+        with:
+          repository: tenniscorecom/comken
+          path: comken
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # comken は PyPI に無いので隣接チェックアウトから editable install する。
+          # openpyxl / requests / pywin32 / selenium は comken の依存として入る。
+          pip install -e ../comken
+          # ruff / pytest / pyright はバージョンを固定する。未固定だと CI に最新版が入り、
+          # 手元と formatter の挙動がずれて「ローカルは通るのに CI だけ落ちる」
+          # 状態になる（実際 comken 側で 0.15 と 0.16 の差で 12 ファイルが不一致になった）。
+          # 上げるときは手元でも同じ版に上げ、ruff format をかけ直してから変更する。
+          # ruff はこのリポジトリの .venv に合わせているため、comken の CI（ruff==0.15.21）とは版が違う。
+          pip install pytest==9.1.1 ruff==0.16.5 pyright==1.1.411
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Pyright
+        # pyproject の [tool.pyright] extraPaths（".", "../comken"）がそのまま効く
+        run: pyright
+
+      - name: Tests
+        run: python -m pytest tests -q
