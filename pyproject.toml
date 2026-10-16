@@ -39,7 +39,8 @@ max-complexity = 10
 "tests/**" = ["B017", "SIM105", "C901"]
 
 [tool.pyright]
-# 開発時は隣接するcomkenリポジトリを直接参照する。実行環境ではPYTHON_LIBRARYを使う。
+# 開発時は隣接する comken リポジトリを直接参照する。実行環境では
+# 環境変数 ``PYTHON_LIBRARY`` の値を ``PYTHONPATH`` に足して使う。
 # src/ はプロジェクトルートからの絶対 import（`src.service` 等）で参照するため、
 # ルート自身もパスに含める。
 extraPaths = [".", "../comken"]

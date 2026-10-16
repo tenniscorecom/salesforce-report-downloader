@@ -181,7 +181,7 @@ comken から import する。
 
 comken と同じ「共有サーバー直接参照（PYTHONPATH）」方式を使います。
 
-- 利用側プロジェクトの `実行.bat` で、**`COMKEN_ROOT` だけを `PYTHONPATH` に足す**。
+- 利用側プロジェクトの `実行.bat` で、**`PYTHON_LIBRARY` だけを `PYTHONPATH` に足す**。
 - 配置時に書き換えるファイル:
   - **`src/paths.py`** の `MASTER_PATH`（管理表の置き場所）
   - **`comken/services/salesforce_downloader/paths.py`** の `HISTORY_PATH`

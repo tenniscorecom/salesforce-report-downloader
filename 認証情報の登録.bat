@@ -5,8 +5,8 @@ rem ダブルクリックで起動してください。入れた値は Windows の DPAPI で暗号化して保
 rem 登録した Windows ユーザー・その PC でしか読めません。
 rem comken を別の場所へ移したときは、ここと 実行.bat・.vscode\settings.json を直してください。
 
-set "COMKEN_ROOT=F:\dev\comken"
-set "PYTHONPATH=%COMKEN_ROOT%;%PYTHONPATH%"
+set "PYTHON_LIBRARY=F:\dev\comken"
+set "PYTHONPATH=%PYTHON_LIBRARY%;%PYTHONPATH%"
 
 rem 共有フォルダ（\\サーバー名\...）から起動されても動くよう pushd を使う（cd は UNC 不可）
 pushd "%~dp0"
