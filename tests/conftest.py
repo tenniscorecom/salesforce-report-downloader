@@ -17,7 +17,8 @@
 ``src/`` は同じ要領で ``sys.path`` 先頭に足す（プロジェクトルート）。
 
 comken を **末尾** に置くのは、comken 側の ``tests/`` が通常のパッケージ
-として ``import tests`` を横取りするのを避けるため（このリポジトリの ``tests/__init__.py`` と併せて効く）。先頭に足ると、
+として ``import tests`` を横取りするのを避けるため
+（このリポジトリの ``tests/__init__.py`` と併せて効く）。先頭に足ると、
 ``PYTHONPATH`` 経由などで ``F:/dev/comken`` が先頭にある環境では comken 側
 の ``tests/`` がこのリポジトリの ``tests/`` より先に解決され、
 ``from tests.test_service import ...`` のような相対 import が comken 側の
