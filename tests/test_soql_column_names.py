@@ -17,7 +17,6 @@ from typing import ClassVar
 
 import pytest
 from comken.core.table import Table
-from comken.services.salesforce_downloader.contract import COLUMN_NAMES_CSV_COLUMNS
 from comken.toolbox.csv import CSV
 
 from src import paths as paths_module
@@ -27,10 +26,10 @@ from src.soql_reports.base import SoqlReport
 from src.soql_reports.column_names import extract_main_object, load_column_names_for
 from src.soql_reports.runner import _apply_column_names
 
-# テストで使う ``列名の対応.csv`` のヘッダ順。 ``COLUMN_NAMES_CSV_COLUMNS``
-# から取る（契約は comken の ``comken.services.salesforce_downloader.contract``
-# が正）。
-_HEADER: list[str] = list(COLUMN_NAMES_CSV_COLUMNS)
+# テストで使う ``列名の対応.csv`` のヘッダ順。 ``column_names._REQUIRED_COLUMNS``
+# ＋「備考」「更新日」。 人が読む列は ``soql-collector`` との取り決めで
+# 後ろに置く（= 必須列の先頭 ``主オブジェクト, SOQL列名, 表示名`` と区別する）。
+_HEADER: list[str] = ["主オブジェクト", "SOQL列名", "表示名", "備考", "更新日"]
 
 
 def _write_csv(path: Path, rows: list[list[str]]) -> None:

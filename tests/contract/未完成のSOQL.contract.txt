@@ -1,0 +1,3 @@
+【未完成】ここから下を補ってください
+SELECT Id, Name, Amount FROM Opportunity
+WHERE 完了予定日が今年

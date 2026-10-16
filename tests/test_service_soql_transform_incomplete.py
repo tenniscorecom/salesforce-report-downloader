@@ -21,7 +21,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from comken.core.table import Table
-from comken.services.salesforce_downloader.contract import INCOMPLETE_MARKER_PREFIX
 from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 
@@ -348,12 +347,14 @@ class TestDownloadScheduledTransformFailure:
 
 
 class _IncompleteSoqlReport(SoqlReport):
-    """1 行目が ``INCOMPLETE_MARKER_PREFIX`` で始まる SOQL を返すテスト用 ``SoqlReport``。"""
+    """1 行目が ``【未完成】`` で始まる SOQL を返すテスト用 ``SoqlReport``。"""
 
     KEY = "1002"
 
     def soql(self) -> str:
-        return f"{INCOMPLETE_MARKER_PREFIX}\nSELECT Id, StageName FROM Opportunity"
+        from src.service.soql import INCOMPLETE_SOQL_MARKER
+
+        return f"{INCOMPLETE_SOQL_MARKER}\nSELECT Id, StageName FROM Opportunity"
 
 
 class TestDownloadScheduledIncompleteSoql:
@@ -417,8 +418,10 @@ class TestDownloadScheduledIncompleteSoql:
             KEY = "1002"
 
             def soql(self) -> str:
+                from src.service.soql import INCOMPLETE_SOQL_MARKER
+
                 # 1 行目は印、 2 行目に目印の文字列を入れる
-                return f"{INCOMPLETE_MARKER_PREFIX}\nSELECT {marker} FROM Opportunity"
+                return f"{INCOMPLETE_SOQL_MARKER}\nSELECT {marker} FROM Opportunity"
 
         _enable_1002(monkeypatch, url=URL_B, use_soql=True)
         _patch_clock(monkeypatch)

@@ -9,12 +9,11 @@ SOQL の本文は ``soql_report_for(entry.key)`` で引いた ``SoqlReport`` が
         _verify_soql_count,
         _fetch_report_total_count,
         _extract_row_count_from_report_payload,
+        INCOMPLETE_SOQL_MARKER,
     )
 
-未完成の SOQL の検知は合同にある
-``comken.services.salesforce_downloader.contract.INCOMPLETE_MARKER_PREFIX``
-を使う。 契約は comken の ``comken.services.salesforce_downloader.contract``
-が正（soql-collector とダウンローダーは同じ定数を import して使う）。
+``INCOMPLETE_SOQL_MARKER`` の文字列は soql-collector 側の ``INCOMPLETE_MARKER``
+と同じ。 変えるときは両方同時に。
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from comken.exceptions import (
     SalesforceReportIDNotFoundError,
     SalesforceRequestError,
 )
-from comken.services.salesforce_downloader.contract import INCOMPLETE_MARKER_PREFIX
 from comken.toolbox.salesforce.sites import site_for
 
 from src.exceptions import (
@@ -40,6 +38,12 @@ from src.sheets.master import ReportEntry
 from src.soql_reports import soql_report_for
 
 logger = logging.getLogger("src.service")
+
+# soql-collector の下書きが SOQL を完成できなかったときに 1 行目へ付ける印。
+# 1 行目（前後の空白を除く）がこの文字列で始まる SOQL はそのままでは Salesforce に
+# 問い合わせず、 ``SoqlIncompleteError`` で止める。 soql-collector 側の
+# ``INCOMPLETE_MARKER`` と同じ。 変えるときは両方同時に。
+INCOMPLETE_SOQL_MARKER = "【未完成】"
 
 
 def _fetch_via_soql(entry: ReportEntry) -> Table:
@@ -59,11 +63,11 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     が受け付けない SOQL はこの経路では使えない。
 
     **未完成の SOQL の検知:** ``soql()`` が返した本文の
-    先頭（前後の空白を除く）が ``INCOMPLETE_MARKER_PREFIX`` で始まる SOQL は
+    先頭（前後の空白を除く）が ``INCOMPLETE_SOQL_MARKER`` で始まる SOQL は
     そのままでは Salesforce に問い合わせられない。 ``bulk_query()`` を呼ぶ
     **前**に ``SoqlIncompleteError`` で止める（Salesforce には問い合わせない）。
-    印の文字列は ``comken.services.salesforce_downloader.contract.INCOMPLETE_MARKER_PREFIX``
-    の定数で、 soql-collector 側も同じ定数を import している。
+    印の文字列は ``soql.INCOMPLETE_SOQL_MARKER`` の定数で soql-collector 側の
+    ``INCOMPLETE_MARKER`` と同じ。
 
     **件数の比較:** ``SoqlReport.CHECK_COUNT`` が ``True`` のとき
     （既定）、 ``bulk_query()`` の **直後** に **同じ接続のうち** にもう 1 度
@@ -103,7 +107,7 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     logger.debug("SOQL: %s", soql_text)
     # 未完成の印（先頭・空白無視）。本文の途中（文字列値）に同じ文字列が
     # 出ても止めない。Salesforce には問い合わせない
-    if soql_text.lstrip().startswith(INCOMPLETE_MARKER_PREFIX):
+    if soql_text.lstrip().startswith(INCOMPLETE_SOQL_MARKER):
         raise SoqlIncompleteError(entry.key, entry.summary)
     site = site_for(entry.url)
     with site() as salesforce:

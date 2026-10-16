@@ -1053,22 +1053,20 @@ class OpportunityStageSummary(SoqlReport):
 ### 未完成の SOQL を止める（2026-10 改定）
 
 soql-collector が下書きを出し直すとき、補えなかった部分がある SOQL には
-1 行目に **`INCOMPLETE_MARKER_PREFIX`** の印が付く（前後の空白は無視して判定）。
+1 行目に **`【未完成】`** の印が付く（前後の空白は無視して判定）。
 そのままでは実行できないので、 `_fetch_via_soql()` が `bulk_query()` を呼ぶ
 **前**に `SoqlIncompleteError` で止める（`DownloaderError` 系なので
 履歴に失敗 1 行が残り、次のレポートの取得は続く）。 Salesforce には
 問い合わせない（`bulk_query()` が呼ばれない）。
 
-印の文字列は comken の `comken.services.salesforce_downloader.contract.INCOMPLETE_MARKER_PREFIX`
-の定数（ soql-collector とダウンローダーは同じ定数を import して使う）。
-契約は comken の `comken.services.salesforce_downloader.contract` が正。
+印の文字列は `src.service.soql.INCOMPLETE_SOQL_MARKER` の定数で、 soql-collector
+側の `INCOMPLETE_MARKER` と同じ。 変えるときは **両方同時に** 変えること。
 
 印が 1 行目にあるときだけ止める（文字列値の中や 2 行目以降に同じ文字列が
 出ても止めない）。 例外メッセージに SOQL 本文は出さない（印の説明と管理番号・
 概要だけが書かれる）。
 
-サンプルは comken 側 `comken.services.salesforce_downloader.contract_samples/
-未完成のSOQL.contract.txt` から `load_sample()` で読む。
+サンプルは `tests/contract/未完成のSOQL.contract.txt` にある。
 
 ---
 
@@ -1094,7 +1092,7 @@ soql-collector が下書きを出し直すとき、補えなかった部分が�
 [`transform()`](#加工-transform2026-10-改定) の中で例外が起きた／戻り値が
 `Table` でないとき（メッセージに行の値は出さない）。`SoqlIncompleteError` は
 [`未完成の SOQL を止める`](#未完成の-soql-を止める2026-10-改定) で 1 行目に
-`INCOMPLETE_MARKER_PREFIX` の印があるとき。`ColumnNamesCSVFormatError` は
+`【未完成】` の印があるとき。`ColumnNamesCSVFormatError` は
 `列名の対応.csv`（`soql-collector` が出す、**主オブジェクト × SOQL列名 → 表示名** の対応表）
 のフォーマットが壊れている／旧形式の見出しのまま／読めないときに
 送出される（ファイルが無い／該当主オブジェクトの行が無いケースは `WARNING`
