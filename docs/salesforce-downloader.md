@@ -548,7 +548,7 @@ Salesforce取得結果, 保存結果, 保存先, ファイル名, 取得件数, 
 原因区分, エラーコード, エラー内容, 取得経路
 ```
 
-「取得経路」は `API` / `SOQL` / `ブラウザ` のいずれか（管理表の「SOQL」/「2000件超」列で決まり、`src.service._fetch()` と同じ優先順位）。
+「取得経路」は `API` / `SOQL` / `ブラウザ` のいずれか（管理表の「SOQL」/「2000件超」列で決まり、`src.service.routes._fetch()` と同じ優先順位）。
 
 **`スケジュールキー`** はその取得を起動したスケジュール行のキー（管理表「スケジュール」
 シートの `スケジュールキー` 列と同じ値）。重複実行を防ぐ根拠データで、失敗履歴は
@@ -955,7 +955,7 @@ SOQL の `len(table)` と比べる。
 シグナルとして使う。
 
 比較のログ・例外メッセージに SOQL 本文や行の値は出ない（件数だけ）。
-詳細は `src/service.py` の `_fetch_via_soql()` / `_verify_soql_count()` /
+詳細は `src/service/soql.py` の `_fetch_via_soql()` / `_verify_soql_count()` /
 `SoqlCountMismatchError` の docstring を参照。
 
 ### 加工 transform()（2026-10 改定）
@@ -1018,7 +1018,7 @@ soql-collector が下書きを出し直すとき、補えなかった部分が�
 履歴に失敗 1 行が残り、次のレポートの取得は続く）。 Salesforce には
 問い合わせない（`bulk_query()` が呼ばれない）。
 
-印の文字列は `src.service.INCOMPLETE_SOQL_MARKER` の定数で、 soql-collector
+印の文字列は `src.service.soql.INCOMPLETE_SOQL_MARKER` の定数で、 soql-collector
 側の `INCOMPLETE_MARKER` と同じ。 変えるときは **両方同時に** 変えること。
 
 印が 1 行目にあるときだけ止める（文字列値の中や 2 行目以降に同じ文字列が
@@ -1112,7 +1112,7 @@ comken 側のドキュメントを参照。
 | 出力先の担当者を変える | 管理表の「担当者」列（記録用のみ。出力パスのフォルダには影響しない） |
 | 取る時刻・曜日を変える、月末だけにする | 管理表の「スケジュール」シート（`schedule.py` が判定。呼び出し方自体は Salesforceレポートダウンローダー） |
 | 取ったCSVを加工する・DBへ入れる・通知する | 利用プロジェクト |
-| Salesforce への問い合わせ・保存・履歴書き込みの実行を変える | Salesforceレポートダウンローダー（`service.py`） |
+| Salesforce への問い合わせ・保存・履歴書き込みの実行を変える | Salesforceレポートダウンローダー（`src/service/`, 下の `__init__.py` / `attempt.py` / `routes.py` / `api.py` / `browser.py` / `soql.py` / `save.py` / `scheduler.py`） |
 | ファイル名の付け方を変える | `src/paths.py` の `output_path()` ← **全プロジェクトに効く** |
 | 履歴の列・読み取り方を変える | `comken.services.salesforce_downloader.history` の `COLUMNS` / `read_history()` ← **全プロジェクトに効く** |
 | 管理表に列を足す | `master.py` の `ReportEntry` |

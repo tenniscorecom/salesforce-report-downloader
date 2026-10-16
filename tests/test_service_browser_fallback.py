@@ -30,12 +30,12 @@ from comken.services.salesforce_downloader import history
 from comken.toolbox.csv import CSV
 
 import src.paths as _paths_module
-from src import service as service_module
 from src.exceptions import (
     BrowserFallbackFailedError,
     BrowserFallbackIncompleteError,
     ScheduledDownloadFailedError,
 )
+from src.service import attempt as attempt_module
 from src.service import download_scheduled
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
@@ -188,7 +188,7 @@ class TestAutoFallbackOnTruncated:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce(
@@ -196,7 +196,7 @@ class TestAutoFallbackOnTruncated:
         )
         browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -232,13 +232,13 @@ class TestAutoFallbackOnEmpty:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce([])  # 0 行を返す
         browser_site = _fake_browser_site(ROWS)  # ブラウザは行あり
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -265,13 +265,13 @@ class TestAutoFallbackOnEmpty:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce([])
         browser_site = _fake_browser_site([])  # ブラウザも 0 行
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -299,14 +299,14 @@ class TestAutoFallbackOnEmpty:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce([])
         # ブラウザはモックしない。呼ばれないことを確認するため、不正な型（None）
         # で patch して「呼ばれたら TypeError」になるようにしておく
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=MagicMock(side_effect=AssertionError("ブラウザを呼んだ")),
@@ -352,7 +352,7 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         soql_site = MagicMock()
@@ -373,7 +373,7 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
         )
         soql_site.return_value = soql_client
         with (
-            patch("src.service.site_for", return_value=soql_site),
+            patch("src.service.api.site_for", return_value=soql_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=MagicMock(side_effect=AssertionError("ブラウザを呼んだ")),
@@ -403,7 +403,7 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         # API 経路は空モックで「ブラウザ経路で取得」だけをシミュレート
@@ -417,7 +417,7 @@ class TestNoFallbackForSoqlAndBrowserRoutes:
         browser_site = _fake_browser_site(ROWS)
         # 同じ site_class を返すようにして、2 回目の取得でも同じインスタンスを使う
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -449,7 +449,7 @@ class TestBrowserReusedAcrossReports:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         # Report API は両方とも Truncated
@@ -459,7 +459,7 @@ class TestBrowserReusedAcrossReports:
         browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
 
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -526,7 +526,7 @@ class TestBrowserFallbackFails:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce(
@@ -534,7 +534,7 @@ class TestBrowserFallbackFails:
         )
         browser_site = self._make_browser_site_that_fails()
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -570,13 +570,13 @@ class TestBrowserFallbackFails:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce([])  # Report API が 0 行
         browser_site = self._make_browser_site_that_fails()
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -649,7 +649,7 @@ class TestNoSkipOnSameDay:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         # 「昨日 RPA が ``SalesforceReportTruncatedError`` で失敗した」履歴を書き、
         # 同じ日の 2 回目の ``download_scheduled()`` を走らせる
@@ -660,7 +660,7 @@ class TestNoSkipOnSameDay:
         )
         browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -724,7 +724,7 @@ class TestBrowserFallbackIncomplete:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce(
@@ -732,7 +732,7 @@ class TestBrowserFallbackIncomplete:
         )
         browser_site = _fake_browser_site(browser_rows)
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,
@@ -811,7 +811,7 @@ class TestBrowserFallbackIncomplete:
         history_path = tmp_path / "ダウンロード履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
         fixed_now = dt.datetime(2026, 9, 30, 10, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
 
         api_site = _fake_salesforce(
@@ -819,7 +819,7 @@ class TestBrowserFallbackIncomplete:
         )
         browser_site = _fake_browser_site(ROWS_OVER_LIMIT)
         with (
-            patch("src.service.site_for", return_value=api_site),
+            patch("src.service.api.site_for", return_value=api_site),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=browser_site,

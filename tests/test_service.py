@@ -27,7 +27,6 @@ from comken.toolbox.excel import Excel
 
 # paths fixture が monkeypatch.setattr に直接渡せるよう、paths モジュールを import しておく
 import src.paths as _paths_module
-from src import service as service_module
 from src.cli import main as cli
 from src.exceptions import (
     MasterDuplicateValueError,
@@ -36,7 +35,9 @@ from src.exceptions import (
     SavedFileEmptyError,
     ScheduledDownloadFailedError,
 )
+from src.service import attempt as attempt_module
 from src.service import download_scheduled
+from src.service import save as save_module
 from src.sheets.master import load_master, shared_report_ids
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
@@ -467,7 +468,7 @@ class TestDownloadScheduledRecord:
             }
         ]
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             download_scheduled(filters_by_report={"1001": filters})
 
         report_get = site.return_value.__enter__.return_value.report.get
@@ -476,7 +477,7 @@ class TestDownloadScheduledRecord:
     def test_does_not_pass_filters_when_report_has_no_filters(self, paths):
         """実行時フィルタを省略したレポートは保存済み条件のまま実行する。"""
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             download_scheduled()
 
         report_get = site.return_value.__enter__.return_value.report.get
@@ -499,8 +500,8 @@ class TestDownloadScheduledRecord:
         entry = replace(load_master(paths["master_path"])["1001"], exceeds_row_limit=True)
         browser_site = fake_browser_site()
         with (
-            patch("src.service.load_master", return_value={"1001": entry}),
-            patch("src.service.site_for") as api_site_for,
+            patch("src.service.attempt.load_master", return_value={"1001": entry}),
+            patch("src.service.api.site_for") as api_site_for,
             patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=browser_site),
         ):
             download_scheduled()
@@ -514,7 +515,7 @@ class TestDownloadScheduledRecord:
         `download_scheduled()` は管理表の全有効件を処理するので、`paths` fixture の
         中では `1001` だけが有効。`.csv` のファイルが1件できることを確認する。
         """
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled("案件集計")
         csv_paths = [path for path in saved if path.suffix == ".csv"]
         assert len(csv_paths) == 1
@@ -534,7 +535,7 @@ class TestDownloadScheduledRecord:
         Salesforce へ問い合わせない。
         """
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             download_scheduled()
             download_scheduled()
         # 1 回目だけ取得される。出力は単一ファイル（時刻付き）の 1 件だけ
@@ -550,14 +551,14 @@ class TestDownloadScheduledRecord:
         # 出力先パスを固定するため `clock_now` を差し止める（`service` と `provider` の
         # 両方が `clock_now` をローカル束縛にしているので両方差し替える必要がある）
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         # 「ベース / 概要」の 2 階層目に衝突ファイルを作る
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         summary_dir.mkdir(exist_ok=True)
         collision = summary_dir / "1001_20260918_0930.csv"
         collision.write_text("既存", encoding="utf-8")
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled()
         # 既存ファイルは上書きされない
         assert collision.read_text(encoding="utf-8") == "既存"
@@ -582,7 +583,7 @@ class TestDownloadScheduledRecord:
         # 出力先パスを固定するため `clock_now` を差し止める（`service` と `provider` の
         # 両方が `clock_now` をローカル束縛にしているので両方差し替える必要がある）
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         # 「ベース / 概要」の 2 階層目に衝突ファイルを作る
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
@@ -601,7 +602,7 @@ class TestDownloadScheduledRecord:
 
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             pytest.raises(ScheduledDownloadFailedError) as caught,
@@ -617,13 +618,13 @@ class TestDownloadScheduledRecord:
         ここでは「1001 だけ取れて、空の 9999 を要求しても何も起きない」ことを確認するため、
         1001 が取得できることをもって対象外になっていることを示す。
         """
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
 
     def test_disabled_report_is_skipped(self, paths):
         """`1003` は「無効」なので取得対象外（periodic から除外される）。"""
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
         assert all(path.name.split("_")[0] != "1003" for path in saved)
 
@@ -631,7 +632,7 @@ class TestDownloadScheduledRecord:
         """0 件あり=× のレポートで 0 行だと、`ScheduledDownloadFailedError` で全体が失敗する。"""
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce([]),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -666,7 +667,7 @@ class TestDownloadScheduledRecord:
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -676,7 +677,7 @@ class TestDownloadScheduledRecord:
         assert not base_path.exists()
 
     def test_no_temporary_file_is_left_behind(self, paths):
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled()
         # `atomic_write()` 由来の一時ファイル（``~`` プレフィックス）は残らない
         assert list(paths["base_path"].glob("~*")) == []
@@ -697,7 +698,7 @@ class TestDownloadScheduledRecord:
         table = Table(["名前", "金額"], ROWS)
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         summary_dir.mkdir(exist_ok=True)
-        original_write_csv = service_module._write_csv
+        original_write_csv = save_module._write_csv
 
         def check_no_final(path, table):
             # ``_write_csv`` が呼ばれている間、 ``summary_dir`` 配下に本番名
@@ -707,11 +708,11 @@ class TestDownloadScheduledRecord:
             return original_write_csv(path, table)
 
         with patch.object(
-            service_module,
-            "_write_csv",
+        save_module,
+        "_write_csv",
             side_effect=check_no_final,
         ):
-            path = service_module._save(entry, table)
+            path = save_module._save(entry, table)
         assert path.is_file()
 
     def test_temp_and_final_files_removed_on_write_error(self, paths):
@@ -729,12 +730,12 @@ class TestDownloadScheduledRecord:
             raise OSError("書き込み失敗")
 
         with patch.object(
-            service_module,
-            "_write_csv",
+        save_module,
+        "_write_csv",
             side_effect=failing_write,
         ):
             with pytest.raises(OSError):
-                service_module._save(entry, table)
+                save_module._save(entry, table)
 
         # 一時ファイルも最終ファイルも残らない（``summary_dir`` は ``mkdir`` で
         # 作られているが、配下には何もない）
@@ -750,14 +751,14 @@ class TestDownloadScheduledRecord:
         「次の連番候補へ」の判定に使う。既存ファイルを勝手に上書きしない。
         """
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         summary_dir.mkdir(exist_ok=True)
         collision = summary_dir / "1001_20260918_0930.csv"
         collision.write_text("既存", encoding="utf-8")
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
 
         # 既存ファイルは上書きされない
@@ -794,10 +795,10 @@ class TestDownloadScheduledRecord:
         summary_dir.mkdir(exist_ok=True)
         # 出力パスを固定（``clock_now`` で揺れないように）
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         base = _paths_module.output_path(entry, now=fixed_now)
-        original_write_csv = service_module._write_csv
+        original_write_csv = save_module._write_csv
 
         def check_no_final(path, table):
             # 新方式では「``_write_csv`` が走る時点で最終ファイルが無い」が
@@ -806,8 +807,8 @@ class TestDownloadScheduledRecord:
             return original_write_csv(path, table)
 
         # **新方式（修正後）:** assert が通る（最終ファイルはまだ無い）
-        with patch.object(service_module, "_write_csv", side_effect=check_no_final):
-            path = service_module._save(entry, table)
+        with patch.object(save_module, "_write_csv", side_effect=check_no_final):
+            path = save_module._save(entry, table)
         assert path.is_file()
         # 後始末
         path.unlink()
@@ -823,7 +824,7 @@ class TestDownloadScheduledRecord:
                 base_local.open("x").close()
             except FileExistsError:
                 pass
-            return service_module._save(
+            return save_module._save(
                 entry,
                 table,
                 schedule_run_time=schedule_run_time,
@@ -832,7 +833,7 @@ class TestDownloadScheduledRecord:
 
         # ``_write_csv`` モックを保ったまま壊した ``_save`` 相当の呼び出しを
         # 行う。assert が失敗する（＝新方式の assert が壊した版を検出する）
-        with patch.object(service_module, "_write_csv", side_effect=check_no_final):
+        with patch.object(save_module, "_write_csv", side_effect=check_no_final):
             with pytest.raises(AssertionError) as caught:
                 broken_save_then_check(entry, table)
             assert "本番名のファイルが存在する" in str(caught.value)
@@ -848,7 +849,7 @@ class TestDownloadScheduledRecord:
         2026-09 に「ベース / 概要」の 2 階層に戻したので、 glob で ``ベース / 概要``
         配下のファイルが拾えることを確認する（ベース直下には何も作られない）。
         """
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled()
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert summary_dir.is_dir()
@@ -861,7 +862,7 @@ class TestDownloadScheduledRecord:
         """概要のフォルダは保存時に ``mkdir`` で自動作成される。"""
         # 念のため未作成を確認
         assert not (paths["base_path"] / paths["summary_folder_1001"]).exists()
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled()
         # 概要フォルダが作られた
         assert (paths["base_path"] / paths["summary_folder_1001"]).is_dir()
@@ -895,7 +896,7 @@ class TestDownloadScheduledRecord:
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -920,7 +921,7 @@ class TestDownloadScheduledRecord:
         # がそのまま見えるので、このテストではモジュール import を使う
         from comken.services.salesforce_downloader import history as _history
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled()
         # 履歴の「保存先」列が ``ベース / 概要`` のフォルダを指している
         row = _history_rows(paths)[-1]
@@ -951,9 +952,9 @@ class TestDownloadScheduledRecord:
         entries = load_master(paths["master_path"])
         entry_1002 = replace(entries["1002"], enabled=True, summary="顧客一覧")
         all_entries = {**entries, "1002": entry_1002}
-        # ``service_module.load_master`` を新しい dict を返す関数で差し替える
-        monkeypatch.setattr(service_module, "load_master", lambda _master_path: all_entries)
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        # ``attempt_module.load_master`` を新しい dict を返す関数で差し替える
+        monkeypatch.setattr(attempt_module, "load_master", lambda _master_path: all_entries)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
         monkeypatch.setattr(_paths_module, "clock_now", lambda: fixed_now)
         # ``1002`` にはスケジュール行が無いので、 ``1002`` 用のスケジュール行を
         # 追加した新しいリストを返す ``load_schedule`` に差し替える
@@ -971,12 +972,12 @@ class TestDownloadScheduledRecord:
             enabled=True,
         )
         monkeypatch.setattr(
-            service_module,
+            attempt_module,
             "load_schedule",
             lambda _master_path: [existing_rule, schedule_for_1002],
         )
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
 
         # 両方とも同じ「ベース / 概要」配下に保存される
@@ -994,7 +995,7 @@ class TestHistory:
     """履歴には成否も、誰が要求したかも残る。"""
 
     def test_success_is_recorded_with_project_and_counts(self, paths):
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled("案件集計")
         row = _history_rows(paths)[-1]
         assert row["管理番号"] == "1001"
@@ -1013,7 +1014,7 @@ class TestHistory:
         browser_site = fake_browser_site([])
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce([]),
             ),
             patch(
@@ -1033,7 +1034,7 @@ class TestHistory:
 
     def test_downloaded_today_counts_after_scheduled_run(self, paths):
         """`download_scheduled()` で取った記録は `downloaded_today()` で拾える。"""
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled()
         assert history.downloaded_today(paths["history_path"], "1001")
 
@@ -1068,7 +1069,7 @@ class TestHistory:
         _patch_master_path(monkeypatch, master, history_path)
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1120,7 +1121,7 @@ class TestHistory:
 
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1145,7 +1146,7 @@ class TestHistory:
         browser_site = fake_browser_site([])
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce([]),
             ),
             patch(
@@ -1693,12 +1694,12 @@ class TestHistory:
         write_error = OSError("書き込み失敗")
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             patch.object(
-                service_module,
-                "_write_csv",
+        save_module,
+        "_write_csv",
                 side_effect=write_error,
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1716,7 +1717,7 @@ class TestHistory:
     # ── 「原因区分」列（4区分 + 成功時の空文字）─────────────────────
     def test_cause_is_blank_on_success(self, paths):
         """成功時は原因区分が空文字。"""
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled()
         row = _history_rows(paths)[-1]
         assert row["成否"] == "成功"
@@ -1748,7 +1749,7 @@ class TestHistory:
         _patch_master_path(monkeypatch, master, history_path)
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1790,7 +1791,7 @@ class TestHistory:
 
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1814,7 +1815,7 @@ class TestHistory:
         browser_site = fake_browser_site([])
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce([]),
             ),
             patch(
@@ -1857,12 +1858,12 @@ class TestHistory:
         write_error = OSError("書き込み失敗")
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             patch.object(
-                service_module,
-                "_write_csv",
+        save_module,
+        "_write_csv",
                 side_effect=write_error,
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1900,7 +1901,7 @@ class TestHistory:
 
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=site,
             ),
             pytest.raises(TypeError),
@@ -1993,7 +1994,7 @@ class TestDownloadScheduled:
     """定期取得は「有効」なものだけを対象にする。"""
 
     def test_only_enabled_reports_are_downloaded(self, paths):
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
         # `paths` fixture では `1001`（=CSV・有効）だけが対象
         keys = sorted(path.name.split("_")[0] for path in saved)
@@ -2037,7 +2038,7 @@ class TestDownloadScheduled:
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -2084,7 +2085,7 @@ class TestDownloadScheduled:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        original_write_csv = service_module._write_csv
+        original_write_csv = save_module._write_csv
 
         def fail_first_write(path, table):
             # ``_save()`` が 2026-10 から一時ファイル（``~`` プレフィックス）に対して
@@ -2096,10 +2097,10 @@ class TestDownloadScheduled:
 
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
-            patch.object(service_module, "_write_csv", side_effect=fail_first_write),
+            patch.object(save_module, "_write_csv", side_effect=fail_first_write),
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
@@ -2155,7 +2156,7 @@ class TestDownloadScheduled:
 
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=site,
             ),
             pytest.raises(TypeError),
@@ -2167,7 +2168,7 @@ class TestDownloadScheduled:
 
     def test_records_the_trigger_as_scheduled(self, paths):
         """`download_scheduled()` で取った記録は履歴に `プロジェクト` 名で残る。"""
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             download_scheduled("定期実行")
         assert _history_rows(paths)[-1]["プロジェクト"] == "定期実行"
 
@@ -2223,11 +2224,11 @@ class TestDownloadScheduled:
             )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
         fixed_now = dt.datetime(2026, 1, 5, 9, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
         with (
             caplog.at_level(logging.WARNING, logger="src.service"),
-            patch("src.service.site_for", return_value=fake_salesforce()),
+            patch("src.service.api.site_for", return_value=fake_salesforce()),
         ):
             saved = download_scheduled()
         # スケジュール行が無いので取らない
@@ -2263,9 +2264,9 @@ class TestDownloadScheduled:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
         # スケジュールの判定で外れるので、保存されない
         assert saved == []
@@ -2295,9 +2296,9 @@ class TestDownloadScheduled:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
 
@@ -2326,9 +2327,9 @@ class TestDownloadScheduled:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
 
@@ -2364,10 +2365,10 @@ class TestDownloadScheduled:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             saved = download_scheduled()
         # 1 回だけ取得される
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
@@ -2420,9 +2421,9 @@ class TestDownloadScheduled:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
         # 祝日（みどりの日）なので ``is_due`` 内で除外され、保存されない
         assert saved == []
@@ -2445,7 +2446,7 @@ class TestDownloadScheduled:
 
         monkeypatch.setattr(ScheduleRule, "is_due", _broken_is_due)
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             saved = download_scheduled()
         assert site.return_value.__enter__.return_value.report.get.call_count == 1
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
@@ -2483,10 +2484,10 @@ class TestScheduleDedup:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             download_scheduled()
             download_scheduled()
         # 1 回目だけ Salesforce へ問い合わせる（2 回目は履歴を見てスキップ）
@@ -2530,10 +2531,10 @@ class TestScheduleDedup:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
         # 1 回目は OSError で保存失敗、2 回目は成功する
-        original_write_csv = service_module._write_csv
+        original_write_csv = save_module._write_csv
         attempts = {"count": 0}
 
         def fail_first(path, table):
@@ -2546,16 +2547,16 @@ class TestScheduleDedup:
         first_site = fake_salesforce()
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=first_site,
             ),
-            patch.object(service_module, "_write_csv", side_effect=fail_first),
+            patch.object(save_module, "_write_csv", side_effect=fail_first),
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
         # 1 回目は失敗 → 2 回目を呼ぶ
         with patch(
-            "src.service.site_for",
+            "src.service.api.site_for",
             return_value=site,
         ):
             download_scheduled()
@@ -2588,7 +2589,7 @@ class TestScheduleDedup:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
         # 保存段階で OSError を起こして失敗させる（_Attempt.record_failure() の経路を通る）
         def fail(path, table):
@@ -2597,10 +2598,10 @@ class TestScheduleDedup:
         site = fake_salesforce()
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=site,
             ),
-            patch.object(service_module, "_write_csv", side_effect=fail),
+            patch.object(save_module, "_write_csv", side_effect=fail),
             pytest.raises(ScheduledDownloadFailedError),
         ):
             download_scheduled()
@@ -2639,12 +2640,12 @@ class TestScheduleDedup:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
         # 1 回目: 水曜 12:00 → S_WED が is_due=True、ただし履歴に何もないので取得
         first_site = fake_salesforce()
         with patch(
-            "src.service.site_for",
+            "src.service.api.site_for",
             return_value=first_site,
         ):
             download_scheduled()
@@ -2658,10 +2659,10 @@ class TestScheduleDedup:
         # スケジュールキーが違うので S_MON の履歴は無いため、S_MON で取得される
         # （=重複ではなく別キー）
         monday_now = dt.datetime(2026, 1, 5, 12, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
-        monkeypatch.setattr(service_module, "clock_now", lambda: monday_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: monday_now)
         second_site = fake_salesforce()
         with patch(
-            "src.service.site_for",
+            "src.service.api.site_for",
             return_value=second_site,
         ):
             saved2 = download_scheduled()
@@ -2729,7 +2730,7 @@ class TestUnscheduledReportIsSkipped:
         _patch_master_path(monkeypatch, master, history_path)
 
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             saved = download_scheduled()
 
         # 何も取られない
@@ -2765,7 +2766,7 @@ class TestUnscheduledReportIsSkipped:
 
         with (
             caplog.at_level(logging.WARNING, logger="src.service"),
-            patch("src.service.site_for", return_value=fake_salesforce()),
+            patch("src.service.api.site_for", return_value=fake_salesforce()),
         ):
             download_scheduled()
 
@@ -2801,7 +2802,7 @@ class TestUnscheduledReportIsSkipped:
 
         with (
             caplog.at_level(logging.WARNING, logger="src.service"),
-            patch("src.service.site_for", return_value=fake_salesforce()),
+            patch("src.service.api.site_for", return_value=fake_salesforce()),
         ):
             download_scheduled()
 
@@ -2843,7 +2844,7 @@ class TestUnscheduledReportIsSkipped:
         _patch_master_path(monkeypatch, master, history_path)
 
         site = fake_salesforce()
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             saved = download_scheduled()
 
         # 1002 だけが取得される（1001 は警告だけ出してスキップ）
@@ -2881,11 +2882,11 @@ class TestUnscheduledReportIsSkipped:
             ],
         )
         _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
-        monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
         with (
             caplog.at_level(logging.INFO, logger="src.service"),
-            patch("src.service.site_for", return_value=fake_salesforce()),
+            patch("src.service.api.site_for", return_value=fake_salesforce()),
         ):
             download_scheduled()
 
@@ -2942,7 +2943,7 @@ class TestRunLock:
         other_handle.__enter__()
         try:
             site = fake_salesforce()
-            with patch("src.service.site_for", return_value=site):
+            with patch("src.service.api.site_for", return_value=site):
                 saved = download_scheduled()
             # Salesforce へ問い合わせない（=ロック取得で弾かれた）
             assert site.return_value.__enter__().report.get.call_count == 0
@@ -2991,10 +2992,10 @@ class TestRunLock:
             # 履歴ロック取得失敗を発生させる（=履歴ロックの本当の障害）。
             raise HistoryLockTimeoutError(history_path, 10.0)
 
-        monkeypatch.setattr(service_module.history, "schedule_succeeded_today", _raise_lock_timeout)
+        monkeypatch.setattr(history, "schedule_succeeded_today", _raise_lock_timeout)
 
         with (
-            patch("src.service.site_for", return_value=fake_salesforce()),
+            patch("src.service.api.site_for", return_value=fake_salesforce()),
             pytest.raises(HistoryLockTimeoutError),
         ):
             download_scheduled()
@@ -3122,10 +3123,10 @@ class TestFixedCurrentAcrossExecution:
             call_count += 1
             return start_dt if call_count == 1 else next_day_dt
 
-        monkeypatch.setattr(service_module, "clock_now", _clock_now_then_next_day)
+        monkeypatch.setattr(attempt_module, "clock_now", _clock_now_then_next_day)
         monkeypatch.setattr(_paths_module, "clock_now", _clock_now_then_next_day)
 
-        with patch("src.service.site_for", return_value=fake_salesforce()):
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
             saved = download_scheduled()
 
         # 出力ファイル名の日付は開始日（20260916）
@@ -3151,7 +3152,7 @@ class TestRequiredHistory:
         """`HistoryWriteError` は `ScheduledDownloadFailedError` に変換されて返る。"""
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             patch.object(history, "_append", side_effect=OSError("履歴書込み失敗")),
@@ -3169,7 +3170,7 @@ class TestRequiredHistory:
         browser_site = fake_browser_site([])
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce([]),
             ),
             patch(
@@ -3225,7 +3226,7 @@ class TestAllowEmpty:
         browser_site = fake_browser_site([])
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce([]),
             ),
             patch(
@@ -3276,7 +3277,7 @@ class TestAllowEmpty:
         _patch_master_path(monkeypatch, master, history_path)
 
         with patch(
-            "src.service.site_for",
+            "src.service.api.site_for",
             return_value=fake_salesforce([]),
         ):
             download_scheduled()  # 例外にならない
@@ -3328,7 +3329,7 @@ class TestAllowEmpty:
         _patch_master_path(monkeypatch, master, history_path)
 
         with patch(
-            "src.service.site_for",
+            "src.service.api.site_for",
             return_value=fake_salesforce([]),
         ):
             download_scheduled()
@@ -3375,7 +3376,7 @@ class TestAllowEmpty:
         # 後付けで読む既存プロジェクトを壊さないため）
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce([]),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -3452,7 +3453,7 @@ class TestAllowEmpty:
         client.__enter__.return_value.report.get.side_effect = _run
         site.return_value = client
 
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.api.site_for", return_value=site):
             saved = download_scheduled()  # 例外にならない
 
         # 両方とも保存される（"1001" は空ファイル、"1002" は通常の CSV）
@@ -3530,13 +3531,13 @@ class TestTruncatedSkip:
         成功扱いになる）。
         """
         now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001
-        monkeypatch.setattr(service_module, "clock_now", lambda: now)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: now)
         # 同じ「今日」の truncated 失敗履歴を直接書く（=昨晩 RPA が失敗した想定）
         self._seed_truncated_failure(paths["history_path"], when=now)
 
         site = fake_browser_site()
         with (
-            patch("src.service.site_for", return_value=fake_salesforce()),
+            patch("src.service.api.site_for", return_value=fake_salesforce()),
             patch(
                 "comken.toolbox.browser.sites.salesforce.site_for",
                 return_value=site,
@@ -3602,9 +3603,9 @@ class TestSavedFileEmpty:
             # 0 バイトだった」状態を再現する
             path.write_bytes(b"")
 
-        with patch.object(service_module, "_write_csv", side_effect=empty_write):
+        with patch.object(save_module, "_write_csv", side_effect=empty_write):
             with pytest.raises(SavedFileEmptyError) as caught:
-                service_module._save(entry, table)
+                save_module._save(entry, table)
 
         # メッセージに管理番号・保存パス・行数・対処のいずれかが入っている
         message = str(caught.value)
@@ -3621,7 +3622,7 @@ class TestSavedFileEmpty:
         table = Table(["名前", "金額"], ROWS)
 
         with caplog.at_level(logging.INFO, logger="src.service"):
-            path = service_module._save(entry, table)
+            path = save_module._save(entry, table)
 
         # 戻り値は ``_save()`` が組み立てた保存パス
         assert path.is_file()
@@ -3644,12 +3645,12 @@ class TestSavedFileEmpty:
         """
         with (
             patch(
-                "src.service.site_for",
+                "src.service.api.site_for",
                 return_value=fake_salesforce(),
             ),
             patch.object(
-                service_module,
-                "_write_csv",
+        save_module,
+        "_write_csv",
                 side_effect=lambda path, table: path.write_bytes(b""),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -3695,8 +3696,8 @@ class TestOverwriteMode:
         table = Table(["名前", "金額"], ROWS)
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001
         run_time = dt.time(9, 30)
-        with patch("src.service.site_for", return_value=fake_salesforce()):
-            saved = service_module._save(
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
+            saved = save_module._save(
                 entry,
                 table,
                 schedule_run_time=run_time,
@@ -3717,8 +3718,8 @@ class TestOverwriteMode:
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001
         run_time = dt.time(9, 30)
 
-        with patch("src.service.site_for", return_value=fake_salesforce(first_rows)):
-            service_module._save(
+        with patch("src.service.api.site_for", return_value=fake_salesforce(first_rows)):
+            save_module._save(
                 entry,
                 Table(["名前", "金額"], first_rows),
                 schedule_run_time=run_time,
@@ -3730,8 +3731,8 @@ class TestOverwriteMode:
         assert len(first_files) == 1
         assert first_files[0].name == "1001_0930.csv"
 
-        with patch("src.service.site_for", return_value=fake_salesforce(second_rows)):
-            second_path = service_module._save(
+        with patch("src.service.api.site_for", return_value=fake_salesforce(second_rows)):
+            second_path = save_module._save(
                 entry,
                 Table(["名前", "金額"], second_rows),
                 schedule_run_time=run_time,
@@ -3755,15 +3756,15 @@ class TestOverwriteMode:
         entry = self._entry(paths, overwrite=True)
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
 
-        with patch("src.service.site_for", return_value=fake_salesforce(first_rows)):
-            service_module._save(
+        with patch("src.service.api.site_for", return_value=fake_salesforce(first_rows)):
+            save_module._save(
                 entry,
                 Table(["名前", "金額"], first_rows),
                 schedule_run_time=dt.time(9, 30),
                 current=fixed_now,
             )
-        with patch("src.service.site_for", return_value=fake_salesforce(second_rows)):
-            service_module._save(
+        with patch("src.service.api.site_for", return_value=fake_salesforce(second_rows)):
+            save_module._save(
                 entry,
                 Table(["名前", "金額"], second_rows),
                 schedule_run_time=dt.time(18, 0),
@@ -3778,8 +3779,8 @@ class TestOverwriteMode:
         """上書きモードで正常終了したとき、 ``~`` で始まる一時ファイルは残らない。"""
         entry = self._entry(paths, overwrite=True)
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
-        with patch("src.service.site_for", return_value=fake_salesforce()):
-            service_module._save(
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
+            save_module._save(
                 entry,
                 Table(["名前", "金額"], ROWS),
                 schedule_run_time=dt.time(9, 0),
@@ -3808,9 +3809,9 @@ class TestOverwriteMode:
         def failing_write(path, table):
             raise OSError("書き込み失敗")
 
-        with patch.object(service_module, "_write_csv", side_effect=failing_write):
+        with patch.object(save_module, "_write_csv", side_effect=failing_write):
             with pytest.raises(OSError):
-                service_module._save(
+                save_module._save(
                     entry,
                     Table(["名前", "金額"], ROWS),
                     schedule_run_time=run_time,
@@ -3828,8 +3829,8 @@ class TestOverwriteMode:
         entry = self._entry(paths, overwrite=False)
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
         run_time = dt.time(9, 0)
-        with patch("src.service.site_for", return_value=fake_salesforce()):
-            saved = service_module._save(
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
+            saved = save_module._save(
                 entry,
                 Table(["名前", "金額"], ROWS),
                 schedule_run_time=run_time,
@@ -3943,13 +3944,13 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         with (
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
-                service_module,
-                "_fetch_with_auto_fallback",
+        attempt_module,
+        "_fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
             with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
-                service_module._download(entry, "定期実行", history_path)
+                attempt_module._download(entry, "定期実行", history_path)
 
         # 呼ばれた時点で「取得開始」ログが既に出ていた（=問い合わせの後ろではない）
         start_records = [r for r in captured if "取得開始" in r.message]
@@ -3980,13 +3981,13 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         with (
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
-                service_module,
-                "_fetch_with_auto_fallback",
+        attempt_module,
+        "_fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
             with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
-                service_module._download(entry, "定期実行", history_path)
+                attempt_module._download(entry, "定期実行", history_path)
 
         start_records = [r for r in captured if "取得開始" in r.message]
         assert len(start_records) == 1
@@ -4009,13 +4010,13 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         with (
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
-                service_module,
-                "_fetch_with_auto_fallback",
+        attempt_module,
+        "_fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
             with pytest.raises(RuntimeError, match="Salesforce へ問い合わせに失敗"):
-                service_module._download(entry, "定期実行", history_path)
+                attempt_module._download(entry, "定期実行", history_path)
 
         start_records = [r for r in captured if "取得開始" in r.message]
         assert len(start_records) == 1

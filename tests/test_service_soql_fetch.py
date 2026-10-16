@@ -47,11 +47,11 @@ from src.exceptions import (
     SoqlReportNotRegisteredError,
     SoqlTransformError,
 )
-from src.service import (
+from src.service.routes import _fetch
+from src.service.save import _save
+from src.service.soql import (
     INCOMPLETE_SOQL_MARKER,
-    _fetch,
     _fetch_via_soql,
-    _save,
     _verify_soql_count,
 )
 from src.sheets.master import ReportEntry
@@ -96,7 +96,7 @@ class TestFetchRoutesToSoql:
     def test_uses_soql_when_use_soql_is_true(self):
         table = MagicMock()
         with patch(
-            "src.service._fetch_via_soql",
+            "src.service.routes._fetch_via_soql",
             return_value=table,
         ) as fetch_via_soql:
             result = _fetch(SOQL_ENTRY)
@@ -106,8 +106,8 @@ class TestFetchRoutesToSoql:
 
     def test_soql_takes_priority_over_exceeds_row_limit(self):
         with (
-            patch("src.service._fetch_via_soql") as fetch_via_soql,
-            patch("src.service._fetch_via_browser") as fetch_via_browser,
+            patch("src.service.routes._fetch_via_soql") as fetch_via_soql,
+            patch("src.service.routes._fetch_via_browser") as fetch_via_browser,
         ):
             _fetch(SOQL_AND_EXCEEDS_ENTRY)
 
@@ -116,8 +116,8 @@ class TestFetchRoutesToSoql:
 
     def test_uses_api_when_use_soql_is_false(self):
         with (
-            patch("src.service.site_for") as site_for,
-            patch("src.service._fetch_via_soql") as fetch_via_soql,
+            patch("src.service.api.site_for") as site_for,
+            patch("src.service.routes._fetch_via_soql") as fetch_via_soql,
         ):
             _fetch(ENTRY)
 
@@ -148,7 +148,7 @@ class TestFetchViaSoql:
             {},
         )
         site = MagicMock(return_value=client)
-        with patch("src.service.site_for", return_value=site) as site_for:
+        with patch("src.service.soql.site_for", return_value=site) as site_for:
             result = _fetch_via_soql(SOQL_ENTRY)
 
         # 件数比較は同じ接続のうちに行うため、 ``site_for`` は 1 回しか呼ばれない
@@ -179,7 +179,7 @@ class TestFetchViaSoql:
                 return "SELECT Id, Name FROM Account"
 
         with patch("src.soql_reports._registry.registered_reports", return_value=(_NoCheckReport,)):
-            with patch("src.service.site_for", return_value=site):
+            with patch("src.service.soql.site_for", return_value=site):
                 result = _fetch_via_soql(SOQL_ENTRY)
 
         client.__enter__.return_value.request.assert_not_called()
@@ -1057,7 +1057,7 @@ class TestFetchViaSoqlCountCheckDisabled:
             "src.soql_reports._registry.registered_reports",
             return_value=(_NoCheckReport,),
         ):
-            with patch("src.service.site_for", return_value=site):
+            with patch("src.service.soql.site_for", return_value=site):
                 result = _fetch_via_soql(_make_soql_entry())
 
         client.__enter__.return_value.request.assert_not_called()
@@ -1078,7 +1078,7 @@ class TestCountMismatchFailureRow:
     """
 
     def test_failure_row_uses_salesforce_cause(self):
-        from src.service import _failure_row
+        from src.service.attempt import _failure_row
 
         exc = SoqlCountMismatchError("9001", "顧客一覧", 5, 10)
         row = _failure_row(exc, 1.5, schedule_key="S001", route="SOQL")
@@ -1105,12 +1105,13 @@ class TestCountCheckSanityCheck:
     """
 
     def test_sanity_check_detects_when_verification_disabled(self):
-        # ``src.service`` の ``_verify_soql_count`` を直接「何もしない」関数に
-        # 置き換える。 ``_verify_soql_count`` 自体は test 冒頭で ``from src.service
-        # import _verify_soql_count`` 済みだが、 呼び出し側で ``from src.service``
-        # 経由ではなく、 ``service_module._verify_soql_count`` を直接参照して
-        # 呼ぶことでモンキーパッチ後の実装が効くようにする
-        from src import service as service_module
+        # ``src.service.soql`` の ``_verify_soql_count`` を直接「何もしない」関数に
+        # 置き換える。 ``_verify_soql_count`` 自体は test 冒頭で ``from
+        # src.service.soql import _verify_soql_count`` 済みだが、 呼び出し側で
+        # ``from src.service.soql`` 経由ではなく、
+        # ``service_module._verify_soql_count`` を直接参照して呼ぶことで
+        # モンキーパッチ後の実装が効くようにする
+        from src.service import soql as service_module
 
         original = service_module._verify_soql_count
 
@@ -1193,7 +1194,7 @@ class TestFetchViaSoqlTransform:
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _PlainReport)
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             result = _fetch_via_soql(SOQL_ENTRY)
 
         # 加工していないので ``bulk_query()`` の戻り値と一致（同じオブジェクト）
@@ -1213,7 +1214,7 @@ class TestFetchViaSoqlTransform:
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _FilterReport)
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             result = _fetch_via_soql(SOQL_ENTRY)
 
         # 行が絞られ、 値もそのまま
@@ -1253,7 +1254,7 @@ class TestFetchViaSoqlTransform:
 
         _patch_soql_registry(monkeypatch, _FilterReport)
         with caplog.at_level(logging.INFO, logger="src.service"):
-            with patch("src.service.site_for", return_value=site):
+            with patch("src.service.soql.site_for", return_value=site):
                 # 例外が出ずに Table が返る
                 result = _fetch_via_soql(SOQL_ENTRY)
 
@@ -1290,7 +1291,7 @@ class TestFetchViaSoqlTransform:
             [{"Id": "001", "StageName": marker, "Amount": "100"}],
         )
         _patch_soql_registry(monkeypatch, _RaisingReport)
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             with pytest.raises(SoqlTransformError) as caught:
                 _fetch_via_soql(SOQL_ENTRY)
 
@@ -1322,7 +1323,7 @@ class TestFetchViaSoqlTransform:
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _RaisingReport)
         with caplog.at_level(logging.DEBUG, logger="src.service"):
-            with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+            with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
                 with pytest.raises(SoqlTransformError):
                     _fetch_via_soql(SOQL_ENTRY)
 
@@ -1347,7 +1348,7 @@ class TestFetchViaSoqlTransform:
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _NoneTransformReport)
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             with pytest.raises(SoqlTransformError) as caught:
                 _fetch_via_soql(SOQL_ENTRY)
 
@@ -1370,7 +1371,7 @@ class TestFetchViaSoqlTransform:
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _DictTransformReport)
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             with pytest.raises(SoqlTransformError) as caught:
                 _fetch_via_soql(SOQL_ENTRY)
 
@@ -1403,7 +1404,7 @@ class TestFetchViaSoqlTransform:
         site = MagicMock(return_value=client)
 
         _patch_soql_registry(monkeypatch, _FilterReport)
-        with patch("src.service.site_for", return_value=site):
+        with patch("src.service.soql.site_for", return_value=site):
             with pytest.raises(SoqlCountMismatchError):
                 _fetch_via_soql(SOQL_ENTRY)
 
@@ -1438,7 +1439,7 @@ class TestFetchViaSoqlTransform:
         entry = replace(SOQL_ENTRY, key=_EmptyTransformReport.KEY)
 
         # SOQL 取得フェーズは fake を渡す
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             fetched = _fetch_via_soql(entry)
         # 加工後は 0 行
         assert len(fetched) == 0
@@ -1450,7 +1451,7 @@ class TestFetchViaSoqlTransform:
     def test_transform_failure_row_uses_salesforce_cause(self):
         """``SoqlTransformError`` は ``ComkenError`` 系なので ``_failure_row()``
         で「Salesforce」区分に入る。"""
-        from src.service import _failure_row
+        from src.service.attempt import _failure_row
 
         exc = SoqlTransformError("9001", "顧客一覧", "MyReport", "ValueError")
         row = _failure_row(exc, 1.5, schedule_key="S001", route="SOQL")
@@ -1490,7 +1491,7 @@ class TestFetchViaSoqlIncompleteMarker:
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _IncompleteReport)
         client = _patched_soql_client(table)
-        with patch("src.service.site_for", return_value=client):
+        with patch("src.service.soql.site_for", return_value=client):
             with pytest.raises(SoqlIncompleteError) as caught:
                 _fetch_via_soql(SOQL_ENTRY)
 
@@ -1517,7 +1518,7 @@ class TestFetchViaSoqlIncompleteMarker:
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _IncompleteReport)
         client = _patched_soql_client(table)
-        with patch("src.service.site_for", return_value=client):
+        with patch("src.service.soql.site_for", return_value=client):
             with pytest.raises(SoqlIncompleteError):
                 _fetch_via_soql(SOQL_ENTRY)
 
@@ -1535,7 +1536,7 @@ class TestFetchViaSoqlIncompleteMarker:
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _OkReport)
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             # 止まらずに進む
             result = _fetch_via_soql(SOQL_ENTRY)
 
@@ -1552,7 +1553,7 @@ class TestFetchViaSoqlIncompleteMarker:
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _OkReport)
-        with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+        with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             result = _fetch_via_soql(SOQL_ENTRY)
 
         assert result is table
@@ -1560,7 +1561,7 @@ class TestFetchViaSoqlIncompleteMarker:
     def test_marker_uses_comkenerror_cause_in_failure_row(self):
         """``SoqlIncompleteError`` も ``DownloaderError`` 系なので ``_failure_row()``
         で「Salesforce」区分に入る。"""
-        from src.service import _failure_row
+        from src.service.attempt import _failure_row
 
         exc = SoqlIncompleteError("9001", "顧客一覧")
         row = _failure_row(exc, 0.5, schedule_key="S001", route="SOQL")
@@ -1582,7 +1583,7 @@ class TestFetchViaSoqlIncompleteSanityCheck:
         止まっていないこと）を確かめ、 元の実装が印チェックを実際に
         していることを保証する。"""
 
-        from src import service as service_module
+        from src.service import soql as service_module
 
         original = service_module.INCOMPLETE_SOQL_MARKER
         # 印を違う文字列にしてチェックを「常に偽」にする（=元の印では止まらない）
@@ -1603,7 +1604,7 @@ class TestFetchViaSoqlIncompleteSanityCheck:
                 table = _soql_table_with_rows()
                 site = _patched_soql_client(table)
                 # 印チェックを通り抜けたので ``bulk_query()`` が呼ばれる
-                with patch("src.service.site_for", return_value=site):
+                with patch("src.service.soql.site_for", return_value=site):
                     _fetch_via_soql(SOQL_ENTRY)
 
                 # ``site`` は ``MagicMock(return_value=client)`` の形なので、
@@ -1625,7 +1626,7 @@ class TestTransformSanityCheck:
     ``instance.transform(table)`` を呼んでいることを保証する。"""
 
     def test_sanity_check_detects_when_transform_skipped(self, monkeypatch):
-        from src import service as service_module
+        from src.service import soql as service_module
 
         original = service_module._fetch_via_soql
 
@@ -1654,7 +1655,7 @@ class TestTransformSanityCheck:
                 "src.soql_reports._registry.registered_reports",
                 return_value=(_FilterReport,),
             ):
-                with patch("src.service.site_for", return_value=_patched_soql_client(table)):
+                with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
                     result = service_module._fetch_via_soql(SOQL_ENTRY)
 
             # 壊した実装では ``transform()`` が呼ばれず、 全件が返る

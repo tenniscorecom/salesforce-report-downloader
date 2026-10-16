@@ -13,7 +13,7 @@
 ```
 src/
   run.py                ← バッチの入口（download_scheduled を呼ぶだけ）
-  service.py            ← 取得・保存・スケジュール判定の本体
+  service/              ← 取得・保存・スケジュール判定の本体（パッケージ）
   paths.py              ← 管理表の置き場所 + 出力パスの組み立て（output_path）
   history.py            ← 履歴への書き込み（record(): 管理表の行から組み立てて comken へ委譲）
   sheets/               ← 管理表・スケジュール・設定の各シート定義
@@ -22,6 +22,21 @@ src/
   template_writer.py    ← 管理表・スケジュール・設定シートの雛形生成
   cli.py                ← 管理表の検査コマンド（python -m src.cli check）
 main.py                          ← バッチの実行ファイル
+```
+
+`src/service/` の中身:
+
+```
+src/service/
+  __init__.py           ← download_scheduled だけ公開する薄いパッケージ
+  _utils.py             ← 履歴パスを返すだけの内部ヘルパー
+  attempt.py            ← download_scheduled 本体・_Attempt・失敗履歴の組み立て
+  routes.py             ← 取得経路の選択（_fetch / _fetch_with_auto_fallback）
+  api.py                ← Report API 経由の取得
+  browser.py            ← ブラウザ経由の取得（ブラウザの使い回しを含む）
+  soql.py               ← SOQL 経由の取得と件数検証、未完成印
+  save.py               ← 保存とフォルダ検査（_save / _write_csv / _require_folder）
+  scheduler.py          ← スケジュールによる対象選定と共有レポート警告
 ```
 
 何を落とすか・どこへ置くかは、このリポジトリが持つ **管理表（Excel）** に書いてあります。

@@ -32,7 +32,8 @@ from comken.toolbox.csv import CSV
 
 from src import paths as paths_module
 from src.exceptions import SoqlIncompleteError
-from src.service import _fetch_via_soql, _save
+from src.service.save import _save
+from src.service.soql import _fetch_via_soql
 from src.sheets.master import ReportEntry
 from src.soql_reports import _registry
 from src.soql_reports import column_names as column_names_module
@@ -336,7 +337,7 @@ class TestContractIncompleteSoql:
                 "src.soql_reports._registry.registered_reports",
                 return_value=(_IncompleteContractReport,),
             ),
-            patch("src.service.site_for") as site_for,
+            patch("src.service.soql.site_for") as site_for,
         ):
             with pytest.raises(SoqlIncompleteError) as caught:
                 _fetch_via_soql(contract_entry)

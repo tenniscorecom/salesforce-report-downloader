@@ -24,8 +24,8 @@ from comken.core.table import Table
 from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 
-from src import service as service_module
 from src.exceptions import ScheduledDownloadFailedError, SoqlIncompleteError, SoqlTransformError
+from src.service import attempt as attempt_module
 from src.sheets.master import load_master
 from src.soql_reports import _registry
 from src.soql_reports.base import SoqlReport
@@ -166,7 +166,9 @@ def _read_history(history_path: Path) -> list[dict[str, str]]:
 
 def _enable_1002(monkeypatch, *, url: str, use_soql: bool) -> None:
     """``load_master()`` を ``1002`` を有効化した ``dict`` を返す関数で差し替える。"""
-    entries = load_master(service_module.paths.MASTER_PATH)
+    import src.paths as paths_module
+
+    entries = load_master(paths_module.MASTER_PATH)
     entry_1002 = replace(
         entries["1002"],
         enabled=True,
@@ -174,7 +176,7 @@ def _enable_1002(monkeypatch, *, url: str, use_soql: bool) -> None:
         use_soql=use_soql,
     )
     all_entries = {**entries, "1002": entry_1002}
-    monkeypatch.setattr(service_module, "load_master", lambda _master_path: all_entries)
+    monkeypatch.setattr(attempt_module, "load_master", lambda _master_path: all_entries)
 
 
 def _patch_clock(monkeypatch) -> None:
@@ -182,7 +184,10 @@ def _patch_clock(monkeypatch) -> None:
     import src.paths as _paths_inner
 
     fixed_now = dt.datetime(2026, 9, 18, 9, 0)  # noqa: DTZ001
-    monkeypatch.setattr(service_module, "clock_now", lambda: fixed_now)
+    # ``clock_now()`` の実体は ``attempt._download_scheduled_locked()`` から
+    # ``comken.core.dates.now as clock_now`` 経由で束縛されているので、
+    # ``attempt`` 側を差し替える（``src.service`` モジュールには無い）
+    monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
     monkeypatch.setattr(_paths_inner, "clock_now", lambda: fixed_now)
 
 
@@ -248,10 +253,11 @@ class TestDownloadScheduledTransformFailure:
             return fake_salesforce()
 
         with (
-            patch("src.service.site_for", side_effect=_site_for),
+            patch("src.service.soql.site_for", side_effect=_site_for),
+            patch("src.service.api.site_for", side_effect=_site_for),
             pytest.raises(ScheduledDownloadFailedError) as caught,
         ):
-            service_module.download_scheduled()
+            attempt_module.download_scheduled()
 
         # ``__cause__`` に ``SoqlTransformError`` が繋がっている
         assert isinstance(caught.value.__cause__, SoqlTransformError)
@@ -312,10 +318,10 @@ class TestDownloadScheduledTransformFailure:
 
         with (
             caplog.at_level(logging.DEBUG, logger="src.service"),
-            patch("src.service.site_for", side_effect=_site_for),
+            patch("src.service.soql.site_for", side_effect=_site_for),
             pytest.raises(ScheduledDownloadFailedError) as caught,
         ):
-            service_module.download_scheduled()
+            attempt_module.download_scheduled()
 
         # 送出された ``ScheduledDownloadFailedError`` のメッセージにマーカーが漏れていない
         assert marker not in str(caught.value)
@@ -346,7 +352,7 @@ class _IncompleteSoqlReport(SoqlReport):
     KEY = "1002"
 
     def soql(self) -> str:
-        from src.service import INCOMPLETE_SOQL_MARKER
+        from src.service.soql import INCOMPLETE_SOQL_MARKER
 
         return f"{INCOMPLETE_SOQL_MARKER}\nSELECT Id, StageName FROM Opportunity"
 
@@ -374,10 +380,11 @@ class TestDownloadScheduledIncompleteSoql:
             return fake_salesforce()
 
         with (
-            patch("src.service.site_for", side_effect=_site_for),
+            patch("src.service.soql.site_for", side_effect=_site_for),
+            patch("src.service.api.site_for", side_effect=_site_for),
             pytest.raises(ScheduledDownloadFailedError) as caught,
         ):
-            service_module.download_scheduled()
+            attempt_module.download_scheduled()
 
         # ``__cause__`` が ``SoqlIncompleteError``
         assert isinstance(caught.value.__cause__, SoqlIncompleteError)
@@ -411,7 +418,7 @@ class TestDownloadScheduledIncompleteSoql:
             KEY = "1002"
 
             def soql(self) -> str:
-                from src.service import INCOMPLETE_SOQL_MARKER
+                from src.service.soql import INCOMPLETE_SOQL_MARKER
 
                 # 1 行目は印、 2 行目に目印の文字列を入れる
                 return f"{INCOMPLETE_SOQL_MARKER}\nSELECT {marker} FROM Opportunity"
@@ -431,10 +438,10 @@ class TestDownloadScheduledIncompleteSoql:
 
         with (
             caplog.at_level(logging.DEBUG, logger="src.service"),
-            patch("src.service.site_for", side_effect=_site_for),
+            patch("src.service.soql.site_for", side_effect=_site_for),
             pytest.raises(ScheduledDownloadFailedError) as caught,
         ):
-            service_module.download_scheduled()
+            attempt_module.download_scheduled()
 
         # メッセージに SOQL 本文のマーカーが漏れていない
         cause = caught.value.__cause__
