@@ -213,9 +213,7 @@ class TestCreateTemplateGroupSetting:
     """`GroupSetting` の雛形がそのまま読み込めるか。"""
 
     def test_generated_template_can_be_loaded(self, tmp_path):
-        path = create_template(
-            tmp_path / "設定.xlsx", GroupSetting, _sample_group_settings()
-        )
+        path = create_template(tmp_path / "設定.xlsx", GroupSetting, _sample_group_settings())
         rows = GroupSetting.load(path)
         assert len(rows) == 1
         assert rows[0].group == "営業本部"

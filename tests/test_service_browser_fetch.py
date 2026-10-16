@@ -180,7 +180,6 @@ class TestBrowserSessionReuse:
             "comken.toolbox.browser.sites.salesforce.site_for",
             side_effect=_site_for,
         ):
-
             _fetch_via_browser(entry_a, browser_sessions=browser_sessions)
             _fetch_via_browser(entry_b, browser_sessions=browser_sessions)
             _fetch_via_browser(entry_a, browser_sessions=browser_sessions)
@@ -217,7 +216,6 @@ class TestBrowserSessionReuse:
         site_instance.export_reports.side_effect = _flaky_export
         browser_sessions: dict = {}
 
-
         with patch(
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
@@ -251,7 +249,6 @@ class TestBrowserSessionReuse:
         site_class, site_instance = _fake_browser_site()
         browser_sessions: dict = {}
 
-
         with patch(
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
@@ -275,7 +272,6 @@ class TestBrowserSessionReuse:
         """``_download_scheduled_locked()`` の正常終了時にすべてのブラウザが閉じられる。"""
         site_class, site_instance = _fake_browser_site()
         browser_sessions: dict = {}
-
 
         with patch(
             "comken.toolbox.browser.sites.salesforce.site_for",
@@ -310,7 +306,6 @@ class TestBrowserSessionReuse:
 
         site_instance.login_with_credentials.side_effect = _flaky_login_with_credentials
         browser_sessions: dict = {}
-
 
         with patch(
             "comken.toolbox.browser.sites.salesforce.site_for",
@@ -355,7 +350,6 @@ class TestBrowserSessionReuse:
 
         site_instance.login_with_credentials.side_effect = _flaky_login
         browser_sessions: dict = {}
-
 
         with patch(
             "comken.toolbox.browser.sites.salesforce.site_for",

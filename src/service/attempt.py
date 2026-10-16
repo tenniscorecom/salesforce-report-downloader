@@ -249,9 +249,9 @@ def _download_scheduled_locked(
     return _report_run_results(targets, saved, failed, last_exception, run_seconds)
 
 
-def _prepare_run_inputs() -> (
-    tuple[dict[str, ReportEntry], dict[str, list[ScheduleRule]], dt.datetime]
-):
+def _prepare_run_inputs() -> tuple[
+    dict[str, ReportEntry], dict[str, list[ScheduleRule]], dt.datetime
+]:
     """管理表 / スケジュール表を読み、 この実行の基準日時を 1 か所で固定する。
 
     **基準日時を 1 か所で固定する理由:** スケジュール判定・ファイル名・

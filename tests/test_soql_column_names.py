@@ -62,19 +62,13 @@ class TestExtractMainObject:
     def test_handles_multiline_soql(self):
         """改行を含む SOQL でも最初の ``FROM`` を取り出せる。"""
         soql = (
-            "SELECT Id, Name,\n"
-            "       Account.Name\n"
-            "FROM Opportunity\n"
-            "WHERE CloseDate >= 2024-01-01"
+            "SELECT Id, Name,\n       Account.Name\nFROM Opportunity\nWHERE CloseDate >= 2024-01-01"
         )
         assert extract_main_object(soql) == "Opportunity"
 
     def test_handles_where_clause(self):
         """``FROM Account WHERE ...`` のように ``WHERE`` が後ろでも問題ない。"""
-        assert (
-            extract_main_object("SELECT Id FROM Account WHERE CreatedDate = TODAY")
-            == "Account"
-        )
+        assert extract_main_object("SELECT Id FROM Account WHERE CreatedDate = TODAY") == "Account"
 
     def test_handles_underscore_in_name(self):
         """主オブジェクト名に ``_`` を含むパターンもそのまま取り出す。"""
@@ -137,7 +131,9 @@ class TestLoadColumnNamesFor:
         assert load_column_names_for("account") == {"Name": "名前", "Industry": "業種"}
 
     def test_missing_file_returns_empty_with_warning(
-        self, csv_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        csv_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ):
         """ファイルが無いと空 dict + WARNING を返す（取得は止めない）。"""
         # csv_path は指すが実ファイルは作らない
@@ -153,7 +149,9 @@ class TestLoadColumnNamesFor:
         assert str(csv_path) in caplog.text
 
     def test_no_matching_main_object_returns_empty_with_warning(
-        self, csv_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        csv_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ):
         """ファイルは有るが該当主オブジェクトの行が無い → 空 dict + WARNING。"""
         _write_csv(
@@ -172,7 +170,9 @@ class TestLoadColumnNamesFor:
         assert "soql-collector" in caplog.text
 
     def test_header_only_file_returns_empty_with_warning(
-        self, csv_path: Path, caplog: pytest.LogCaptureFixture,
+        self,
+        csv_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ):
         """見出しだけでデータ行が無いファイル（soql-collector 走り立て直後の状態）は
         空 dict + WARNING を返す。 フォーマット不正ではない。"""
@@ -303,7 +303,9 @@ class TestLoadColumnNamesFor:
         assert "対処" in message
 
     def test_explicit_csv_path_overrides_default(
-        self, csv_path: Path, tmp_path: Path,
+        self,
+        csv_path: Path,
+        tmp_path: Path,
     ):
         """``csv_path`` 引数を明示で渡すとデフォルトより優先される（テスト用差し替え口）。"""
         _write_csv(

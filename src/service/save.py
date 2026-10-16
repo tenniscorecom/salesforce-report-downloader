@@ -292,9 +292,7 @@ def _finalize_save(tmp_path: Path, base: Path, entry: ReportEntry) -> Path:
     return paths.move_into_place(tmp_path, base, entry.key)
 
 
-def _verify_saved_file_not_empty(
-    final_path: Path, table: Table, entry: ReportEntry
-) -> None:
+def _verify_saved_file_not_empty(final_path: Path, table: Table, entry: ReportEntry) -> None:
     """保存先が 0 バイトなら ``SavedFileEmptyError`` で落とす。
 
     保存先（ファイルサーバー）のクォータが足りないと、書き込みはエラーにならずに

@@ -1,7 +1,7 @@
 # Ruff（リント・フォーマット）の設定。comken 本体と揃える。
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 extend-exclude = [".pytest-tmp", ".pytest-*", "_scripts"]
 
 [tool.ruff.lint]

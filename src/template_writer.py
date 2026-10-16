@@ -520,9 +520,7 @@ def _write_data_sheet(
     excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
 
 
-def _row_to_dict(
-    row: MasterRow, specs: list[tuple[str, ColumnSpec, Any, Any]]
-) -> dict[str, Any]:
+def _row_to_dict(row: MasterRow, specs: list[tuple[str, ColumnSpec, Any, Any]]) -> dict[str, Any]:
     """``MasterRow`` インスタンスを {Excel の見出し: 値} の ``dict`` に変換する。
 
     ``dataclasses.asdict()`` は ``ScheduleRule.start_time`` の ``dt.time`` を

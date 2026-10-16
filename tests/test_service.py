@@ -708,8 +708,8 @@ class TestDownloadScheduledRecord:
             return original_write_csv(path, table)
 
         with patch.object(
-        save_module,
-        "_write_csv",
+            save_module,
+            "_write_csv",
             side_effect=check_no_final,
         ):
             path = save_module._save(entry, table)
@@ -730,8 +730,8 @@ class TestDownloadScheduledRecord:
             raise OSError("書き込み失敗")
 
         with patch.object(
-        save_module,
-        "_write_csv",
+            save_module,
+            "_write_csv",
             side_effect=failing_write,
         ):
             with pytest.raises(OSError):
@@ -1698,8 +1698,8 @@ class TestHistory:
                 return_value=fake_salesforce(),
             ),
             patch.object(
-        save_module,
-        "_write_csv",
+                save_module,
+                "_write_csv",
                 side_effect=write_error,
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -1862,8 +1862,8 @@ class TestHistory:
                 return_value=fake_salesforce(),
             ),
             patch.object(
-        save_module,
-        "_write_csv",
+                save_module,
+                "_write_csv",
                 side_effect=write_error,
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -3649,8 +3649,8 @@ class TestSavedFileEmpty:
                 return_value=fake_salesforce(),
             ),
             patch.object(
-        save_module,
-        "_write_csv",
+                save_module,
+                "_write_csv",
                 side_effect=lambda path, table: path.write_bytes(b""),
             ),
             pytest.raises(ScheduledDownloadFailedError),
@@ -3944,8 +3944,8 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         with (
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
-        attempt_module,
-        "_fetch_with_auto_fallback",
+                attempt_module,
+                "_fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
@@ -3981,8 +3981,8 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         with (
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
-        attempt_module,
-        "_fetch_with_auto_fallback",
+                attempt_module,
+                "_fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
@@ -4010,8 +4010,8 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         with (
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
-        attempt_module,
-        "_fetch_with_auto_fallback",
+                attempt_module,
+                "_fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
