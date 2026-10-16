@@ -15,7 +15,7 @@ from comken.core.dates import (
     is_workday,
     nth_workday,
 )
-from comken.core.dates.holidays import _Holidays, _set_calendar_for_test
+from comken.core.dates.holidays import _Holidays
 from comken.exceptions import DownloaderError
 
 from src.sheets.schedule import (
@@ -27,6 +27,7 @@ from src.sheets.schedule import (
     HOLIDAY_SKIP,
     ScheduleRule,
 )
+from tests.comken_state import set_holiday_calendar
 
 
 def _rule(**overrides: Any) -> ScheduleRule:
@@ -53,7 +54,7 @@ def _rule(**overrides: Any) -> ScheduleRule:
 
 # 会社休日（年末年始休暇 12/29-1/3）の影響を受けない **テスト専用** カレンダーを
 # 作るヘルパー。国民の祝日を意図的に固定してテストする。テストの終わりに
-# ``_set_calendar_for_test(None)`` でリセットする。
+# ``set_holiday_calendar(None)`` でリセットする。
 
 
 def _holiday_calendar(holiday_dates: set[dt.date]) -> _Holidays:
@@ -62,7 +63,7 @@ def _holiday_calendar(holiday_dates: set[dt.date]) -> _Holidays:
 
 
 class _HolidaysScope:
-    """``_set_calendar_for_test`` のセットアップ／後始末コンテキスト。
+    """``set_holiday_calendar`` のセットアップ／後始末コンテキスト。
 
     pytest fixture ではなく with `` ``ブロックで使う。テスト中に祝日判定が
     影響を受ける場合のみ利用する（既定カレンダーを使うテストでは使わない）。
@@ -73,11 +74,11 @@ class _HolidaysScope:
 
     def __enter__(self) -> _Holidays:
         cal = _holiday_calendar(self._holiday_dates)
-        _set_calendar_for_test(cal)
+        set_holiday_calendar(cal)
         return cal
 
     def __exit__(self, *_args: object) -> None:
-        _set_calendar_for_test(None)
+        set_holiday_calendar(None)
 
 
 class TestWeekdayProperty:
@@ -195,7 +196,7 @@ class TestNthBusinessDayIsDue:
                 assert rule.is_due(when) is False
 
     def test_uses_implicit_calendar_when_no_override(self):
-        """``_set_calendar_for_test`` されていないとき ``is_due`` が既定カレンダーで動く。
+        """``set_holiday_calendar`` されていないとき ``is_due`` が既定カレンダーで動く。
 
         正月休みの影響を受けたくないので 2 月を使う。
         計算上の第 2 営業日を ``nth_workday`` で取得して、
