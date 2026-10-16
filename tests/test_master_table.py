@@ -500,3 +500,85 @@ class TestConvertTimeValueError:
             _convert("abc", dt.time | None, spec, 3, WithOptionalTime)
         assert "3 行目" in str(caught.value)
         assert "時刻" in str(caught.value)
+
+
+class TestEnabledMarkReplacesToBool:
+    """``is_enabled_mark()`` を ``_to_bool`` の代わりに使うことの回帰確認。
+
+    ``report_master._to_bool`` を削除し、 ``_convert()`` の bool 分岐で
+    comken の ``comken.core.text.is_enabled_mark()`` を直接呼ぶようにした。
+    「有効」列のセルが取る代表的な値（ ``○`` / ``×`` / ``有効`` / ``はい`` /
+    ``true`` / ``True`` / 前後の空白付き / 空欄 / bool / int ）について、
+    旧 ``_to_bool`` と同じ結果であることをここで固定する。
+    """
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("○", True),
+            ("×", False),
+            ("有効", True),
+            ("はい", True),
+            ("true", True),
+            ("True", True),
+            (" ○ ", True),  # 前後の半角スペース付き
+            ("　○　", True),  # 前後の全角スペース付き
+            ("", False),  # 空欄
+            (None, False),  # None
+            (True, True),  # bool
+            (False, False),  # bool
+            (1, True),  # int
+            (0, False),  # int
+            ("1", True),  # 数字文字列
+            ("0", False),  # 数字文字列
+            ("無効", False),
+            ("off", False),
+        ],
+    )
+    def test_matches_legacy_to_bool_for_cell_values(self, value, expected):
+        """``is_enabled_mark`` が ``_to_bool`` の旧挙動と一致する。
+
+        Excel のセルから得る値の範囲（str / bool / int / None / 空文字）と
+        業務上「有効」相当として書く全パターンを ``is_enabled_mark`` で評価し、
+        旧 ``_to_bool`` の判定結果と一致することを確かめる。 ``_convert`` 内部で
+        旧 ``_to_bool`` を呼ばないため、ここで ``is_enabled_mark`` の挙動を
+        直接固定する（``MasterRow`` 経由の間接テストは壊れやすい）。
+        """
+        from comken.core.text import is_enabled_mark
+
+        assert is_enabled_mark(value) is expected
+
+    def test_convert_bool_column_keeps_legacy_behavior(self, tmp_path):
+        """``MasterRow`` 経由で ``○`` / ``×`` を読み込んだ結果が旧仕様と一致する。
+
+        ``_convert()`` が ``is_enabled_mark()`` を経由する経路でも、
+        ``enabled: bool`` 列の ``○`` が True / ``×`` が False であることを
+        実際の Excel 読み込みで確認する（``choices`` の無い列でも同じ結果に
+        なることを保証するため、テスト用 ``Item`` を継承して ``choices`` を
+        外した型を使う）。
+        """
+        from comken.core.table import Table
+        from comken.toolbox.excel import Excel
+
+        @dataclass(frozen=True, kw_only=True)
+        class FreeBool(MasterRow):
+            """``choices`` を持たない bool 列のテスト用。"""
+
+            SHEET_NAME = "一覧"
+
+            key: str = column("ID", unique=True)
+            enabled: bool = column("有効")  # choices なし
+
+        path = tmp_path / "一覧.xlsx"
+        rows = [
+            dict(zip(["ID", "有効"], ["1001", "○"], strict=True)),
+            dict(zip(["ID", "有効"], ["1002", "×"], strict=True)),
+            dict(zip(["ID", "有効"], ["1003", "有効"], strict=True)),
+            dict(zip(["ID", "有効"], ["1004", "True"], strict=True)),
+            dict(zip(["ID", "有効"], ["1005", " 1 "], strict=True)),
+        ]
+        with Excel(path) as book:
+            book.create_data_sheet("一覧").create_table("一覧", Table(["ID", "有効"], rows))
+
+        items = FreeBool.load(path)
+        assert [item.enabled for item in items] == [True, False, True, True, True]

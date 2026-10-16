@@ -70,7 +70,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Self
 
 from comken.core.table.model import Table as CoreTable
-from comken.core.text import is_true_word
+from comken.core.text import is_enabled_mark
 from comken.core.timer import measure
 from comken.exceptions import (
     ExcelApplicationNotAvailableError,
@@ -118,10 +118,8 @@ def _column_not_found_error(
 # フィールドの metadata に入れるときのキー
 _SPEC_KEY = "comken_master_column"
 
-# 「有効」列などで真として扱う値（小文字で比較する）。
-# 英語の "true" 表記は config.ini と同じ判定にするため、ここには含めず
-# is_true_word() で共通判定する（_to_bool 側で合わせて見る）
-_TRUE_WORDS = ("有効", "○", "o", "yes", "1", "on", "はい")
+# 「有効」列などで真として扱う値の語集合は comken の ``is_enabled_mark()`` に
+# 集約する（管理表・config.ini の判定ズレを防ぐため、1 か所に寄せる）。
 
 # 見出し行を除いた1行目が Excel の何行目か（見出しが1行目のため）
 _FIRST_DATA_ROW = 2
@@ -445,7 +443,7 @@ def _convert(value: Any, value_type: Any, spec: ColumnSpec, row: int, cls: type)
     candidate_types = _candidate_types(value_type)
 
     if bool in candidate_types or value_type is bool or value_type == "bool":
-        return _to_bool(value)
+        return is_enabled_mark(value)
     if int in candidate_types or value_type is int or value_type == "int":
         return _to_int(value, text, spec, row)
     if Path in candidate_types or value_type is Path or value_type == "Path":
@@ -493,19 +491,6 @@ def _candidate_types(value_type: Any) -> tuple[type, ...]:
     if origin is typing.Union or origin is types.UnionType:
         return typing.get_args(value_type)
     return (value_type,)
-
-
-def _to_bool(value: Any) -> bool:
-    """セルの値が「有効」を表す語かどうかを判定する。
-
-    ``_convert`` の bool 列変換に使うほか、``schedule.py`` の「有効」「月末指定」
-    のような単独の真偽判定にもそのまま流用できるよう、``text`` を内部で
-    導出して単一引数にしてある。
-    """
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip()
-    return is_true_word(text) or text.lower() in _TRUE_WORDS
 
 
 def _to_time(value: Any) -> dt.time | None:
