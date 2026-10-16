@@ -1108,29 +1108,29 @@ soql-collector が下書きを出し直すとき、補えなかった部分が�
 
 ## 配置するときの設定
 
-管理表の場所は `src/paths.py` に、履歴の場所は
-`comken/services/salesforce_downloader/paths.py` に書いてある。
-配置するときに実際の場所へ書き換える。
+共有フォルダのパス（`SALESFORCE_DOWNLOADER_FOLDER`）は、**comken 側の
+`comken/services/salesforce_downloader/paths.py` に 1 か所だけ**書いてある。
+配置するときは、ここを実際の場所へ書き換える。
 
-- 管理表: `src/paths.py` の `SALESFORCE_DOWNLOADER_FOLDER` / `MASTER_FILENAME` / `MASTER_PATH`
-- 履歴: comken 側 `comken/services/salesforce_downloader/paths.py` の
+- 共有フォルダ・履歴: comken 側 `comken/services/salesforce_downloader/paths.py` の
   `SALESFORCE_DOWNLOADER_FOLDER` / `HISTORY_FILENAME` / `HISTORY_PATH`
-
-履歴の置き場も `SALESFORCE_DOWNLOADER_FOLDER` を使うので、共有フォルダの
-パスを変えるときは **両方のファイル**を書き換える。
-
-```python
-# src/paths.py
-SALESFORCE_DOWNLOADER_FOLDER = Path(r"\\実際のサーバー\share\tools\salesforce")
-MASTER_FILENAME = "レポート管理表.xlsx"
-MASTER_PATH = SALESFORCE_DOWNLOADER_FOLDER / MASTER_FILENAME
-```
+- 管理表: このリポジトリの `src/paths.py` の `MASTER_FILENAME` / `MASTER_PATH`
+  （フォルダは comken 側の `SALESFORCE_DOWNLOADER_FOLDER` を import して使う。
+  `列名の対応.csv` の置き場 `COLUMN_NAMES_CSV_PATH` も同じ）
 
 ```python
-# comken/services/salesforce_downloader/paths.py
+# comken/services/salesforce_downloader/paths.py（ここだけ書き換える）
 SALESFORCE_DOWNLOADER_FOLDER = Path(r"\\実際のサーバー\share\tools\salesforce")
 HISTORY_FILENAME = "ダウンロード履歴.csv"
 HISTORY_PATH = SALESFORCE_DOWNLOADER_FOLDER / HISTORY_FILENAME
+```
+
+```python
+# src/paths.py（フォルダは comken から import。通常は書き換えない）
+from comken.services.salesforce_downloader.paths import SALESFORCE_DOWNLOADER_FOLDER
+
+MASTER_FILENAME = "レポート管理表.xlsx"
+MASTER_PATH = SALESFORCE_DOWNLOADER_FOLDER / MASTER_FILENAME
 ```
 
 **設定ファイルへ集約せず、使う場所に書く。** 理由と、共有サーバーで書き換えを守る方法は

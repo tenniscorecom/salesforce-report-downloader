@@ -50,6 +50,7 @@ from pathlib import Path
 
 from comken.core.dates import now as clock_now
 from comken.exceptions import DownloaderError
+from comken.services.salesforce_downloader.paths import SALESFORCE_DOWNLOADER_FOLDER
 
 from src.exceptions import (
     GroupNotRegisteredError,
@@ -67,14 +68,12 @@ logger = logging.getLogger(__name__)
 # 配置時にエンジニアが決める値なので、コードに置く（config.ini には非エンジニアが
 # 変える値だけを置く方針）。
 #
-# **履歴（CSV）の置き場はここには無い。** 境界は履歴にしたので、
-# comken 側の `comken.services.salesforce_downloader.paths.HISTORY_PATH` を
-# 使う（書き換えるのは comken 側 1 か所だけ）。
+# **共有フォルダ（`SALESFORCE_DOWNLOADER_FOLDER`）は comken 側の定数を使う。**
+# 履歴（CSV）の置き場 `HISTORY_PATH` も同じ定数から作られているので、配置時に
+# 書き換えるのは comken の `services/salesforce_downloader/paths.py` の 1 か所だけ
+# （ここに同じ定数を持つと、履歴と管理表が別のフォルダを指す事故になる）。
 #
-# フォルダを変えたい／ファイル名だけ変えたいときのため、フォルダ定数とファイル名
-# 定数を分けて、下のパス定数で組み立てる。
-SALESFORCE_DOWNLOADER_FOLDER = Path(r"\\server\share\tools\salesforce")
-
+# ファイル名だけ変えたいときのため、ファイル名定数を分けて、下のパス定数で組み立てる。
 MASTER_FILENAME = "レポート管理表.xlsx"
 
 # レポート管理表の絶対パス（モジュール変数）。テストでは `paths.MASTER_PATH`
