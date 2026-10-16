@@ -567,7 +567,7 @@ class TestDownloadScheduledRecord:
         assert archive.exists()
 
     def test_reserve_path_raises_when_all_sequential_names_are_taken(self, paths, monkeypatch):
-        """連番の上限に達したら ``ReportReservePathLimitError`` を内側で出し、
+        """連番の上限に達したら ``DownloaderError`` を内側で出し、
         `download_scheduled()` がそれを捕捉して ``ScheduledDownloadFailedError`` に変換する。
 
         共有サーバーの権限・同期の異常で ``FileExistsError`` が返り続けると

@@ -54,7 +54,6 @@ from comken.exceptions import DownloaderError
 from src.exceptions import (
     GroupNotRegisteredError,
     ReportNotRegisteredError,
-    ReportReservePathLimitError,
 )
 from src.sheets.master import ReportEntry
 
@@ -199,7 +198,7 @@ def move_into_place(tmp_path: Path, base_path: Path, report_key: str) -> Path:
     """一時ファイルを最終パスへ ``os.rename`` で移す（**上書きしない**）。
 
     同じフォルダに既存ファイルがあると連番（ ``_1`` / ``_2`` …）を足して別の
-    ファイル名を探す。 ``RESERVE_PATH_LIMIT`` を超えると ``ReportReservePathLimitError``
+    ファイル名を探す。 ``RESERVE_PATH_LIMIT`` を超えると ``DownloaderError``
     を送出する（権限・同期の異常で ``FileExistsError`` が返り続ける無限ループを
     避けるため）。
 
@@ -222,7 +221,7 @@ def move_into_place(tmp_path: Path, base_path: Path, report_key: str) -> Path:
         ``base_path_2.csv`` … のいずれか。
 
     Raises:
-        ReportReservePathLimitError: ``RESERVE_PATH_LIMIT`` 回試しても空きが
+        DownloaderError: ``RESERVE_PATH_LIMIT`` 回試しても空きが
             見つからなかった場合。
     """
     candidate = base_path
@@ -234,7 +233,12 @@ def move_into_place(tmp_path: Path, base_path: Path, report_key: str) -> Path:
         except FileExistsError:
             sequence += 1
             candidate = base_path.with_stem(f"{base_path.stem}_{sequence}")
-    raise ReportReservePathLimitError(report_key, base_path, RESERVE_PATH_LIMIT)
+    raise DownloaderError(
+        f"保存ファイル名の連番が上限に達しました: {report_key}\n"
+        f"{base_path}\n"
+        f"{RESERVE_PATH_LIMIT} 回試しても空きのファイル名が見つかりませんでした。\n"
+        "保存先フォルダの権限・排他制御と、 古い取得ファイルの数を確認してください。"
+    )
 
 
 def output_path(

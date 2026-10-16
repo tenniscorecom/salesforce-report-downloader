@@ -90,7 +90,7 @@ def _save(
 
     という流れになり、**本番の名前の空ファイルを一瞬も作らない**。
     連番上限 ``RESERVE_PATH_LIMIT`` まで ``FileExistsError`` が続いたら
-    ``ReportReservePathLimitError``。詳細は ``paths.move_into_place()`` の
+    ``DownloaderError``。詳細は ``paths.move_into_place()`` の
     docstring 参照。
 
     保存先は ``paths.output_path()`` が返す単一のパス:

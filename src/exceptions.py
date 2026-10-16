@@ -25,7 +25,6 @@ __all__ = [
     "SoqlIncompleteError",
     "EmptyReportError",
     "ReportFolderNotFoundError",
-    "ReportReservePathLimitError",
     "ScheduledDownloadFailedError",
     "BrowserFallbackFailedError",
     "BrowserFallbackIncompleteError",
@@ -323,32 +322,6 @@ class ReportFolderNotFoundError(DownloaderError):
             "設定シートの「ベースURL」（フォルダのパス）と、管理表の「グループ」を"
             "確認してください。\n"
             "共有フォルダの場合は、つながっているか（権限があるか）も確認してください。"
-        )
-
-
-class ReportReservePathLimitError(DownloaderError):
-    """保存ファイル名の連番が上限に達した
-
-    ``paths.move_into_place()`` は ``os.rename`` で一時ファイル（``~``
-    プレフィックス）を最終パスへ移し、 移し先（ ``_1`` / ``_2`` … の連番含む）
-    に既にファイルがあると ``FileExistsError`` を返す。 上限（ ``RESERVE_PATH_LIMIT`` ）
-    まで試しても確保できないのは権限・同期の異常など、 運用側に原因があることが多い。
-
-    発生箇所: src.paths の ``move_into_place()`` （``service._save()`` /
-    ``src.soql_reports.runner._save()`` から送出される）
-
-    対処:
-        保存先フォルダが想定どおりか確認する。 共有フォルダなら、 古い取得
-        ファイルを退避するか、 別の保存先に変える。 連発する場合は権限・排他
-        制御の設定も見直す
-    """
-
-    def __init__(self, report_key: str, base_path: Path, limit: int) -> None:
-        super().__init__(
-            f"保存ファイル名の連番が上限に達しました: {report_key}\n"
-            f"{base_path}\n"
-            f"{limit} 回試しても空きのファイル名が見つかりませんでした。\n"
-            "保存先フォルダの権限・排他制御と、 古い取得ファイルの数を確認してください。"
         )
 
 
