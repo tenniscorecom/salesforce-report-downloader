@@ -22,7 +22,7 @@ class Item(MasterRow):
     """コピー一覧の1行。"""
 
     SHEET_NAME = "一覧"
-    PATH = Path(r"\\server\share\コピー一覧.xlsx")   # 省略可（load(パス) で渡してもよい）
+    PATH = Path(r"\\server\share\コピー一覧.xlsx")  # 省略可（load(パス) で渡してもよい）
 
     key: str = column("ID", unique=True, help="社内で決める管理番号")
     name: str = column("名前", help="人が読んで分かる名前")
@@ -33,7 +33,7 @@ class Item(MasterRow):
 ```
 
 ```python
-for item in Item.load():        # 読む（型変換・検証込み）
+for item in Item.load():  # 読む（型変換・検証込み）
     print(item.name, item.source)
 ```
 
@@ -170,8 +170,8 @@ Excel を直接触る・メッセージに出すときは、見出しを取り�
 宣言を変えたときにズレます。**
 
 ```python
-ReportEntry.header("summary")   # → "概要"
-ReportEntry.headers()           # → ["ID", "概要", "Salesforce URL", ...]（宣言順）
+ReportEntry.header("summary")  # → "概要"
+ReportEntry.headers()  # → ["ID", "概要", "Salesforce URL", ...]（宣言順）
 ```
 
 ## 使っているところ
