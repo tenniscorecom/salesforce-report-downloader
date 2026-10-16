@@ -458,13 +458,11 @@ class BrowserFallbackIncompleteError(BrowserFallbackFailedError):
 class SavedFileEmptyError(DownloaderError):
     """保存したはずのファイルが 0 バイトだった
 
-    2026-10、会社の実行で「取得しました: <パス>（243493 行 / 76 秒）」とログが
-    出たのに、同じパスのファイルが 0 バイトだった。原因は保存先（ファイル
-    サーバー）の**クォータ不足**。ファイルサーバーへの書き込みは手元に溜めてから
-    送られるため、Python がファイルを閉じた時点ではエラーにならず、送る段階で
-    中身が捨てられる。空のファイルを成功扱いにしないための検査。**この
-    例外は ``DownloaderError`` 系なので、 ``_failure_row()`` 側で「Salesforce」
-    区分に分類される**（プログラム扱いにしない）。
+    保存先（ファイルサーバー）の書き込みは手元でバッファしてから送られるため、
+    クォータ不足で中身が捨てられても Python 側ではエラーにならない。
+    空のファイルを成功扱いにしないための検査。**この例外は ``DownloaderError``
+    系なので、 ``_failure_row()`` 側で「Salesforce」区分に分類される**（
+    プログラム扱いにしない）。
 
     発生箇所: ``src/service.py`` の ``_save()``
 

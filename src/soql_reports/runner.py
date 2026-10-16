@@ -9,9 +9,9 @@ SOQLレポートの取得・保存は **管理表ルートだけ** に統一し�
 列名変換の責務を ``soql_reports`` パッケージに閉じるため（``SoqlReport``
 と ``SoqlColumnNameConflictError`` が同じ場所にあるほうが読みやすい）。
 
-2026-10 に ``soql-collector`` の ``列名の対応.csv`` からの自動取り込みを
-追加した。``SoqlReport.COLUMN_NAMES`` の手書きは **そのまま優先**され、
+``SoqlReport.COLUMN_NAMES`` の手書きは **そのまま優先**され、
 ``extra``（``列名の対応.csv`` から読んだ dict）は補助としてマージされる。
+``soql-collector`` の ``列名の対応.csv`` からの自動取り込みも併せて動く。
 """
 
 from __future__ import annotations

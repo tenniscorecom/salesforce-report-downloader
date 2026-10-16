@@ -7,8 +7,9 @@ r"""src/service/save.py — 保存とフォルダ検査。
 
     from src.service.save import _save, _write_csv, _require_folder
 
-`_save()` の 2026-10 改定（``~`` 一時ファイル → ``os.rename`` /
-``os.replace``）や ``_write_csv()`` の ``atomic_write`` 使いはもとのまま。
+`_save()` は ``~`` 一時ファイルに書いてから ``os.rename`` / ``os.replace``
+で最終パスへ移す（``paths.move_into_place()`` が上書きしない保存ヘルパー）。
+``_write_csv()`` は ``atomic_write()`` を使った一時ファイル書き込み。
 """
 
 from __future__ import annotations
@@ -73,15 +74,8 @@ def _save(
     ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
 
-    **保存の流れ（2026-10 改定）:**
-    旧版は ``output_path`` が指す本番の名前の空ファイルを ``open("x")`` で
-    予約し、CSV を書いた一時ファイルで ``os.replace`` する 2 段構えだった。
-    2026-10 に会社のファイルサーバー（UNC）で「取得しました」とログが出たのに
-    ファイルが 0 バイトだった（後に原因は保存先のクォータ不足と判明）。調査の
-    途中で、予約の空ファイルが書き込みの間ずっと本番の名前で見えている作りも
-    避けることにした。
-
-    改定後は、
+    **保存の流れ:**
+    本番の名前の空ファイルを **一瞬も作らない** ため、 次の順序で書く。
 
     1. 同じフォルダに **一時ファイル**（ ``~`` プレフィックス + UUID）に CSV を全部書く
     2. 通常モード（``entry.overwrite`` が ``False``）は ``os.rename`` で最終パス
@@ -134,7 +128,7 @@ def _save(
     （``move_into_place()`` がまだ移せていない）と最終ファイル（移せたが 0 バイト
     検査で落とすケース）は ``unlink(missing_ok=True)`` で後始末する。
 
-    **複雑度の整理（2026-10 改定）:** 本体は「 ``base`` を決める → 一時ファイルを
+    **複雑度を下げる:** 本体は「 ``base`` を決める → 一時ファイルを
     用意 → ``EmptyReportError`` / dry-run を判定 → SOQL 用の列名適用 → CSV を書く
     → 最終パスへ移す → 0 バイト検査」の手順に絞り、 各手順を ``_prepare_*`` /
     ``_finalize_*`` / ``_verify_*`` / ``_cleanup_*`` 系のヘルパーに委譲して
@@ -191,10 +185,11 @@ def _apply_soql_columns_if_needed(entry: ReportEntry, table: Table) -> Table:
 
     **管理表の「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
     取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への対応表を
-    持っている。 2026-10 から ``soql-collector`` が出力する ``列名の対応.csv``
+    持っている。 ``soql-collector`` が出力する ``列名の対応.csv``
     からも自動で拾う（手書きが無い列や新しいレポートでも、 soql-collector を
     一度走らせれば反映される）。 ``COLUMN_NAMES`` の **手書きは優先**
     （同じキーは手書きが勝つ） — 「直したい列だけ書けばよい」を崩さないため。
+    経緯は ``docs/HISTORY.md`` 参照。
 
     見出しが衝突すると ``SoqlColumnNameConflictError`` が送出されるが、
     その場合は ``_save()`` の ``except`` へ流れるので CSV は書かれない。
@@ -296,9 +291,10 @@ def _verify_saved_file_not_empty(final_path: Path, table: Table, entry: ReportEn
     """保存先が 0 バイトなら ``SavedFileEmptyError`` で落とす。
 
     保存先（ファイルサーバー）のクォータが足りないと、書き込みはエラーにならずに
-    中身だけが捨てられ、0 バイトのファイルが残る（2026-10 の実例）。 空のファイル
-    を成功扱いにしないための検査。 ``table.columns`` が空のときは見出しも無いので
+    中身だけが捨てられ、 0 バイトのファイルが残る。 空のファイルを
+    成功扱いにしないための検査。 ``table.columns`` が空のときは見出しも無いので
     検査しない（書きようが無い）。 dry-run はこの手前で ``return`` 済み。
+    経緯は ``docs/HISTORY.md`` 参照。
     """
     if not table.columns:
         return
@@ -326,7 +322,7 @@ def _write_csv(path: Path, table: Table) -> None:
     複数のプロジェクトが同時に呼ぶので、直接書くと**読んでいる最中のファイルが
     半端な状態**になりうる。同じフォルダ内の置き換えは一度に入れ替わる。
 
-    **注意:** ``_save()`` は 2026-10 からこの関数を **一時ファイル**
+    **注意:** ``_save()`` はこの関数を **一時ファイル**
     （``paths.make_temp_csv_path()`` が返した ``~`` プレフィックスのパス）に対して
     呼び、最終パスへの ``os.replace`` は行わない（``paths.move_into_place()``
     が ``os.rename`` で移す。上書きしない）。``_write_csv()`` の引数は

@@ -211,11 +211,11 @@ def _download_scheduled_locked(
     切り出したヘルパー。``download_scheduled()`` 自体は薄いラッパーに
     留めて、本体の長さ・複雑度を上げないようにする。
 
-    **複雑度の整理（2026-10 改定）:** 本体は「入力準備 → 対象選定とログ →
-    1 件ずつ実行 → ブラウザ後始末 → 終了ログ / 失敗通知」の流れだけを書き、
-    各手順を ``_prepare_run_inputs()`` / ``_select_and_log_targets()`` /
-    ``_execute_each_target()`` / ``_close_browser_sessions()`` /
-    ``_report_run_results()`` に委譲して本体の複雑度を下げる。
+    本体は「入力準備 → 対象選定とログ → 1 件ずつ実行 → ブラウザ後始末 →
+    終了ログ / 失敗通知」の流れだけを書き、 各手順を ``_prepare_run_inputs()``
+    / ``_select_and_log_targets()`` / ``_execute_each_target()`` /
+    ``_close_browser_sessions()`` / ``_report_run_results()`` に委譲して
+    本体の複雑度を下げる。
     """
     filters_by_report = filters_by_report or {}
     entries, rules_by_report, current = _prepare_run_inputs()
@@ -261,7 +261,8 @@ def _prepare_run_inputs() -> tuple[
     事故を防ぐ）。
 
     スケジュール管理表は **有効行だけ** を索引化する（無効行は曜日・時刻を
-    足切りする材料にならない）。 シートが無い場合は空リスト（後方互換）。
+    足切りする材料にならない）。 シートが無い管理表でも壊れないよう、
+    シートが無い場合は空リストを返す。
     """
     entries = load_master(paths.MASTER_PATH)
     schedule_rules = load_schedule(paths.MASTER_PATH)
@@ -823,8 +824,8 @@ def _failure_row(
 
     `schedule_key` は成功時と同じく履歴の「スケジュールキー」列へ書くためのもの。
     dedup 判定は成功行しか見ないが、履歴を後から追ったときに「どのスケジュール行が
-    いつ失敗したか」が追えるよう、`record_success()` と対称にここで渡す
-    （後方互換のため既定値は空文字）。
+    いつ失敗したか」が追えるよう、`record_success()` と対称にここで渡す。
+    引数を省略したとき用に既定値は空文字。
 
     `route` は取得経路（``ROUTE_API`` / ``ROUTE_SOQL`` / ``ROUTE_BROWSER`` /
     自動切替2種のいずれか）。失敗時の履歴にも書く。**例外の型から判別できない**

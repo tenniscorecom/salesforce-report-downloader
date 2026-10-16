@@ -49,7 +49,7 @@ _NTH_BUSINESS_DAY_PATTERN = re.compile(r"^第(\d+)営業日$")
 
 # レポート管理表と同じブック内のスケジュール管理シート名。**管理表本体と
 # 一緒に置かれる**ため、このシートが無い管理表でもエラーにせず空とみなす
-# （後方互換。詳細は load_schedule() を参照）
+# （詳細は ``load_schedule()`` を参照）
 SCHEDULE_SHEET_NAME = "スケジュール"
 
 
@@ -437,7 +437,7 @@ def load_schedule(path: str | Path) -> list[ScheduleRule]:
 
     **シートが存在しない場合はエラーにせず空リストを返す。** この機能を
     使っていない既存の管理表（「スケジュール」シートをまだ追加していないもの）が、
-    このシートの有無で読み込みごと壊れないようにするため（後方互換）。
+    このシートの有無で読み込みごと壊れないようにするため。
 
     ``ScheduleRule.load()`` が `unique=True` の列で重複を検出すると
     ``MasterDuplicateValueError`` を上げ、必須列が空だと

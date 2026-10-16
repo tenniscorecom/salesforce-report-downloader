@@ -62,14 +62,14 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     往復回数を抑えられる。集計関数・``GROUP BY`` 等 ``bulk_query()``
     が受け付けない SOQL はこの経路では使えない。
 
-    **未完成の SOQL の検知（2026-10 改定）:** ``soql()`` が返した本文の
+    **未完成の SOQL の検知:** ``soql()`` が返した本文の
     先頭（前後の空白を除く）が ``INCOMPLETE_SOQL_MARKER`` で始まる SOQL は
     そのままでは Salesforce に問い合わせられない。 ``bulk_query()`` を呼ぶ
     **前**に ``SoqlIncompleteError`` で止める（Salesforce には問い合わせない）。
     印の文字列は ``soql.INCOMPLETE_SOQL_MARKER`` の定数で soql-collector 側の
     ``INCOMPLETE_MARKER`` と同じ。
 
-    **件数の比較（2026-10 改定）:** ``SoqlReport.CHECK_COUNT`` が ``True`` のとき
+    **件数の比較:** ``SoqlReport.CHECK_COUNT`` が ``True`` のとき
     （既定）、 ``bulk_query()`` の **直後** に **同じ接続のうち** にもう 1 度
     Report API を叩いて ``factMap["T!T"]["aggregates"]`` の ``RowCount`` を取り、
     ``len(table)`` と比べる。一致すれば INFO ログを 1 行出して返す。**一致
@@ -81,7 +81,7 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
     （=レポートの GET が必要ないレポート向け）。**同じ接続のうち** に比較するため
     ``site_for()`` も 1 回しか呼ばれない（ログインは 1 回だけ）。
 
-    **加工 transform()（2026-10 改定）:** 件数の比較の **あと**に
+    **加工 transform():** 件数の比較の **あと**に
     ``SoqlReport.transform()`` を加工前の生の結果に対して呼ぶ。 件数の比較は
     加工前の件数で行われる（レポートの総件数と比べられるのは加工前の件数
     のため）。 加工後が 0 行のときは既存の ``ALLOW_EMPTY`` 判定がそのまま動く。
