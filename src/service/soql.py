@@ -258,6 +258,36 @@ def _extract_row_count_from_report_payload(payload: object) -> int | None:
     ``factMap["T!T"]["aggregates"]`` の値を返す。位置が取れない /
     値が想定形でない（ ``int`` / ``{"value": int}`` の ``dict`` 以外 /
     ``bool`` ）のときは ``None`` 。
+
+    実装は「 ``_resolve_report_metadata()`` で ``reportMetadata`` /
+    ``aggregates`` まで安全に取り出す → ``_find_row_count_index()`` で
+    ``RowCount`` の位置を特定 → ``_coerce_row_count_value()`` で値を
+    ``int`` に整形」の 3 段構成にして複雑度を下げる。 1 段目・2 段目で
+    形をチェックして ``None`` を弾き、3 段目で値だけを判定するため、
+    メインの本体はガード文の連なりだけになる。
+    """
+    aggregates = _resolve_report_metadata(payload)
+    if aggregates is None:
+        return None
+
+    row_count_idx = _find_row_count_index(aggregates)
+    if row_count_idx is None:
+        return None
+
+    fact_aggregates = _resolve_fact_aggregates(payload, row_count_idx)
+    if fact_aggregates is None:
+        return None
+
+    return _coerce_row_count_value(fact_aggregates[row_count_idx])
+
+
+def _resolve_report_metadata(payload: object) -> list | None:
+    """``payload`` から ``reportMetadata.aggregates`` を取り出す。
+
+    ``payload`` が dict 以外 / ``reportMetadata`` が dict 以外 /
+    ``aggregates`` が list 以外のときは ``None`` 。 想定外の入れ子を
+    一箇所に集約することで ``_extract_row_count_from_report_payload()`` 側の
+    ガード文の連なりを減らす。
     """
     if not isinstance(payload, dict):
         return None
@@ -267,15 +297,29 @@ def _extract_row_count_from_report_payload(payload: object) -> int | None:
     aggregates = metadata.get("aggregates")
     if not isinstance(aggregates, list):
         return None
+    return aggregates
 
-    row_count_idx: int | None = None
+
+def _find_row_count_index(aggregates: list) -> int | None:
+    """``aggregates`` の中の ``"RowCount"`` の位置を返す。無ければ ``None`` 。
+
+    先頭から ``"RowCount"`` を探すので、ループ本体は ``if`` 1 つだけになる。
+    """
     for idx, agg in enumerate(aggregates):
         if isinstance(agg, str) and agg == "RowCount":
-            row_count_idx = idx
-            break
-    if row_count_idx is None:
-        return None
+            return idx
+    return None
 
+
+def _resolve_fact_aggregates(payload: object, row_count_idx: int) -> list | None:
+    """``payload`` から ``factMap["T!T"]["aggregates"]`` を取り出す。
+
+    ``row_count_idx`` が範囲外のときも ``None`` 。 想定外の入れ子を 1 か所に
+    集約することで ``_extract_row_count_from_report_payload()`` 側のガード文を
+    減らす。
+    """
+    if not isinstance(payload, dict):
+        return None
     fact_map = payload.get("factMap")
     if not isinstance(fact_map, dict):
         return None
@@ -287,15 +331,37 @@ def _extract_row_count_from_report_payload(payload: object) -> int | None:
         return None
     if row_count_idx >= len(fact_aggregates):
         return None
-    value = fact_aggregates[row_count_idx]
+    return fact_aggregates
+
+
+def _coerce_row_count_value(value: object) -> int | None:
+    """``fact_aggregates[idx]`` を ``RowCount`` として ``int`` に整形する。
+
+    Salesforce の API は ``int`` か ``{"label": ..., "value": n}`` 形式の
+    ``dict`` を返す。 ``bool`` は ``int`` のサブクラスなので先に除外する。
+    それ以外の形（ ``str`` / ``float`` / その他 ``dict`` ）は ``None`` 。
+    想定値 ``int`` / ``{"value": int}`` の ``dict`` しか受け付けない理由は
+    親関数 ``_extract_row_count_from_report_payload()`` の docstring に
+    従う（件数の比較にしか使わないので、要件外の形は黙って捨てる）。
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
     if isinstance(value, dict):
-        inner = value.get("value")
-        if isinstance(inner, bool):
-            return None
-        if isinstance(inner, int):
-            return inner
+        return _coerce_dict_value(value)
+    return None
+
+
+def _coerce_dict_value(value: dict) -> int | None:
+    """``{"value": int}`` 形式の ``dict`` を ``int`` に整形する。
+
+    ``bool`` は ``int`` のサブクラスなので先に除外する。 それ以外の
+    キー（ ``label`` 等）は使わないので、 ``"value"`` だけが対象。
+    """
+    inner = value.get("value")
+    if isinstance(inner, bool):
+        return None
+    if isinstance(inner, int):
+        return inner
     return None

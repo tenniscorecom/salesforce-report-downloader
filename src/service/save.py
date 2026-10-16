@@ -133,16 +133,19 @@ def _save(
     を経由して ``ScheduledDownloadFailedError`` に変換される。一時ファイル
     （``move_into_place()`` がまだ移せていない）と最終ファイル（移せたが 0 バイト
     検査で落とすケース）は ``unlink(missing_ok=True)`` で後始末する。
+
+    **複雑度の整理（2026-10 改定）:** 本体は「 ``base`` を決める → 一時ファイルを
+    用意 → ``EmptyReportError`` / dry-run を判定 → SOQL 用の列名適用 → CSV を書く
+    → 最終パスへ移す → 0 バイト検査」の手順に絞り、 各手順を ``_prepare_*`` /
+    ``_finalize_*`` / ``_verify_*`` / ``_cleanup_*`` 系のヘルパーに委譲して
+    本体の複雑度を下げる。
     """
     base = paths.output_path(entry, schedule_run_time, now=current)
     # 保存先を決定した時点で DEBUG を 1 行出す（上書きモードかどうかも一緒に出す）。
     # 障害調査時に「どのパスに書こうとして何が起きなかったか」を追えるようにする
     logger.debug("保存先を決定しました: パス=%s, 上書き=%s", base, entry.overwrite)
-    # **概要のフォルダは保存前に ``mkdir`` する。** ベースフォルダは
-    # ``_require_folder()`` で先に検査済みなので ``parents=False`` で安全。
-    # dry-run 中は作らない（保存もしない運用に合わせた防御）
-    if not is_dry_run():
-        base.parent.mkdir(exist_ok=True)
+    _prepare_output_directory(base)
+
     # **一時ファイル（~プレフィックス）を作ってそこへ書く。** 本番の名前の
     # 空ファイルを一瞬も作らない。
     tmp_path = paths.make_temp_csv_path(base)
@@ -156,104 +159,167 @@ def _save(
         # （連番探索は行わない。dry-run は競合判定まで含めて副作用を出さない運用）
         if is_dry_run():
             return base
-        # **SOQL 経由のときだけ ``COLUMN_NAMES`` を適用する。** 管理表の
-        # 「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
-        # 取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への
-        # 対応表を持っている。 2026-10 から ``soql-collector`` が出す
-        # ``列名の対応.csv`` からも自動で拾う（手書きが無い列や新しい
-        # レポートでも、soql-collector を一度走らせれば反映される）。
-        # ``COLUMN_NAMES`` の **手書きは優先**（同じキーは手書きが勝つ）
-        # — 「直したい列だけ書けばよい」を崩さないため。
-        # 見出しが衝突すると ``SoqlColumnNameConflictError`` が送出される
-        # が、その場合は ``_write_csv`` 前に ``except`` へ流れるので CSV は
-        # 書かれない。 Report API / ブラウザ経由はそのまま（``SoqlReport`` を
-        # 見ない）。
-        if entry.use_soql:
-            report_cls = soql_report_for(entry.key)
-            # ``table.columns`` は ``Table`` が所有する ``list`` で、 後続の
-            # ``_apply_column_names()`` は新しい Table を返すので元の list は
-            # 書き変わらない。 コピーは不要
-            original_columns = table.columns
-            soql_text = report_cls().soql()
-            # ``列名の対応.csv`` から、このレポートの主オブジェクト（ SOQL の最初の
-            # ``FROM <名前>`` ）に該当する行だけを引く。 ファイルが無い / 該当行が無い
-            # / フォーマット不正はライブラリ側で WARNING or 例外に振り分けて、 ここでは
-            # 戻り値だけ受け取る。 主オブジェクトが取れない（ SOQL に ``FROM`` が無い等）
-            # ときは空 dict を受け取り、 API 名のまま保存する（取得は失敗させない）
-            main_object = extract_main_object(soql_text)
-            if main_object is None:
-                # WARNING には SOQL 本文（WHERE の値等）を出さない運用。
-                # SOQL 本文は同じ場所で DEBUG にだけ出す（既存の
-                # ``logger.debug("SOQL: %s", ...)`` と同ルール）。
-                logger.warning(
-                    "SOQL から主オブジェクトを取り出せませんでした。"
-                    "API 名のまま保存します: 管理番号=%s, クラス=%s",
-                    entry.key,
-                    report_cls.__name__,
-                )
-                logger.debug("SOQL: %s", soql_text)
-                extra: dict[str, str] = {}
-            else:
-                extra = load_column_names_for(main_object)
-            table = _apply_column_names(report_cls, table, extra=extra)
-            # 実際に置き換わった列数を出所別に数える（手書きが ``column_names``
-            # に勝ち、かつ wins が元と変わった列だけが「手書きで置換」扱い）。
-            # 0 件 = 全部元の見出しのままなら出さない（ログを常に汚さない
-            # ように）。列名そのものは見出しに過ぎず、認証情報にもレポート
-            # の値にも触れないので INFO で出してよい
-            file_replaced = 0
-            manual_replaced = 0
-            for col in original_columns:
-                if col in report_cls.COLUMN_NAMES:
-                    if report_cls.COLUMN_NAMES[col] != col:
-                        manual_replaced += 1
-                elif col in extra:
-                    if extra[col] != col:
-                        file_replaced += 1
-            replaced_count = file_replaced + manual_replaced
-            if replaced_count > 0:
-                logger.info(
-                    "COLUMN_NAMES で %d 列を置き換えました（ファイル=%d, 手書き=%d）: 管理番号=%s",
-                    replaced_count,
-                    file_replaced,
-                    manual_replaced,
-                    entry.key,
-                )
+        table = _apply_soql_columns_if_needed(entry, table)
         _write_csv(tmp_path, table)
-        if entry.overwrite:
-            # **上書きモード:** ``{管理番号}_{HHMM}.csv`` の名前で毎回置き換える。
-            # 同じ ``HHMM`` なら同じパスになり、翌日の同時刻に上書きされる。
-            # ``os.replace`` は Windows でも移し先が存在するとそのまま上書きする
-            # （``os.rename`` と違い ``FileExistsError`` にならない）。 書き込みは
-            # 既に ``_write_csv(tmp_path, table)`` で終わっているので、ここが失敗
-            # したら既存ファイルはそのまま残る契約（``except`` 経路で ``tmp_path``
-            # だけ片付ける）。 連番探索は行わない
-            os.replace(tmp_path, base)
-            final_path = base
-        else:
-            # **一時ファイルを最終パスへ ``os.rename``。** 移し先が存在すれば次の連番候補を試す。
-            # 上書きはしない（``os.rename`` の Windows 仕様で ``FileExistsError``）
-            final_path = paths.move_into_place(tmp_path, base, entry.key)
-        # **0 バイト保存の検査。** 保存先（ファイルサーバー）のクォータが足りないと、
-        # 書き込みはエラーにならずに中身だけが捨てられ、0 バイトのファイルが残る
-        # （2026-10 の実例）。空のファイルを成功扱いにしないための検査。
-        # ``table.columns`` が空のときは見出しも無いので検査しない（書きようが無い）。
-        # dry-run はこの手前で ``return`` 済み
-        if table.columns:
-            size = final_path.stat().st_size
-            if size == 0:
-                raise SavedFileEmptyError(entry.key, entry.summary, final_path, len(table))
-            logger.info("保存しました: %s（%d バイト）", final_path, size)
+        final_path = _finalize_save(tmp_path, base, entry)
+        _verify_saved_file_not_empty(final_path, table, entry)
     except Exception:
         # **失敗時の後始末。** ``final_path`` が決まっていれば（move_into_place が
         # 成功したあとに 0 バイト検査で落とすケース）削除。``tmp_path`` は
         # move_into_place に成功していれば既に存在しない（rename で消えた）ので
         # ``missing_ok=True`` で安全
-        if final_path is not None:
-            final_path.unlink(missing_ok=True)
-        tmp_path.unlink(missing_ok=True)
+        _cleanup_failed_save(tmp_path, final_path)
         raise
     return final_path
+
+
+def _prepare_output_directory(base: Path) -> None:
+    """概要フォルダを保存前に ``mkdir`` する。dry-run 中は何もしない。
+
+    ベースフォルダは ``_require_folder()`` で先に検査済みなので ``parents=False``
+    で「無ければ失敗する」をそのまま流用できる（ベースが既に無い場合はここで
+    ``FileNotFoundError`` が出る。先に ``_require_folder()`` で
+    ``ReportFolderNotFoundError`` に変換する流れが壊れないよう、 ``_save()`` 単体で
+    動くテスト経路のために ``OSError`` のまま伝播させる）。
+    """
+    if not is_dry_run():
+        base.parent.mkdir(exist_ok=True)
+
+
+def _apply_soql_columns_if_needed(entry: ReportEntry, table: Table) -> Table:
+    """SOQL 経由のときだけ ``COLUMN_NAMES`` を適用した ``Table`` を返す。
+
+    **管理表の「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
+    取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への対応表を
+    持っている。 2026-10 から ``soql-collector`` が出力する ``列名の対応.csv``
+    からも自動で拾う（手書きが無い列や新しいレポートでも、 soql-collector を
+    一度走らせれば反映される）。 ``COLUMN_NAMES`` の **手書きは優先**
+    （同じキーは手書きが勝つ） — 「直したい列だけ書けばよい」を崩さないため。
+
+    見出しが衝突すると ``SoqlColumnNameConflictError`` が送出されるが、
+    その場合は ``_save()`` の ``except`` へ流れるので CSV は書かれない。
+    Report API / ブラウザ経由は ``SoqlReport`` を見ないので、 そのまま
+    ``table`` を返す。
+    """
+    if not entry.use_soql:
+        return table
+
+    report_cls = soql_report_for(entry.key)
+    # ``table.columns`` は ``Table`` が所有する ``list`` で、 後続の
+    # ``_apply_column_names()`` は新しい Table を返すので元の list は
+    # 書き変わらない。 コピーは不要
+    original_columns = table.columns
+    soql_text = report_cls().soql()
+    extra = _load_soql_extra_column_names(entry, report_cls, soql_text)
+    updated = _apply_column_names(report_cls, table, extra=extra)
+    _log_column_name_replacements(entry, original_columns, report_cls, extra)
+    return updated
+
+
+def _load_soql_extra_column_names(
+    entry: ReportEntry, report_cls: type, soql_text: str
+) -> dict[str, str]:
+    """``列名の対応.csv`` からこのレポートの主オブジェクトに該当する行を引く。
+
+    主オブジェクトが取れない（ SOQL に ``FROM`` が無い等）ときは空 ``dict`` を
+    返し、 API 名のまま保存させる（取得は失敗させない）。 WARNING には SOQL 本文
+    （ WHERE の値等）を出さず、 DEBUG にだけ本文を出す（既存の
+    ``logger.debug("SOQL: %s", ...)`` と同ルール）。
+    """
+    main_object = extract_main_object(soql_text)
+    if main_object is None:
+        logger.warning(
+            "SOQL から主オブジェクトを取り出せませんでした。"
+            "API 名のまま保存します: 管理番号=%s, クラス=%s",
+            entry.key,
+            report_cls.__name__,
+        )
+        logger.debug("SOQL: %s", soql_text)
+        return {}
+    return load_column_names_for(main_object)
+
+
+def _log_column_name_replacements(
+    entry: ReportEntry,
+    original_columns: list[str],
+    report_cls: type,
+    extra: dict[str, str],
+) -> None:
+    """``COLUMN_NAMES`` で置き換わった列数を出所別に数えて INFO を出す。
+
+    手書きが ``column_names`` に勝ち、かつ wins が元と変わった列だけが
+    「手書きで置換」扱い。 0 件 = 全部元の見出しのままなら出さない（ログを
+    常に汚さないように）。 列名そのものは見出しに過ぎず、認証情報にもレポート
+    の値にも触れないので INFO で出してよい。
+    """
+    file_replaced = 0
+    manual_replaced = 0
+    for col in original_columns:
+        if col in report_cls.COLUMN_NAMES:
+            if report_cls.COLUMN_NAMES[col] != col:
+                manual_replaced += 1
+        elif col in extra:
+            if extra[col] != col:
+                file_replaced += 1
+    replaced_count = file_replaced + manual_replaced
+    if replaced_count > 0:
+        logger.info(
+            "COLUMN_NAMES で %d 列を置き換えました（ファイル=%d, 手書き=%d）: 管理番号=%s",
+            replaced_count,
+            file_replaced,
+            manual_replaced,
+            entry.key,
+        )
+
+
+def _finalize_save(tmp_path: Path, base: Path, entry: ReportEntry) -> Path:
+    """一時ファイルを最終パスへ移し、移し終わったパスを返す。
+
+    **上書きモード:** ``{管理番号}_{HHMM}.csv`` の名前で毎回置き換える。 同じ
+    ``HHMM`` なら同じパスになり、 翌日の同時刻に上書きされる。 ``os.replace`` は
+    Windows でも移し先が存在するとそのまま上書きする（``os.rename`` と違い
+    ``FileExistsError`` にならない）。 書き込みは既に ``_write_csv()`` で終わって
+    いるので、 ここで失敗したら既存ファイルはそのまま残る契約（ ``except`` 経路
+    で ``tmp_path`` だけ片付ける）。 連番探索は行わない。
+
+    **通常モード:** 一時ファイルを最終パスへ ``os.rename``。 移し先が存在すれば
+    次の連番候補を試す。 上書きはしない（``os.rename`` の Windows 仕様で
+    ``FileExistsError``）。
+    """
+    if entry.overwrite:
+        os.replace(tmp_path, base)
+        return base
+    return paths.move_into_place(tmp_path, base, entry.key)
+
+
+def _verify_saved_file_not_empty(
+    final_path: Path, table: Table, entry: ReportEntry
+) -> None:
+    """保存先が 0 バイトなら ``SavedFileEmptyError`` で落とす。
+
+    保存先（ファイルサーバー）のクォータが足りないと、書き込みはエラーにならずに
+    中身だけが捨てられ、0 バイトのファイルが残る（2026-10 の実例）。 空のファイル
+    を成功扱いにしないための検査。 ``table.columns`` が空のときは見出しも無いので
+    検査しない（書きようが無い）。 dry-run はこの手前で ``return`` 済み。
+    """
+    if not table.columns:
+        return
+    size = final_path.stat().st_size
+    if size == 0:
+        raise SavedFileEmptyError(entry.key, entry.summary, final_path, len(table))
+    logger.info("保存しました: %s（%d バイト）", final_path, size)
+
+
+def _cleanup_failed_save(tmp_path: Path, final_path: Path | None) -> None:
+    """失敗時に一時ファイルと（移せていれば）最終ファイルを ``unlink`` で片付ける。
+
+    ``final_path`` が決まっていれば（ ``move_into_place`` が成功したあとに 0 バイト
+    検査で落とすケース）削除する。 ``tmp_path`` は ``move_into_place`` に成功して
+    いれば既に存在しない（ rename で消えた）ので ``missing_ok=True`` で安全。
+    """
+    if final_path is not None:
+        final_path.unlink(missing_ok=True)
+    tmp_path.unlink(missing_ok=True)
 
 
 def _write_csv(path: Path, table: Table) -> None:

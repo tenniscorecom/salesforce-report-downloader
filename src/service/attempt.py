@@ -210,36 +210,83 @@ def _download_scheduled_locked(
     実行ロックを ``download_scheduled()`` で取得し、その内側で動くコア部分を
     切り出したヘルパー。``download_scheduled()`` 自体は薄いラッパーに
     留めて、本体の長さ・複雑度を上げないようにする。
+
+    **複雑度の整理（2026-10 改定）:** 本体は「入力準備 → 対象選定とログ →
+    1 件ずつ実行 → ブラウザ後始末 → 終了ログ / 失敗通知」の流れだけを書き、
+    各手順を ``_prepare_run_inputs()`` / ``_select_and_log_targets()`` /
+    ``_execute_each_target()`` / ``_close_browser_sessions()`` /
+    ``_report_run_results()`` に委譲して本体の複雑度を下げる。
     """
-    entries = load_master(paths.MASTER_PATH)
     filters_by_report = filters_by_report or {}
+    entries, rules_by_report, current = _prepare_run_inputs()
     _validate_filters_by_report(filters_by_report, entries)
     _warn_shared_reports(entries)
 
-    # スケジュール管理表を読んで、レポートキーで引けるように索引化。**有効行だけ**を
-    # 評価対象にする（無効行は曜日・時刻を足切りする材料にならない）。
-    # シートが無い場合は空リスト（後方互換）
+    run_started = time.perf_counter()
+    targets, skipped = _select_and_log_targets(entries, rules_by_report, current)
+    # 1 件ごとの理由は DEBUG（=既定では出ない。障害調査時に ``--log-level=DEBUG`` で見る想定）
+    _log_skipped_details(skipped)
+
+    # ブラウザ経由のレポートで「同じ組織のブラウザを 1 回の実行で使い回す」ための入れ物。
+    # ``site_for()`` が返す ``type`` をキーに、開いたインスタンスを保持する。
+    # 最終的に ``finally`` で全部 ``__exit__()`` を呼んで閉じる（正常終了・想定外
+    # 例外どちらでも）。``_fetch_via_browser()`` 側で取得中に例外が出た場合は、
+    # 該当エントリを ``pop`` して ``__exit__()`` を呼んだうえで例外を上げる
+    # （壊れた状態のブラウザを次のレポートへ引き継がないため）
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] = {}
+    try:
+        saved, failed, last_exception = _execute_each_target(
+            targets,
+            project,
+            filters_by_report,
+            current,
+            browser_sessions,
+        )
+    finally:
+        _close_browser_sessions(browser_sessions)
+
+    run_seconds = time.perf_counter() - run_started
+    return _report_run_results(targets, saved, failed, last_exception, run_seconds)
+
+
+def _prepare_run_inputs() -> (
+    tuple[dict[str, ReportEntry], dict[str, list[ScheduleRule]], dt.datetime]
+):
+    """管理表 / スケジュール表を読み、 この実行の基準日時を 1 か所で固定する。
+
+    **基準日時を 1 か所で固定する理由:** スケジュール判定・ファイル名・
+    履歴の「実行日時」の 3 か所が同じ ``current`` を見ることで、 23:59 に
+    始まった取得が日付をまたいでも、 開始日で揃う（翌日 00:01 に終わった
+    として履歴が残ると、 翌日の同じスケジュールキーが「成功済み」で飛ぶ
+    事故を防ぐ）。
+
+    スケジュール管理表は **有効行だけ** を索引化する（無効行は曜日・時刻を
+    足切りする材料にならない）。 シートが無い場合は空リスト（後方互換）。
+    """
+    entries = load_master(paths.MASTER_PATH)
     schedule_rules = load_schedule(paths.MASTER_PATH)
     rules_by_report: dict[str, list[ScheduleRule]] = {}
     for rule in schedule_rules:
         if rule.enabled:
             rules_by_report.setdefault(rule.report_key, []).append(rule)
-
-    # **この実行の基準日時を 1 か所で固定。** スケジュール判定・ファイル名・
-    # 履歴の「実行日時」の 3 か所が同じ ``current`` を見ることで、23:59 に
-    # 始まった取得が日付をまたいでも、開始日で揃う（翌日 00:01 に終わった
-    # として履歴が残ると、翌日の同じスケジュールキーが「成功済み」で飛ぶ
-    # 事故を防ぐ）。
     current = clock_now()
-    # 実行開始の基準時刻。終了ログで経過秒を出すために取る（``clock_now()`` の
-    # 日付とは別物として、``time.perf_counter()`` を使う）
-    run_started = time.perf_counter()
+    return entries, rules_by_report, current
 
+
+def _select_and_log_targets(
+    entries: dict[str, ReportEntry],
+    rules_by_report: dict[str, list[ScheduleRule]],
+    current: dt.datetime,
+) -> tuple[list, dict[str, list[str]]]:
+    """対象レポートを選定し、 内訳をログにまとめて返す。
+
+    ``_select_targets()`` の戻り値 ``_already_failed`` は常に空リスト（= 何件も
+    残らない契約）なので使わない。 下の ``failed: list[str]`` は
+    ``_execute_each_target()`` 側で組み立て直す。
+    """
     targets, _already_failed, skipped = _select_targets(
         entries, rules_by_report, current, _history_path()
     )
-    # ``_already_failed`` は ``_select_targets()`` の戻り値で常に空リスト（=何件も
-    # 残らない契約）なので使わない。 下で ``failed: list[str]`` を組み立て直す形にした
     enabled_count = sum(1 for entry in entries.values() if entry.enabled)
     logger.info(
         "定期取得を開始します: 管理表=%s, 全 %d 件 / 有効 %d 件 / 対象 %d 件",
@@ -256,7 +303,16 @@ def _download_scheduled_locked(
         len(skipped["予定外"]),
         len(skipped["当日取得済"]),
     )
-    # 1 件ごとの理由は DEBUG（=既定では出ない。障害調査時に ``--log-level=DEBUG`` で見る想定）
+    return targets, skipped
+
+
+def _log_skipped_details(skipped: dict[str, list[str]]) -> None:
+    """対象外になった理由を DEBUG で 1 件ずつ出す。
+
+    既定では INFO だけ、 DEBUG は ``--log-level=DEBUG`` で見る想定。 業務運用で
+    普段は見ないが、 障害調査時に「なぜこのレポートが落ちたか」を追えるように
+    する。
+    """
     for key in skipped["有効×"]:
         logger.debug("対象外: 管理番号=%s, 理由=有効×", key)
     for key in skipped["スケジュール行なし"]:
@@ -266,74 +322,94 @@ def _download_scheduled_locked(
     for key in skipped["当日取得済"]:
         logger.debug("対象外: 管理番号=%s, 理由=当日取得済", key)
 
-    saved: list[Path] = []
-    # 1件失敗したら ``failed`` に積む。RPA 基盤から「失敗扱い」を判断できるよう、
-    # 末尾で ``ScheduledDownloadFailedError`` を送出して終了コード1 にする。
-    # ``already_failed`` は ``_select_targets()`` の戻り値で常に空リスト（= 何件も
-    # 残らない）なので、単純な空リストでよい
-    failed: list[str] = []
-    # 失敗時に ``ScheduledDownloadFailedError`` から ``__cause__`` で辿れるよう、
-    # 直近の捕捉した例外を覚えておく（同じ失敗が複数件あっても、最後の1件だけを
-    # 連鎖させる）。``None`` のままだと「原因例外が無い」ことを示す
-    last_exception: BaseException | None = None
-    # ブラウザ経由のレポートで「同じ組織のブラウザを 1 回の実行で使い回す」ための入れ物。
-    # ``site_for()`` が返す ``type`` をキーに、開いたインスタンスを保持する。
-    # 最終的に ``finally`` で全部 ``__exit__()`` を呼んで閉じる（正常終了・想定外
-    # 例外どちらでも）。``_fetch_via_browser()`` 側で取得中に例外が出た場合は、
-    # 該当エントリを ``pop`` して ``__exit__()`` を呼んだうえで例外を上げる
-    # （壊れた状態のブラウザを次のレポートへ引き継がないため）
-    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] = {}
-    total_targets = len(targets)
-    try:
-        for index, (entry, schedule_key, schedule_rule) in enumerate(targets, start=1):
-            try:
-                saved.append(
-                    _download(
-                        entry,
-                        project,
-                        _history_path(),
-                        schedule_key,
-                        schedule_run_time=(
-                            schedule_rule.desired_time if schedule_rule is not None else None
-                        ),
-                        filters=filters_by_report.get(entry.key),
-                        current=current,
-                        browser_sessions=browser_sessions,
-                        progress=(index, total_targets),
-                    )
-                )
-            except (ComkenError, OSError) as e:
-                # **想定した失敗は続ける。想定していない失敗は止める。**
-                # - `ComkenError` は `docs/ERRORS.md` に対処法が載っている想定内の失敗なので続行する
-                # - `OSError` は共有サーバー断・権限・パスなど運用上の失敗。保存先は
-                #   レポートごとに違うので、1本ダメでも他は書けるので続行する
-                # - それ以外（`TypeError` などプログラムのバグ）は想定していない。
-                #   `ScheduledDownloadFailedError`（＝「1件取れませんでした」）の顔で
-                #   出てくると、非エンジニアが「もう一度実行してみる」を繰り返すだけなので、
-                #   ここでは捕捉せず、その場で落として気づかせる
-                # KeyboardInterrupt など処理中断を示す例外は `ComkenError` / `OSError` の
-                #   どちらでもないので、これもそのまま抜ける
-                logger.error("取得に失敗しました: %s（%s）", entry.key, e)
-                failed.append(entry.key)
-                last_exception = e
-    finally:
-        # 使い回していたブラウザを全部閉じる。``_fetch_via_browser()`` 側で取得中に
-        # 例外が出たものは既に dict から外して ``__exit__()`` を呼んでいるので、
-        # ここに残っているのは「成功裡に使い終わったブラウザ」だけ。
-        # 想定外例外が ``for`` ループを抜けた場合もこの ``finally`` で閉じる。
-        # ``finally`` のこの時点で ``browser_sessions`` はもう書き変わらないので、
-        # ループ用に ``list()`` で複製する必要は無い
-        for sf in browser_sessions.values():
-            try:
-                # ``exc_type`` は ``None`` を渡す（``type(None)`` ≒ ``NoneType`` を
-                # 渡すと、comken の ``BrowserSession.__exit__`` 側で
-                # ``exc_type is not None`` が真になり、正常終了でも毎回エラー時
-                # スクリーンショットが撮られてしまう）
-                sf.__exit__(None, None, None)
-            except Exception as close_exc:
-                logger.warning("ブラウザを閉じる途中で例外が発生しました: %s", close_exc)
 
-    run_seconds = time.perf_counter() - run_started
+def _execute_each_target(
+    targets: list,
+    project: str,
+    filters_by_report: dict[str, list[dict]],
+    current: dt.datetime,
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser],
+) -> tuple[list[Path], list[str], BaseException | None]:
+    """1 件ずつ ``_download()`` を呼び、 成功 / 失敗を集計する。
+
+    ``_already_failed`` は ``_select_targets()`` の戻り値で常に空リスト（= 何件も
+    残らない）なので、 単純な空リストでよい。 失敗時に
+    ``ScheduledDownloadFailedError`` から ``__cause__`` で辿れるよう、 直近の
+    捕捉した例外を覚えておく（同じ失敗が複数件あっても、最後の 1 件だけを
+    連鎖させる）。 ``None`` のままだと「原因例外が無い」ことを示す。
+    """
+    saved: list[Path] = []
+    failed: list[str] = []
+    last_exception: BaseException | None = None
+    total_targets = len(targets)
+    for index, (entry, schedule_key, schedule_rule) in enumerate(targets, start=1):
+        try:
+            saved.append(
+                _download(
+                    entry,
+                    project,
+                    _history_path(),
+                    schedule_key,
+                    schedule_run_time=(
+                        schedule_rule.desired_time if schedule_rule is not None else None
+                    ),
+                    filters=filters_by_report.get(entry.key),
+                    current=current,
+                    browser_sessions=browser_sessions,
+                    progress=(index, total_targets),
+                )
+            )
+        except (ComkenError, OSError) as e:
+            # **想定した失敗は続ける。想定していない失敗は止める。**
+            # - `ComkenError` は `docs/ERRORS.md` に対処法が載っている想定内の失敗なので続行する
+            # - `OSError` は共有サーバー断・権限・パスなど運用上の失敗。保存先は
+            #   レポートごとに違うので、1本ダメでも他は書けるので続行する
+            # - それ以外（`TypeError` などプログラムのバグ）は想定していない。
+            #   `ScheduledDownloadFailedError`（＝「1件取れませんでした」）の顔で
+            #   出てくると、非エンジニアが「もう一度実行してみる」を繰り返すだけなので、
+            #   ここでは捕捉せず、その場で落として気づかせる
+            # KeyboardInterrupt など処理中断を示す例外は `ComkenError` / `OSError` の
+            #   どちらでもないので、これもそのまま抜ける
+            logger.error("取得に失敗しました: %s（%s）", entry.key, e)
+            failed.append(entry.key)
+            last_exception = e
+    return saved, failed, last_exception
+
+
+def _close_browser_sessions(
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser],
+) -> None:
+    """使い回していたブラウザを全部閉じる。
+
+    ``_fetch_via_browser()`` 側で取得中に例外が出たものは既に dict から外して
+    ``__exit__()`` を呼んでいるので、 ここに残っているのは「成功裡に使い終わった
+    ブラウザ」だけ。 想定外例外が ``for`` ループを抜けた場合もこの関数で閉じる。
+
+    ``__exit__()`` に ``None`` を渡すのは ``comken`` の
+    ``BrowserSession.__exit__`` 側で ``exc_type is not None`` が真になると、
+    正常終了でも毎回エラー時スクリーンショットが撮られてしまうため。
+    """
+    for sf in browser_sessions.values():
+        try:
+            sf.__exit__(None, None, None)
+        except Exception as close_exc:
+            logger.warning("ブラウザを閉じる途中で例外が発生しました: %s", close_exc)
+
+
+def _report_run_results(
+    targets: list,
+    saved: list[Path],
+    failed: list[str],
+    last_exception: BaseException | None,
+    run_seconds: float,
+) -> list[Path]:
+    """終了ログを出したうえで、 失敗があれば ``ScheduledDownloadFailedError`` を送出する。
+
+    1 件でも失敗した場合は、 続けたうえで例外を上げる（RPA 基盤から「失敗扱い」を
+    判断できるよう、 終了コード 1 にする）。 直近の失敗を ``__cause__`` に乗せて
+    送出する（呼び出し側が ``raise X from original`` 相当の診断情報を得られる
+    ようにする）。
+    """
     logger.info(
         "定期取得: %d 件中 %d 件を取得しました。（%.1f 秒）",
         len(targets),
@@ -341,9 +417,6 @@ def _download_scheduled_locked(
         run_seconds,
     )
     if failed:
-        # 続けたぶん、最後に必ず知らせる（終了コードで落ちたことが分かるように）。
-        # 直近の失敗を ``__cause__`` に乗せて送出する（呼び出し側が
-        # ``raise X from original`` 相当の診断情報を得られるようにする）
         raise ScheduledDownloadFailedError(failed, _history_path()) from last_exception
     return saved
 
@@ -568,12 +641,11 @@ def _download(
     route = ""
     try:
         try:
-            # 「取得開始」ログは **Salesforce へ問い合わせる前** に出す。
-            # 取得中に固まったときに「どのレポートで止まったか」をログで
-            # 分かるようにすることが目的なので、取得完了後に出しても意味がない。
-            # 経路は予定（``_fetch()`` と同じ優先順位）で書く。自動切替が起きて
-            # 実際の経路が変わった事実は既存の WARNING が別途出すので、ここで
-            # 2 回目は呼ばない（重複させない）。
+            # 「取得 → 保存」を順に呼ぶ。 ``_save()`` が ``EmptyReportError`` を
+            # 投げるケース（ 0 件 + ``allow_empty=False`` ）のため、 ``_fetch_with_auto_fallback``
+            # までと ``_save()`` は別々に呼ぶ。 そうすると ``_save()`` が例外を
+            # 投げても ``route`` には ``_fetch_with_auto_fallback()`` が確定した
+            # 値が入っており、 0 行の自動切替判定で正しく使える。
             _log_fetch_start(entry, _planned_route(entry), progress)
             _require_folder(entry)
             route, table = _fetch_with_auto_fallback(
@@ -584,109 +656,148 @@ def _download(
             path = _save(entry, table, schedule_run_time=schedule_run_time, current=current)
         except EmptyReportError as exc:
             # 0 行 + ``allow_empty=False`` の「自動切替」が走る可能性がある唯一の場所。
-            # ブラウザに切り替えて 0 行以外が取れればクリア、取れなければ ``EmptyReportError``
-            # をそのまま上げる（=この場合は ``route`` は API のまま、ブラウザに切り替えて
-            # いないことが履歴で分かる）。
-            if (
-                route == ROUTE_API
-                and not entry.allow_empty
-                and filters is None
-                and browser_sessions is not None
-                and _is_api_path(entry)
-            ):
-                logger.warning(
-                    "Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます: "
-                    "%s（%s）。管理表の「0件あり」を「○」にするか SOQL 化を検討してください",
-                    entry.key,
-                    entry.summary,
-                )
-                try:
-                    browser_table = _fetch_via_browser(entry, browser_sessions=browser_sessions)
-                except Exception as browser_exc:
-                    # 0 件取り直しのブラウザ取得自体が失敗 → 自動切替は成功しなかった扱いとし、
-                    # 2000 件超の取り直し失敗と同じ ``BrowserFallbackFailedError`` で表現する
-                    # （``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分に入る）
-                    # フォールバック自体が落ちたことはこの分岐でしか分からないので、
-                    # 下流の「取得に失敗しました」より一段手前で WARNING を 1 行出す
-                    logger.warning(
-                        "0 件取り直しのブラウザ取得に失敗しました: %s（%s）",
-                        entry.key,
-                        browser_exc,
-                    )
-                    raise BrowserFallbackFailedError(
-                        entry.key, entry.summary, "0件", ROUTE_BROWSER_FALLBACK_EMPTY
-                    ) from browser_exc
-                if browser_table:
-                    # ブラウザで取れたので、保存し直して履歴は「成功・自動切替」で記録
-                    # （``_Attempt`` の開始時刻はそのまま使い、route だけ書き換える）
-                    # 「自動切替: API → ブラウザ（0件取り直し）」の事実は、
-                    # この ``if`` に入る前に出した WARNING
-                    # （"Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます"）
-                    # が出ているので、ここでは ``_log_fetch_start()`` を再度呼ばない
-                    # （重複させない）。
-                    route = ROUTE_BROWSER_FALLBACK_EMPTY
-                    path = _save(
-                        entry,
-                        browser_table,
-                        schedule_run_time=schedule_run_time,
-                        current=current,
-                    )
-                    attempt.record_success_with_route(
-                        path,
-                        browser_table,
-                        route=ROUTE_BROWSER_FALLBACK_EMPTY,
-                        executed_at=current,
-                    )
-                    return path
-                # ブラウザでも 0 行 → ブラウザ経路を閉じて取り直し
-                logger.warning(
-                    "ブラウザ経由でも 0 行でした。EmptyReportError で失敗します: %s（%s）",
-                    entry.key,
-                    entry.summary,
-                )
-            # 取り直さない or 取り直しても 0 行だった → 失敗として記録
-            try:
-                attempt.record_failure(exc, route=route)
-            except (
-                HistoryWriteError,
-                HistoryLockTimeoutError,
-                CSVError,
-            ) as history_exc:
-                raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
+            # ブラウザに切り替えて 0 行以外が取れればクリア、 取れなければ
+            # ``EmptyReportError`` をそのまま上げる（=この場合は ``route`` は API のまま、
+            # ブラウザに切り替えていないことが履歴で分かる）。
+            fallback_path = _try_empty_report_browser_fallback(
+                entry,
+                browser_sessions,
+                filters=filters,
+                schedule_run_time=schedule_run_time,
+                current=current,
+                attempt=attempt,
+                route=route,
+            )
+            if fallback_path is not None:
+                return fallback_path
+            _record_failure_safely(attempt, exc, route, history_path)
             raise
         except Exception as exc:
             # ``BrowserFallbackFailedError`` は外側の ``except BrowserFallbackFailedError``
             # 段で受け取る（同じ ``try`` の ``except`` 間で再評価されないため）。
             # ここではその他の ``ComkenError`` / ``OSError`` を一括で処理する。
             if not isinstance(exc, BrowserFallbackFailedError):
-                try:
-                    attempt.record_failure(exc, route=route)
-                except (
-                    HistoryWriteError,
-                    HistoryLockTimeoutError,
-                    CSVError,
-                ) as history_exc:
-                    raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
+                _record_failure_safely(attempt, exc, route, history_path)
             raise
     except BrowserFallbackFailedError as exc:
         # 0 件取り直しのブラウザ失敗は ``except EmptyReportError`` 内で ``raise`` される。
         # ``except`` 内で ``raise`` した例外は同じ ``try`` の別の ``except`` には飛ばず
-        # 外側に素通りするため（Python 仕様）、外側の段で受けて ``record_failure`` /
-        # 再 ``raise`` を行う。``_fetch_with_auto_fallback()`` が ``2000件超`` で
+        # 外側に素通りするため（Python 仕様）、 外側の段で受けて ``record_failure`` /
+        # 再 ``raise`` を行う。 ``_fetch_with_auto_fallback()`` が ``2000件超`` で
         # 投げた ``BrowserFallbackFailedError`` もここで受けて ``route`` を揃える
         if exc.route and route != exc.route:
             route = exc.route
-        try:
-            attempt.record_failure(exc, route=route)
-        except (
-            HistoryWriteError,
-            HistoryLockTimeoutError,
-            CSVError,
-        ) as history_exc:
-            raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
+        _record_failure_safely(attempt, exc, route, history_path)
         raise
     attempt.record_success(path, table, route=route)
     return path
+
+
+def _try_empty_report_browser_fallback(
+    entry: ReportEntry,
+    browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None,
+    *,
+    filters: list[dict] | None,
+    schedule_run_time: dt.time | None,
+    current: dt.datetime | None,
+    attempt: _Attempt,
+    route: str,
+) -> Path | None:
+    """``EmptyReportError`` 時のブラウザ自動切替を試みる。
+
+    0 行 + ``allow_empty=False`` の「自動切替」が走る可能性がある唯一の場所。
+    ブラウザに切り替えて 0 行以外が取れればそのパスを返す（ ``record_success`` まで
+    済ませて返す）。 ブラウザに切り替えても 0 行、または自動切替の前提条件を満たさ
+    ないときは ``None`` を返し、 呼び出し元 ``_download()`` が
+    ``EmptyReportError`` をそのまま失敗として扱う。
+
+    ブラウザ取得自体が失敗した場合（ ``_fetch_via_browser`` が例外）は
+    ``BrowserFallbackFailedError`` を投げる — 0 件取り直しのフォールバック失敗を
+    2000 件超の取り直し失敗と同じ型で表現するため（ ``_failure_row()`` で
+    「Salesforce」区分に入る）。
+    """
+    if not (
+        route == ROUTE_API
+        and not entry.allow_empty
+        and filters is None
+        and browser_sessions is not None
+        and _is_api_path(entry)
+    ):
+        return None
+
+    logger.warning(
+        "Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます: "
+        "%s（%s）。管理表の「0件あり」を「○」にするか SOQL 化を検討してください",
+        entry.key,
+        entry.summary,
+    )
+    try:
+        browser_table = _fetch_via_browser(entry, browser_sessions=browser_sessions)
+    except Exception as browser_exc:
+        # 0 件取り直しのブラウザ取得自体が失敗 → 自動切替は成功しなかった扱いとし、
+        # 2000 件超の取り直し失敗と同じ ``BrowserFallbackFailedError`` で表現する
+        # （``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分に入る）
+        # フォールバック自体が落ちたことはこの分岐でしか分からないので、
+        # 下流の「取得に失敗しました」より一段手前で WARNING を 1 行出す
+        logger.warning(
+            "0 件取り直しのブラウザ取得に失敗しました: %s（%s）",
+            entry.key,
+            browser_exc,
+        )
+        raise BrowserFallbackFailedError(
+            entry.key, entry.summary, "0件", ROUTE_BROWSER_FALLBACK_EMPTY
+        ) from browser_exc
+
+    if not browser_table:
+        # ブラウザでも 0 行 → ブラウザ経路を閉じて取り直し
+        logger.warning(
+            "ブラウザ経由でも 0 行でした。EmptyReportError で失敗します: %s（%s）",
+            entry.key,
+            entry.summary,
+        )
+        return None
+
+    # ブラウザで取れたので、 保存し直して履歴は「成功・自動切替」で記録
+    # （ ``_Attempt`` の開始時刻はそのまま使い、 route だけ書き換える）
+    # 「自動切替: API → ブラウザ（0件取り直し）」の事実は、 この関数に入る前に
+    # 出した WARNING
+    # （ "Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます" ）
+    # が出ているので、 ここでは ``_log_fetch_start()`` を再度呼ばない（重複させない）。
+    path = _save(
+        entry,
+        browser_table,
+        schedule_run_time=schedule_run_time,
+        current=current,
+    )
+    attempt.record_success_with_route(
+        path,
+        browser_table,
+        route=ROUTE_BROWSER_FALLBACK_EMPTY,
+        executed_at=current,
+    )
+    return path
+
+
+def _record_failure_safely(
+    attempt: _Attempt,
+    exc: BaseException,
+    route: str,
+    history_path: Path,
+) -> None:
+    """``record_failure()`` 時の履歴エラーを ``HistoryWriteError`` に変換する。
+
+    履歴書き込み中の失敗は「元の原因」（ ``exc`` ）を ``HistoryWriteError.__cause__`` で
+    辿れるようにしておき、 呼び出し側で 1 件の失敗として記録されるようにする。
+    履歴書き込みが成功したときはそのまま戻る。
+    """
+    try:
+        attempt.record_failure(exc, route=route)
+    except (
+        HistoryWriteError,
+        HistoryLockTimeoutError,
+        CSVError,
+    ) as history_exc:
+        raise HistoryWriteError(history_path, str(history_exc), original=exc) from exc
 
 
 def _failure_row(

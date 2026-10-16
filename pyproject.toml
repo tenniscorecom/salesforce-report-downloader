@@ -27,13 +27,16 @@ ban-relative-imports = "all"
 
 [tool.ruff.lint.mccabe]
 # 分岐の絡み合いの上限。
-# 現状の最大値で止めている。関数を分割するたびに下げる（目標 10）。
-max-complexity = 17
+# 関数を分割するたびに下げる（目標 10）。 10 を超える関数は分割して再コミットする。
+max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
 # テストは assert のための仮実装・cleanup の try/except が読みやすさ優先で残るため、
-# bugbear 系（try/except/Pass 等）の警告を抑止する。
-"tests/**" = ["B017", "SIM105"]
+# bugbear 系（try/except/Pass 等）の警告を抑止する。 複雑度チェック（C901）は
+# テストヘルパー（``_collect_violations`` など）が「検証パターンを 1 か所に
+# まとめる」ために ``for``/``if`` を連ねる形になりやすく、 ソース本体向けの
+# 基準（10）をテストにも要求すると API ではなく検証網羅が歪むため除外する。
+"tests/**" = ["B017", "SIM105", "C901"]
 
 [tool.pyright]
 # 開発時は隣接するcomkenリポジトリを直接参照する。実行環境ではPYTHON_LIBRARYを使う。
