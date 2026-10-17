@@ -31,11 +31,11 @@ src/service/
   __init__.py           ← download_scheduled だけ公開する薄いパッケージ
   _utils.py             ← 履歴パスを返すだけの内部ヘルパー
   attempt.py            ← download_scheduled 本体・_Attempt・失敗履歴の組み立て
-  routes.py             ← 取得経路の選択（_fetch / _fetch_with_auto_fallback）
+  routes.py             ← 取得経路の選択（_fetch / fetch_with_auto_fallback）
   api.py                ← Report API 経由の取得
   browser.py            ← ブラウザ経由の取得（ブラウザの使い回しを含む）
   soql.py               ← SOQL 経由の取得と件数検証、未完成印
-  save.py               ← 保存とフォルダ検査（_save / _write_csv / _require_folder）
+  save.py               ← 保存とフォルダ検査（save_report / _write_csv / require_folder）
   scheduler.py          ← スケジュールによる対象選定と共有レポート警告
 ```
 
@@ -72,7 +72,7 @@ WinActor からの呼び出しが前回実行と重なった場合（前回の�
 `CREDENTIAL_PREFIX`。例: Solution 組織）は `comken/toolbox/salesforce/sites/solution.py`
 の `CREDENTIAL_PREFIX` を使う）。
 SOQL経由は同じ管理番号の `SoqlReport` が `src.soql_reports` に登録されている必要がある
-（詳しくは `_fetch_via_soql()` を参照）。
+（詳しくは `fetch_via_soql()` を参照）。
 
 **自動切替でも全件取れなければエラーで止める。** `SalesforceReportTruncatedError`
 （2000件超）→ ブラウザに切り替えても 2000 行以下しか取れなければ、

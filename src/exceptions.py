@@ -109,14 +109,14 @@ class SoqlReportNotRegisteredError(DownloaderError):
 class SoqlColumnNameConflictError(DownloaderError):
     """``COLUMN_NAMES`` の置き換えで、出力 CSV の見出しが 2 つ以上重なった
 
-    ``runner._apply_column_names()`` は ``SoqlReport.COLUMN_NAMES`` を見て
+    ``runner.apply_column_names()`` は ``SoqlReport.COLUMN_NAMES`` を見て
     SOQL の結果列（API 名）を人が読む見出しへ変える。複数の列を同じ
     見出しに割り当てると、出力 CSV に同じ列名が 2 回現れて何が何だかに
     なる。**そのレポートは失敗扱い**（ファイルは書かない）。どの見出しに
     どの元列が重なったかをメッセージに書き、 ``COLUMN_NAMES`` を直すときに
     迷わないようにする。
 
-    発生箇所: ``src.soql_reports.runner`` の ``_apply_column_names()``
+    発生箇所: ``src.soql_reports.runner`` の ``apply_column_names()``
 
     対処:
         ``reports/<ファイル>.py`` の ``COLUMN_NAMES`` を見直す。重なった
@@ -145,7 +145,7 @@ class SoqlCountMismatchError(DownloaderError):
 
     0 件同士のときは一致扱いとする（``ALLOW_EMPTY`` の判定はその後で動く）。
 
-    発生箇所: ``src.service`` の ``_fetch_via_soql()`` （``bulk_query()`` 直後、
+    発生箇所: ``src.service`` の ``fetch_via_soql()`` （``bulk_query()`` 直後、
     同じ接続のうちにもう 1 度 ``Report API`` を叩いて総件数を取得する）
 
     対処:
@@ -217,7 +217,7 @@ class SoqlTransformError(DownloaderError):
     元の例外クラス名と「加工に失敗した」事実だけを書き、 ``from exc``
     で元の例外をつなぐ（ ``__cause__`` から辿れる）。
 
-    発生箇所: ``src.service._fetch_via_soql()`` （ ``bulk_query()`` の直後、
+    発生箇所: ``src.service.fetch_via_soql()`` （ ``bulk_query()`` の直後、
     件数の比較（ ``CHECK_COUNT`` ）と同じ接続のうち、加工前の Table に対して
     呼ばれる）。
 
@@ -252,7 +252,7 @@ class SoqlIncompleteError(DownloaderError):
     （前後の空白を除く）に来る前提。 本文の途中（文字列値など）に
     ``【未完成】`` が出てくるだけなら止めない。
 
-    ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に ``soql()`` の
+    ``fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に ``soql()`` の
     本文を ``lstrip()`` して ``startswith()`` で判定する。 Salesforce
     には問い合わせない。
 
@@ -260,7 +260,7 @@ class SoqlIncompleteError(DownloaderError):
     soql-collector 側の ``INCOMPLETE_MARKER`` と同じ。 変えるときは
     両方を同時に変える。
 
-    発生箇所: ``src.service._fetch_via_soql()`` （ ``bulk_query()`` を呼ぶ前）
+    発生箇所: ``src.service.fetch_via_soql()`` （ ``bulk_query()`` を呼ぶ前）
 
     対処:
         soql-collector の下書きに作れなかった部分が残っています。
@@ -283,7 +283,7 @@ class EmptyReportError(DownloaderError):
     空のファイルを置くと、使う側は「データが無い日」と「取得が失敗した日」を
     区別できなくなる。0 行のときはファイルを作らず、失敗として扱う。
 
-    発生箇所: download_scheduled() の `_save()`
+    発生箇所: download_scheduled() の `save_report()`
 
     対処:
         Salesforce の画面で同じレポートを開き、本当に 0 件か確認してください。
@@ -308,7 +308,7 @@ class ReportFolderNotFoundError(DownloaderError):
     無いフォルダを作らないのは、書き間違いのことが多いため。
     勝手に作ると、誰も読まない場所へ置き続けることになる。
 
-    発生箇所: download_scheduled() の `_require_folder()`
+    発生箇所: download_scheduled() の `require_folder()`
 
     対処:
         設定シートの「ベースURL」（フォルダのパス）と、管理表の「グループ」を
@@ -352,7 +352,7 @@ class BrowserFallbackFailedError(DownloaderError):
     """Report API 経路の自動切替で、ブラウザの取り直し自体が失敗した
 
     ``SalesforceReportTruncatedError``（2000件超）または 0 行 + ``allow_empty=False``
-    でブラウザ経由に取り直そうとしたが、ブラウザ取得中（``_fetch_via_browser()``）
+    でブラウザ経由に取り直そうとしたが、ブラウザ取得中（``fetch_via_browser()``）
     に別の例外（ログイン失敗・CredentialNotFoundError・CredentialError・通信断など）
     が出て失敗したときに送出する。**この例外は ``DownloaderError`` 系なので、
     ``_failure_row()`` 側で「Salesforce」区分に分類される**（プログラム扱い
@@ -366,7 +366,7 @@ class BrowserFallbackFailedError(DownloaderError):
     のような「引数 2 つのシグネチャ」を経由しない**（文字列 1 つで ``raise``
     すると ``TypeError`` になり、原因区分が「プログラム」化ける）。
 
-    発生箇所: ``src/service.py`` の ``_fetch_with_auto_fallback()`` と
+    発生箇所: ``src/service.py`` の ``fetch_with_auto_fallback()`` と
     ``_download()`` の 0 行取り直し経路
 
     対処:
@@ -408,7 +408,7 @@ class BrowserFallbackIncompleteError(BrowserFallbackFailedError):
     ことは ``src.exceptions`` を import するときに ``history`` 側の依存が無いことで
     確認済み）。
 
-    発生箇所: ``src/service.py`` の ``_fetch_with_auto_fallback()``
+    発生箇所: ``src/service.py`` の ``fetch_with_auto_fallback()``
 
     対処:
         Salesforce の画面からレポートを手動でエクスポートしてください。
@@ -437,7 +437,7 @@ class SavedFileEmptyError(DownloaderError):
     系なので、 ``_failure_row()`` 側で「Salesforce」区分に分類される**（
     プログラム扱いにしない）。
 
-    発生箇所: ``src/service.py`` の ``_save()``
+    発生箇所: ``src/service.py`` の ``save_report()``
 
     対処:
         保存先フォルダの空き容量・クォータが足りているか確認する（古い取得

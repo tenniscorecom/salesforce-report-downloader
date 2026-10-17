@@ -1,6 +1,6 @@
 """``SoqlReport.transform()`` と未完成 SOQL の ``download_scheduled()`` 統合テスト。
 
-``src.service._fetch_via_soql()`` に ``transform()`` の呼び出しと未完成印の
+``src.service.fetch_via_soql()`` に ``transform()`` の呼び出しと未完成印の
 検知を入れた変更が、 2 本以上のレポートを含む 1 実行で
 
 - ``transform()`` の例外が **そのレポートだけの失敗**になり、 次のレポートの
@@ -9,7 +9,7 @@
   失敗 1 行が残る
 
 ことを確かめるためのもの。 単体テスト（ ``test_service_soql_fetch.py`` ）が
-``_fetch_via_soql()`` 単体の挙動を見ているのに対し、 ここでは管理表・
+``fetch_via_soql()`` 単体の挙動を見ているのに対し、 ここでは管理表・
 スケジュール・履歴・保存先を含めたフル実行を確認する。
 """
 
@@ -229,10 +229,10 @@ class TestDownloadScheduledTransformFailure:
     def test_transform_failure_does_not_stop_next_report(self, monkeypatch, paths_two_reports):
         """``1002`` の ``transform()`` が例外を投げても、 ``1001`` の取得と保存は
         影響を受けず、 ``1002`` は履歴に失敗 1 行が残り、 最終的に
-        ``ScheduledDownloadFailedError`` で ``_fetch_via_soql()`` から見た ``1002``
+        ``ScheduledDownloadFailedError`` で ``fetch_via_soql()`` から見た ``1002``
         の例外を ``__cause__`` に繋いで送出される。
 
-        ``1002`` は SOQL 経由（ ``use_soql=True`` ）にして ``_fetch_via_soql()`` を
+        ``1002`` は SOQL 経由（ ``use_soql=True`` ）にして ``fetch_via_soql()`` を
         経由させ、 ``transform()`` の例外を ``SoqlTransformError`` に包ませる。"""
         _enable_1002(monkeypatch, url=URL_B, use_soql=True)
         _patch_clock(monkeypatch)
@@ -283,7 +283,7 @@ class TestDownloadScheduledTransformFailure:
         assert summary_dir.is_dir()
         assert any(summary_dir.glob("*.csv"))
 
-        # ``1002`` のフォルダは作られない（ ``_save()`` に到達していないため）
+        # ``1002`` のフォルダは作られない（ ``save_report()`` に到達していないため）
         summary_dir_b = paths_two_reports["base_path"] / "レポートB"
         assert not summary_dir_b.exists()
 
@@ -402,7 +402,7 @@ class TestDownloadScheduledIncompleteSoql:
         summary_dir = paths_two_reports["base_path"] / "レポートA"
         assert any(summary_dir.glob("*.csv"))
 
-        # ``1002`` のフォルダは作られない（ _save() に到達していない）
+        # ``1002`` のフォルダは作られない（ save_report() に到達していない）
         summary_dir_b = paths_two_reports["base_path"] / "レポートB"
         assert not summary_dir_b.exists()
 

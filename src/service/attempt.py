@@ -17,7 +17,7 @@ r"""src/service/attempt.py — 1 件の取得を取り持つ ``_Attempt`` と、
 ``download_scheduled()`` は ``HistoryFileLock`` でプロセス間排他した
 ``run.lock`` を取得してから、 ``_download_scheduled_locked()`` に移譲する
 薄いラッパー。1 件単位の ``_download()`` は ``_Attempt`` を組み立て、
-``save._save()`` と ``routes._fetch_with_auto_fallback()`` をオーケストレートする。
+``save.save_report()`` と ``routes.fetch_with_auto_fallback()`` をオーケストレートする。
 """
 
 from __future__ import annotations
@@ -56,14 +56,14 @@ from src.exceptions import (
 )
 from src.history import record, resolved_folder
 from src.service._utils import history_path
-from src.service.browser import _fetch_via_browser
+from src.service.browser import fetch_via_browser
 from src.service.routes import (
-    _fetch_with_auto_fallback,
-    _is_api_path,
-    _planned_route,
+    fetch_with_auto_fallback,
+    is_api_path,
+    planned_route,
 )
-from src.service.save import _require_folder, _save
-from src.service.scheduler import _select_targets, _warn_shared_reports
+from src.service.save import require_folder, save_report
+from src.service.scheduler import select_targets, warn_shared_reports
 from src.sheets.master import ReportEntry, load_master
 from src.sheets.schedule import ScheduleRule, load_schedule
 
@@ -81,7 +81,7 @@ CAUSE_FILE = "ファイル"
 CAUSE_PROGRAM = "プログラム"
 
 # Report API の上限。2000件超で打ち切られたレポートをブラウザで取り直して、
-# この行数以下しか取れなければ全件取れていない（``routes._fetch_with_auto_fallback()`` で
+# この行数以下しか取れなければ全件取れていない（``routes.fetch_with_auto_fallback()`` で
 # 判定して ``BrowserFallbackIncompleteError`` に流す）。 routes.py でも同じ
 # 2000 という値を使っている（テストの差し替えやすさを優先して 1 か所に集約はしない）。
 _REPORT_API_ROW_LIMIT = 2000
@@ -121,9 +121,9 @@ def download_scheduled(
     ブラウザを開いた直後に ``login_with_credentials()`` を呼び、ID/パスワードを
     DPAPI から自動入力したうえで MFA をスマホで承認する（無人で承認されなければ
     ``LoginFailedError`` として失敗扱いになる。認証情報が未登録なら
-    ``CredentialNotFoundError`` が送出される。詳しくは `_fetch_via_browser()` を
+    ``CredentialNotFoundError`` が送出される。詳しくは `fetch_via_browser()` を
     参照）。SOQL経由のレポートは同じ管理番号の `SoqlReport` が `src.soql_reports`
-    に登録されている必要がある（詳しくは `_fetch_via_soql()` を参照）。
+    に登録されている必要がある（詳しくは `fetch_via_soql()` を参照）。
 
     **ブラウザの使い回し:** ブラウザ経由のレポートは、1 回の `download_scheduled()`
     の実行の中で組織ごとにブラウザを 1 つだけ開いて使い回す（毎回起動しない）。
@@ -220,7 +220,7 @@ def _download_scheduled_locked(
     filters_by_report = filters_by_report or {}
     entries, rules_by_report, current = _prepare_run_inputs()
     _validate_filters_by_report(filters_by_report, entries)
-    _warn_shared_reports(entries)
+    warn_shared_reports(entries)
 
     run_started = time.perf_counter()
     targets, skipped = _select_and_log_targets(entries, rules_by_report, current)
@@ -230,7 +230,7 @@ def _download_scheduled_locked(
     # ブラウザ経由のレポートで「同じ組織のブラウザを 1 回の実行で使い回す」ための入れ物。
     # ``site_for()`` が返す ``type`` をキーに、開いたインスタンスを保持する。
     # 最終的に ``finally`` で全部 ``__exit__()`` を呼んで閉じる（正常終了・想定外
-    # 例外どちらでも）。``_fetch_via_browser()`` 側で取得中に例外が出た場合は、
+    # 例外どちらでも）。``fetch_via_browser()`` 側で取得中に例外が出た場合は、
     # 該当エントリを ``pop`` して ``__exit__()`` を呼んだうえで例外を上げる
     # （壊れた状態のブラウザを次のレポートへ引き継がないため）
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] = {}
@@ -281,11 +281,11 @@ def _select_and_log_targets(
 ) -> tuple[list, dict[str, list[str]]]:
     """対象レポートを選定し、 内訳をログにまとめて返す。
 
-    ``_select_targets()`` の戻り値 ``_already_failed`` は常に空リスト（= 何件も
+    ``select_targets()`` の戻り値 ``_already_failed`` は常に空リスト（= 何件も
     残らない契約）なので使わない。 下の ``failed: list[str]`` は
     ``_execute_each_target()`` 側で組み立て直す。
     """
-    targets, _already_failed, skipped = _select_targets(
+    targets, _already_failed, skipped = select_targets(
         entries, rules_by_report, current, _history_path()
     )
     enabled_count = sum(1 for entry in entries.values() if entry.enabled)
@@ -333,7 +333,7 @@ def _execute_each_target(
 ) -> tuple[list[Path], list[str], BaseException | None]:
     """1 件ずつ ``_download()`` を呼び、 成功 / 失敗を集計する。
 
-    ``_already_failed`` は ``_select_targets()`` の戻り値で常に空リスト（= 何件も
+    ``_already_failed`` は ``select_targets()`` の戻り値で常に空リスト（= 何件も
     残らない）なので、 単純な空リストでよい。 失敗時に
     ``ScheduledDownloadFailedError`` から ``__cause__`` で辿れるよう、 直近の
     捕捉した例外を覚えておく（同じ失敗が複数件あっても、最後の 1 件だけを
@@ -382,7 +382,7 @@ def _close_browser_sessions(
 ) -> None:
     """使い回していたブラウザを全部閉じる。
 
-    ``_fetch_via_browser()`` 側で取得中に例外が出たものは既に dict から外して
+    ``fetch_via_browser()`` 側で取得中に例外が出たものは既に dict から外して
     ``__exit__()`` を呼んでいるので、 ここに残っているのは「成功裡に使い終わった
     ブラウザ」だけ。 想定外例外が ``for`` ループを抜けた場合もこの関数で閉じる。
 
@@ -563,12 +563,12 @@ class _Attempt:
 def _log_fetch_start(entry: ReportEntry, route: str, progress: tuple[int, int] | None) -> None:
     """1 件の取得開始を INFO で 1 行出す。
 
-    ``_download()`` の冒頭（``_require_folder()`` の前、Salesforce へ問い合わせる
+    ``_download()`` の冒頭（``require_folder()`` の前、Salesforce へ問い合わせる
     前）に呼び、 ``[i/n]`` の進み具合と管理番号・概要・**予定していた経路**を
     1 行で残す。**取得中に固まったときに「どのレポートで止まったか」をログで
     分かるようにすることが目的なので、取得完了後に出しても意味がない。**
     「自動切替」（API → ブラウザ）が起きた事実は既存の WARNING が
-    ``_download()`` / ``_fetch_with_auto_fallback()`` 側ですでに出しているので、
+    ``_download()`` / ``fetch_with_auto_fallback()`` 側ですでに出しているので、
     ここでは 2 回目を呼ばない（重複させない）。
     """
     if progress is not None:
@@ -606,13 +606,13 @@ def _download(
     """1件を取得して保存し、成否を履歴に残す。
 
     ``schedule_run_time`` は唯一の出力ファイル名にスケジュール時刻を埋め込むために
-    ``_save()`` まで運ぶ（``paths.output_path(entry, schedule_run_time)`` で
+    ``save_report()`` まで運ぶ（``paths.output_path(entry, schedule_run_time)`` で
     ``%Y%m%d_%H%M`` のタイムスタンプ値として使われる）。
-    ``_select_targets()`` が ``ScheduleRule`` を ``None`` 以外に揃えてから
+    ``select_targets()`` が ``ScheduleRule`` を ``None`` 以外に揃えてから
     ``_download()`` を呼ぶので、 ``schedule_run_time`` も必ず渡る。
 
     ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``
-    の値。``_save()`` 経由で ``paths.output_path(now=current)`` に渡し、
+    の値。``save_report()`` 経由で ``paths.output_path(now=current)`` に渡し、
     ``_Attempt`` 経由で履歴の「実行日時」に渡す。日付をまたぐ長い実行でも
     判定・ファイル名・履歴が同じ「開始日」で揃うために 1 実行で同じ値を
     共有する。
@@ -620,7 +620,7 @@ def _download(
     ``browser_sessions`` は ``_download_scheduled_locked()`` で作られた
     使い回し用の dict（同じ組織のブラウザを 1 回の実行で共有するため）。
     ``None`` のときは従来の「その場で開いて閉じる」動作（``_fetch()`` /
-    ``_fetch_via_browser()`` 側のキーワード既定値に従う）。
+    ``fetch_via_browser()`` 側のキーワード既定値に従う）。
 
     **自動切替のオーケストレーション**: Report API 経路（``use_soql=False`` かつ
     ``exceeds_row_limit=False``）のとき、
@@ -636,25 +636,25 @@ def _download(
     """
     attempt = _Attempt(entry, project, history_path, schedule_key, executed_at=current)
     # ``route`` は例外処理（``record_failure``）でも参照するため ``try`` の外に
-    # 置いて、``_fetch_with_auto_fallback`` が取り直して書き換えた値を反映させる。
+    # 置いて、``fetch_with_auto_fallback`` が取り直して書き換えた値を反映させる。
     # 初期値は「不明」を示す空文字（``_Attempt.record_failure`` で
     # ``HistoryRow.route`` の既定値に揃える）
     route = ""
     try:
         try:
-            # 「取得 → 保存」を順に呼ぶ。 ``_save()`` が ``EmptyReportError`` を
-            # 投げるケース（ 0 件 + ``allow_empty=False`` ）のため、 ``_fetch_with_auto_fallback``
-            # までと ``_save()`` は別々に呼ぶ。 そうすると ``_save()`` が例外を
-            # 投げても ``route`` には ``_fetch_with_auto_fallback()`` が確定した
+            # 「取得 → 保存」を順に呼ぶ。 ``save_report()`` が ``EmptyReportError`` を
+            # 投げるケース（ 0 件 + ``allow_empty=False`` ）のため、 ``fetch_with_auto_fallback``
+            # までと ``save_report()`` は別々に呼ぶ。 そうすると ``save_report()`` が例外を
+            # 投げても ``route`` には ``fetch_with_auto_fallback()`` が確定した
             # 値が入っており、 0 行の自動切替判定で正しく使える。
-            _log_fetch_start(entry, _planned_route(entry), progress)
-            _require_folder(entry)
-            route, table = _fetch_with_auto_fallback(
+            _log_fetch_start(entry, planned_route(entry), progress)
+            require_folder(entry)
+            route, table = fetch_with_auto_fallback(
                 entry,
                 filters=filters,
                 browser_sessions=browser_sessions,
             )
-            path = _save(entry, table, schedule_run_time=schedule_run_time, current=current)
+            path = save_report(entry, table, schedule_run_time=schedule_run_time, current=current)
         except EmptyReportError as exc:
             # 0 行 + ``allow_empty=False`` の「自動切替」が走る可能性がある唯一の場所。
             # ブラウザに切り替えて 0 行以外が取れればクリア、 取れなければ
@@ -684,7 +684,7 @@ def _download(
         # 0 件取り直しのブラウザ失敗は ``except EmptyReportError`` 内で ``raise`` される。
         # ``except`` 内で ``raise`` した例外は同じ ``try`` の別の ``except`` には飛ばず
         # 外側に素通りするため（Python 仕様）、 外側の段で受けて ``record_failure`` /
-        # 再 ``raise`` を行う。 ``_fetch_with_auto_fallback()`` が ``2000件超`` で
+        # 再 ``raise`` を行う。 ``fetch_with_auto_fallback()`` が ``2000件超`` で
         # 投げた ``BrowserFallbackFailedError`` もここで受けて ``route`` を揃える
         if exc.route and route != exc.route:
             route = exc.route
@@ -712,7 +712,7 @@ def _try_empty_report_browser_fallback(
     ないときは ``None`` を返し、 呼び出し元 ``_download()`` が
     ``EmptyReportError`` をそのまま失敗として扱う。
 
-    ブラウザ取得自体が失敗した場合（ ``_fetch_via_browser`` が例外）は
+    ブラウザ取得自体が失敗した場合（ ``fetch_via_browser`` が例外）は
     ``BrowserFallbackFailedError`` を投げる — 0 件取り直しのフォールバック失敗を
     2000 件超の取り直し失敗と同じ型で表現するため（ ``_failure_row()`` で
     「Salesforce」区分に入る）。
@@ -722,7 +722,7 @@ def _try_empty_report_browser_fallback(
         and not entry.allow_empty
         and filters is None
         and browser_sessions is not None
-        and _is_api_path(entry)
+        and is_api_path(entry)
     ):
         return None
 
@@ -733,7 +733,7 @@ def _try_empty_report_browser_fallback(
         entry.summary,
     )
     try:
-        browser_table = _fetch_via_browser(entry, browser_sessions=browser_sessions)
+        browser_table = fetch_via_browser(entry, browser_sessions=browser_sessions)
     except Exception as browser_exc:
         # 0 件取り直しのブラウザ取得自体が失敗 → 自動切替は成功しなかった扱いとし、
         # 2000 件超の取り直し失敗と同じ ``BrowserFallbackFailedError`` で表現する
@@ -764,7 +764,7 @@ def _try_empty_report_browser_fallback(
     # 出した WARNING
     # （ "Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます" ）
     # が出ているので、 ここでは ``_log_fetch_start()`` を再度呼ばない（重複させない）。
-    path = _save(
+    path = save_report(
         entry,
         browser_table,
         schedule_run_time=schedule_run_time,

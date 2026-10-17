@@ -25,7 +25,7 @@ from src.exceptions import ColumnNamesCSVFormatError
 from src.soql_reports import column_names as column_names_module
 from src.soql_reports.base import SoqlReport
 from src.soql_reports.column_names import extract_main_object, load_column_names_for
-from src.soql_reports.runner import _apply_column_names
+from src.soql_reports.runner import apply_column_names
 
 # テストで使う ``列名の対応.csv`` のヘッダ順。 ``column_names._REQUIRED_COLUMNS``
 # ＋「備考」「更新日」。 人が読む列は ``soql-collector`` との取り決めで
@@ -358,22 +358,22 @@ class _ColumnNamesPartialReport(SoqlReport):
 
 
 class TestApplyColumnNamesExtra:
-    """``runner._apply_column_names()`` の ``extra`` 引数の挙動確認。"""
+    """``runner.apply_column_names()`` の ``extra`` 引数の挙動確認。"""
 
     def test_extra_overrides_column_names(self):
         """``extra`` と ``COLUMN_NAMES`` で同じキーが衝突すると、 ``COLUMN_NAMES``
-        （手書き）が勝つ。 ``_apply_column_names`` のマージ順 ``{**extra,
+        （手書き）が勝つ。 ``apply_column_names`` のマージ順 ``{**extra,
         **COLUMN_NAMES}`` に依存している。
         """
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
-        result = _apply_column_names(_ColumnNamesManualReport, table, extra={"Name": "氏名"})
+        result = apply_column_names(_ColumnNamesManualReport, table, extra={"Name": "氏名"})
         assert result.columns == ["Id", "名前"]  # 手書きが優先
         assert result.to_rows() == [{"Id": "1", "名前": "x"}]
 
     def test_extra_alone_works_when_column_names_empty(self):
         """``extra`` 単独（ ``COLUMN_NAMES`` が空）でも動く。"""
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
-        result = _apply_column_names(_ColumnNamesEmptyReport, table, extra={"Name": "名前"})
+        result = apply_column_names(_ColumnNamesEmptyReport, table, extra={"Name": "名前"})
         assert result.columns == ["Id", "名前"]
         assert result.to_rows() == [{"Id": "1", "名前": "x"}]
 
@@ -382,7 +382,7 @@ class TestApplyColumnNamesExtra:
         # ``_ColumnNamesPartialReport`` の ``COLUMN_NAMES`` は ``Name`` のみ、
         # ``extra`` で ``Amount`` を渡す → 両方が反映される
         table = Table(["Id", "Name", "Amount"], [{"Id": "1", "Name": "x", "Amount": "100"}])
-        result = _apply_column_names(
+        result = apply_column_names(
             _ColumnNamesPartialReport,
             table,
             extra={"Amount": "金額"},
@@ -394,7 +394,7 @@ class TestApplyColumnNamesExtra:
         """``extra=None`` は ``{}`` と同じく動く（後方互換）。"""
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
         # ``_ColumnNamesManualReport`` の ``COLUMN_NAMES = {"Name": "名前"}`` が効く
-        result = _apply_column_names(_ColumnNamesManualReport, table, extra=None)
+        result = apply_column_names(_ColumnNamesManualReport, table, extra=None)
         assert result.columns == ["Id", "名前"]
 
 

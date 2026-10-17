@@ -906,7 +906,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 レポートの元々の見出し（`金額`、`取引先名`）で出したい場合は、
 `SoqlReport.COLUMN_NAMES` に **API名→表示名** の対応を書く。
 **貼り付け元は soql-collector の対応表**。
-`service._save()` が SOQL 経由のときだけ保存の直前にこの表を `Table.select()` に
+`service.save_report()` が SOQL 経由のときだけ保存の直前にこの表を `Table.select()` に
 通して列名を差し替える（Report API 経由・ブラウザ経由では適用しない）。
 列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
 （`SELECT` を後から変えても対応表を貼り直さずに済む）。
@@ -922,7 +922,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 オブジェクト API 名が入る）。 同じ列はどのレポートでも同じ表示名になるので、
 **レポートをまたいで管理表を作る必要が無い**。
 
-`service._save()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
+`service.save_report()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
 を主オブジェクトとして取り出し、 `column_names.load_column_names_for(main_object)`
 で `{SOQL列名: 表示名}` を引いて手書きの `COLUMN_NAMES` とマージする
 （手書き優先）。主オブジェクト名の比較は大文字小文字を区別しない
@@ -996,7 +996,7 @@ SOQL の `len(table)` と比べる。
 シグナルとして使う。
 
 比較のログ・例外メッセージに SOQL 本文や行の値は出ない（件数だけ）。
-詳細は `src/service/soql.py` の `_fetch_via_soql()` / `_verify_soql_count()` /
+詳細は `src/service/soql.py` の `fetch_via_soql()` / `_verify_soql_count()` /
 `SoqlCountMismatchError` の docstring を参照。
 
 ### 加工 transform()（2026-10 改定）
@@ -1006,13 +1006,13 @@ SOQL で取った結果は `SoqlReport.transform()` を通って保存される�
 Python で加工して代わりにする）に使う。 サブクラスで上書きしない限り、
 `transform()` は入力をそのまま返す（=既存の動きと同じ）。
 
-呼ばれる順番は次のとおり（`_fetch_via_soql()` 内）:
+呼ばれる順番は次のとおり（`fetch_via_soql()` 内）:
 
 1. `bulk_query()` で **生の Table** を取得
 2. 件数の比較（`CHECK_COUNT=True` のとき） — **加工前**の生の結果に対して
    行う（レポートの総件数と比べられるのは加工前の件数のため）
 3. `transform()` を呼ぶ — **加工前の** Table を渡す
-4. 返ってきた Table を `_save()` で保存（このあと `COLUMN_NAMES` /
+4. 返ってきた Table を `save_report()` で保存（このあと `COLUMN_NAMES` /
    `列名の対応.csv` での見出しの差し替えが走る）
 
 **加工のミスは当該レポートだけの失敗になる。** `transform()` の中で起きた
@@ -1054,7 +1054,7 @@ class OpportunityStageSummary(SoqlReport):
 
 soql-collector が下書きを出し直すとき、補えなかった部分がある SOQL には
 1 行目に **`【未完成】`** の印が付く（前後の空白は無視して判定）。
-そのままでは実行できないので、 `_fetch_via_soql()` が `bulk_query()` を呼ぶ
+そのままでは実行できないので、 `fetch_via_soql()` が `bulk_query()` を呼ぶ
 **前**に `SoqlIncompleteError` で止める（`DownloaderError` 系なので
 履歴に失敗 1 行が残り、次のレポートの取得は続く）。 Salesforce には
 問い合わせない（`bulk_query()` が呼ばれない）。

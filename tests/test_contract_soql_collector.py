@@ -2,7 +2,7 @@
 
 ``tests/contract/列名の対応.contract.csv`` （soql-collector が出す
 ``列名の対応.csv`` と同じ見本）を使って、 ``src.soql_reports.column_names.load_column_names_for()``
-と ``src.service._save()`` が **soql-collector 側の出力と一致して動くこと**を
+と ``src.service.save_report()`` が **soql-collector 側の出力と一致して動くこと**を
 固定する。 soql-collector 側の ``tests/contract/列名の対応.contract.csv`` と
 バイト単位で同じファイルをこのリポジトリに置き、 両者が食い違っていないかを
 突き合わせる。
@@ -13,7 +13,7 @@
 
 ``tests/contract/未完成のSOQL.contract.txt`` は soql-collector が SOQL の
 下書きを出し直すときに 1 行目に付ける ``【未完成】`` の印を含む見本。
-``src.service._fetch_via_soql()`` がこの印を検知して ``bulk_query()``
+``src.service.fetch_via_soql()`` がこの印を検知して ``bulk_query()``
 の **前** に ``SoqlIncompleteError`` で止めることを確かめる。 soql-collector
 側にも同じファイルを置き、 両リポジトリで同じ見本を参照する。
 """
@@ -32,8 +32,8 @@ from comken.toolbox.csv import CSV
 
 from src import paths as paths_module
 from src.exceptions import SoqlIncompleteError
-from src.service.save import _save
-from src.service.soql import _fetch_via_soql
+from src.service.save import save_report
+from src.service.soql import fetch_via_soql
 from src.sheets.master import ReportEntry
 from src.soql_reports import _registry
 from src.soql_reports import column_names as column_names_module
@@ -111,7 +111,7 @@ class TestContractSampleLoad:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# サービス層 ``_save()`` でサンプル CSV を使い、 保存 CSV の見出しが置き換わるか
+# サービス層 ``save_report()`` でサンプル CSV を使い、 保存 CSV の見出しが置き換わるか
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -157,7 +157,7 @@ def _patched_output_path(monkeypatch, folder: Path) -> None:
 
 @pytest.fixture
 def _output_folder(tmp_path: Path, monkeypatch) -> Path:
-    """``_save()`` の出力先を ``tmp_path`` 配下へ向ける。"""
+    """``save_report()`` の出力先を ``tmp_path`` 配下へ向ける。"""
     folder = tmp_path / "out"
     folder.mkdir()
     _patched_output_path(monkeypatch, folder)
@@ -165,10 +165,10 @@ def _output_folder(tmp_path: Path, monkeypatch) -> Path:
 
 
 class TestContractSampleSave:
-    """``_save()`` の保存 CSV の見出しがサンプル CSV の表示名に置き換わる検証。
+    """``save_report()`` の保存 CSV の見出しがサンプル CSV の表示名に置き換わる検証。
 
     既存の ``tests/test_service_soql_fetch.py::TestSaveAppliesFileColumnNames``
-    と同じやり方（ ``COLUMN_NAMES_CSV_PATH`` を差し替えて ``_save()`` を呼ぶ）。
+    と同じやり方（ ``COLUMN_NAMES_CSV_PATH`` を差し替えて ``save_report()`` を呼ぶ）。
     ここでは **契約の見本ファイルそのもの**を使って soql-collector の出力と
     一致しているかを確かめる。
     """
@@ -180,7 +180,7 @@ class TestContractSampleSave:
         _column_csv_path_from_sample,
     ):
         """サンプルを ``COLUMN_NAMES_CSV_PATH`` に使い、 SOQL の結果 ``Id, Name,
-        Amount, Account.Name`` を ``_save()`` に通すと、 保存 CSV の見出しが
+        Amount, Account.Name`` を ``save_report()`` に通すと、 保存 CSV の見出しが
         ``Id, 商談名, 金額, 取引先名`` になる（ ``Opportunity`` 行だけが残る）。"""
         entry = ReportEntry(
             key=_ContractSampleReport.KEY,
@@ -204,7 +204,7 @@ class TestContractSampleSave:
             ],
         )
 
-        saved = _save(entry, table)
+        saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -271,13 +271,13 @@ class TestContractSamplesMatchAcrossRepos:
 # ─────────────────────────────────────────────────────────────────────
 # 未完成の SOQL（ ``tests/contract/未完成のSOQL.contract.txt`` ）
 # soql-collector が下書きを出し直すときに 1 行目に付ける ``【未完成】`` の印
-# を含む見本。 ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止める
+# を含む見本。 ``fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止める
 # ことを検証する。
 # ─────────────────────────────────────────────────────────────────────
 
 
 # サンプル TXT の絶対パス。 テストはこのファイルから SOQL テキストを読み、
-# ``SoqlReport.soql()`` として直接 ``_fetch_via_soql()`` に渡す。
+# ``SoqlReport.soql()`` として直接 ``fetch_via_soql()`` に渡す。
 CONTRACT_INCOMPLETE_SOQL_PATH = (
     Path(__file__).resolve().parent / "contract" / "未完成のSOQL.contract.txt"
 )
@@ -301,7 +301,7 @@ def _soql_collector_incomplete_path() -> Path | None:
 
 class TestContractIncompleteSoql:
     """``tests/contract/未完成のSOQL.contract.txt`` を使って
-    ``_fetch_via_soql()`` が印のある SOQL を実行前に止めることを確かめる。
+    ``fetch_via_soql()`` が印のある SOQL を実行前に止めることを確かめる。
     """
 
     def test_first_line_is_incomplete_marker(self):
@@ -311,7 +311,7 @@ class TestContractIncompleteSoql:
         assert first_line.startswith("【未完成】")
 
     def test_incomplete_soql_stops_before_bulk_query(self):
-        """``_fetch_via_soql()`` は ``bulk_query()`` を呼ぶ前に ``SoqlIncompleteError``
+        """``fetch_via_soql()`` は ``bulk_query()`` を呼ぶ前に ``SoqlIncompleteError``
         で止める。 Salesforce には問い合わせない（= ``bulk_query()`` が呼ばれない）。"""
         soql_text = CONTRACT_INCOMPLETE_SOQL_PATH.read_text(encoding="utf-8")
 
@@ -340,7 +340,7 @@ class TestContractIncompleteSoql:
             patch("src.service.soql.site_for") as site_for,
         ):
             with pytest.raises(SoqlIncompleteError) as caught:
-                _fetch_via_soql(contract_entry)
+                fetch_via_soql(contract_entry)
 
         # ``site_for()`` 自体が呼ばれていない（=Salesforce に接続していない）
         site_for.assert_not_called()

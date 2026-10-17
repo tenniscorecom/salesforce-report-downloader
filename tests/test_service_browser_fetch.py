@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.service.browser import _fetch_via_browser
+from src.service.browser import fetch_via_browser
 from src.service.routes import _fetch
 from src.sheets.master import ReportEntry
 
@@ -52,12 +52,12 @@ class TestFetchRoutesToBrowser:
     def test_uses_browser_when_exceeds_row_limit(self):
         table = MagicMock()
         with patch(
-            "src.service.routes._fetch_via_browser",
+            "src.service.routes.fetch_via_browser",
             return_value=table,
         ) as fetch_via_browser:
             result = _fetch(EXCEEDS_ENTRY)
 
-        # ``_fetch_via_browser()`` には ``browser_sessions=None`` が渡る
+        # ``fetch_via_browser()`` には ``browser_sessions=None`` が渡る
         # （``_fetch()`` も ``_download_scheduled_locked()`` も渡さない経路なので、
         # 従来通り「その場で開いて閉じる」動きになる）
         fetch_via_browser.assert_called_once_with(EXCEEDS_ENTRY, browser_sessions=None)
@@ -66,7 +66,7 @@ class TestFetchRoutesToBrowser:
     def test_uses_api_when_exceeds_row_limit_is_false(self):
         with (
             patch("src.service.api.site_for") as site_for,
-            patch("src.service.routes._fetch_via_browser") as fetch_via_browser,
+            patch("src.service.routes.fetch_via_browser") as fetch_via_browser,
         ):
             _fetch(ENTRY)
 
@@ -79,12 +79,12 @@ class TestFetchRoutesToBrowser:
 
 
 class TestFetchViaBrowser:
-    """_fetch_via_browser() — ブラウザ経由で取得し、_fetch() と同じ Table を返す。"""
+    """fetch_via_browser() — ブラウザ経由で取得し、_fetch() と同じ Table を返す。"""
 
     def test_returns_table_parsed_from_exported_csv(self):
         site_class, _site_instance = _fake_browser_site()
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
-            table = _fetch_via_browser(ENTRY)
+            table = fetch_via_browser(ENTRY)
 
         assert table.columns == ["名前", "金額"]
         assert list(table) == [{"名前": "山田", "金額": "100"}]
@@ -92,7 +92,7 @@ class TestFetchViaBrowser:
     def test_calls_login_with_credentials_before_export(self):
         site_class, site_instance = _fake_browser_site()
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
-            _fetch_via_browser(ENTRY)
+            fetch_via_browser(ENTRY)
 
         site_instance.login_with_credentials.assert_called_once()
 
@@ -103,7 +103,7 @@ class TestFetchViaBrowser:
         """
         site_class, site_instance = _fake_browser_site()
         with patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=site_class):
-            _fetch_via_browser(ENTRY)
+            fetch_via_browser(ENTRY)
 
         # 引数なしで 1 回だけ
         site_instance.login_with_credentials.assert_called_once_with()
@@ -143,9 +143,9 @@ class TestBrowserSessionReuse:
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
         ):
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
 
         # サイトクラスは 1 回だけ開かれる
         assert site_class.call_count == 1
@@ -180,9 +180,9 @@ class TestBrowserSessionReuse:
             "comken.toolbox.browser.sites.salesforce.site_for",
             side_effect=_site_for,
         ):
-            _fetch_via_browser(entry_a, browser_sessions=browser_sessions)
-            _fetch_via_browser(entry_b, browser_sessions=browser_sessions)
-            _fetch_via_browser(entry_a, browser_sessions=browser_sessions)
+            fetch_via_browser(entry_a, browser_sessions=browser_sessions)
+            fetch_via_browser(entry_b, browser_sessions=browser_sessions)
+            fetch_via_browser(entry_a, browser_sessions=browser_sessions)
 
         # 組織ごとに 1 回ずつ（合計 2 回）開かれる
         assert site_class_a.call_count == 1
@@ -221,13 +221,13 @@ class TestBrowserSessionReuse:
             return_value=site_class,
         ):
             with pytest.raises(RuntimeError, match="1 件目は失敗"):
-                _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+                fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
             # 失敗時に ``__exit__`` が 1 回呼ばれている（壊れたブラウザを閉じる）
             assert site_instance.__exit__.call_count == 1
             # dict からは外されている
             assert browser_sessions == {}
             # 2 件目: 新しいブラウザが開かれる
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
 
         # サイトクラスは 2 回呼ばれる（1 件目で開いて閉じた後、2 件目で開き直し）
         assert site_class.call_count == 2
@@ -253,7 +253,7 @@ class TestBrowserSessionReuse:
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
         ):
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
             assert site_instance.__enter__.call_count == 1
 
             # 想定外例外を投げる本体
@@ -277,8 +277,8 @@ class TestBrowserSessionReuse:
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
         ):
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
 
             # 正常終了を模擬: ``finally`` 節を走らせる
             for sf in list(browser_sessions.values()):
@@ -312,14 +312,14 @@ class TestBrowserSessionReuse:
             return_value=site_class,
         ):
             with pytest.raises(RuntimeError, match="1 件目の login_with_credentials は失敗"):
-                _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+                fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
             # 失敗時に ``__exit__`` が 1 回呼ばれている（壊れたブラウザを閉じる）
             assert site_instance.__exit__.call_count == 1
             # dict からは外されている
             assert browser_sessions == {}
             # 2 件目: 新しいブラウザが開かれる
             # （``login_with_credentials`` はもう例外を出さない）
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
 
         # サイトクラスは 2 回（1 件目で開いて閉じた後、2 件目で開き直し）
         assert site_class.call_count == 2
@@ -357,14 +357,14 @@ class TestBrowserSessionReuse:
         ):
             # 1 件目: ``LoginFailedError`` がそのまま呼び出し側へ抜ける
             with pytest.raises(LoginFailedError, match="ログインが確認できませんでした"):
-                _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+                fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
             # 失敗時に ``__exit__`` が 1 回呼ばれている（壊れたブラウザを閉じる）
             assert site_instance.__exit__.call_count == 1
             # dict からは外されている
             assert browser_sessions == {}
             # 2 件目: 新しいブラウザが開かれる
             # （``login_with_credentials`` はもう例外を出さない）
-            _fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
+            fetch_via_browser(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
 
         # サイトクラスは 2 回（1 件目で開いて閉じた後、2 件目で開き直し）
         assert site_class.call_count == 2
@@ -394,12 +394,12 @@ class TestBrowserSessionReuse:
         monkeypatch.setattr(attempt_module, "load_master", lambda path: {})
         monkeypatch.setattr(attempt_module, "load_schedule", lambda path: [])
         monkeypatch.setattr(attempt_module, "_validate_filters_by_report", lambda *a, **kw: None)
-        monkeypatch.setattr(scheduler_module, "_warn_shared_reports", lambda *a, **kw: None)
+        monkeypatch.setattr(scheduler_module, "warn_shared_reports", lambda *a, **kw: None)
         # ``attempt._download_scheduled_locked()`` 内で参照される名前は
         # ``attempt`` 側の束縛なので ``scheduler`` ではなく ``attempt`` を差し替える
         monkeypatch.setattr(
             attempt_module,
-            "_select_targets",
+            "select_targets",
             lambda *a, **kw: (
                 [(EXCEEDS_ENTRY, "", None)],
                 [],
@@ -437,7 +437,7 @@ class TestBrowserSessionReuse:
 class TestBrowserSessionReuseBrokenByRemoval:
     """「実装を壊して落ちる」検知テスト。
 
-    正しい実装（``_fetch_via_browser`` で dict を使い回し、失敗時に ``pop`` して
+    正しい実装（``fetch_via_browser`` で dict を使い回し、失敗時に ``pop`` して
     ``__exit__`` を呼ぶ）にモンキーパッチで「壊れた実装」を差し込み、その特徴を
     直接 assert する。これにより「``test_same_org_reuses_one_browser`` が落ちる」
     「``test_browser_exception_closes_and_reopens_for_next_report`` が落ちる」
@@ -467,7 +467,7 @@ class TestBrowserSessionReuseBrokenByRemoval:
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
         ):
-            monkeypatch.setattr(browser_module, "_fetch_via_browser", _no_reuse)
+            monkeypatch.setattr(browser_module, "fetch_via_browser", _no_reuse)
             for _ in range(3):
                 _no_reuse(EXCEEDS_ENTRY)
 
@@ -536,7 +536,7 @@ class TestBrowserSessionReuseBrokenByRemoval:
             "comken.toolbox.browser.sites.salesforce.site_for",
             return_value=site_class,
         ):
-            monkeypatch.setattr(browser_module, "_fetch_via_browser", _no_evict)
+            monkeypatch.setattr(browser_module, "fetch_via_browser", _no_evict)
             with pytest.raises(RuntimeError, match="boom"):
                 _no_evict(EXCEEDS_ENTRY, browser_sessions=browser_sessions)
             # 壊れた実装: dict には 1 件目のインスタンスが残ったまま

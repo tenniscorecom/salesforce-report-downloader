@@ -2,10 +2,10 @@ r"""src/service/soql.py — SOQL 経由の取得と件数検証。
 
 ``download_scheduled()`` の 1 件分で、管理表の「SOQL」列が「○」のときに呼ばれる。
 SOQL の本文は ``soql_report_for(entry.key)`` で引いた ``SoqlReport`` が出す —
-``_fetch_via_soql()`` はそれを ``SalesforceBase.bulk_query()`` に渡す。
+``fetch_via_soql()`` はそれを ``SalesforceBase.bulk_query()`` に渡す。
 
     from src.service.soql import (
-        _fetch_via_soql,
+        fetch_via_soql,
         _verify_soql_count,
         _fetch_report_total_count,
         _extract_row_count_from_report_payload,
@@ -46,7 +46,7 @@ logger = logging.getLogger("src.service")
 INCOMPLETE_SOQL_MARKER = "【未完成】"
 
 
-def _fetch_via_soql(entry: ReportEntry) -> Table:
+def fetch_via_soql(entry: ReportEntry) -> Table:
     """SOQL経由で entry を取得し、`_fetch()` と同じ Table を返す。
 
     ``entry.key`` と同じ ``KEY`` を持つ ``SoqlReport`` を comken の
@@ -144,7 +144,7 @@ def _fetch_via_soql(entry: ReportEntry) -> Table:
 def _verify_soql_count(entry: ReportEntry, table: Table, salesforce: Any) -> None:
     """SOQL の件数と、レポート API の総件数が合うか検証する。
 
-    接続は呼び出し元（ ``_fetch_via_soql()`` ）から渡された ``salesforce`` を
+    接続は呼び出し元（ ``fetch_via_soql()`` ）から渡された ``salesforce`` を
     **そのまま使う** ── ここで ``site_for()`` をもう一度呼ぶとログインが
     2 回走るため、 接続は外側からもらう（同じ ``with site() as salesforce:`` の
     うちに呼び出される前提）。

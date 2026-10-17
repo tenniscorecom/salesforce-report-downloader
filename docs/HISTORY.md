@@ -181,3 +181,14 @@
 - 理由: [出力パスの組み立て 1 本化](#出力パスの組み立て-1-本化) と同じ。
   フォルダ階層の組み立てを ``src.paths.output_path()`` 側に集約したので、
   ``report_folder()`` は「ベースパスを引く」だけの役割に絞った。
+
+## `_` は「そのファイルの中だけで使う」印にそろえた
+
+- 以前の状態: `service.py` を `service/` に分けたとき、別ファイルから使う関数（`_fetch_via_api` /
+  `_save` / `_select_targets` など 11 個）に `_` が付いたまま残り、別ファイルから `_` 付きの名前を
+  import していた。
+- いまの決まり: `_` は定義したファイルの中だけで使う印。別ファイルから使う内部の関数には付けない
+  （comken の `docs/CONVENTIONS_PYTHON.md` の命名規則と同じ）。
+- `_save` は `save_report` にした。モジュール名が `save.py` で、openpyxl の `.save()` とも紛らわしく、
+  `save` のままだと `save.save` になるため。
+- `tests/test_private_naming.py` が、別ファイルからの `_` 付きの使用を検出する。

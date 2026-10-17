@@ -1,6 +1,6 @@
 """Report API 経路での自動切替（ブラウザ経由）のテスト。
 
-2026-10 に ``src/service.py::_fetch_with_auto_fallback()`` で追加された挙動:
+2026-10 に ``src/service.py::fetch_with_auto_fallback()`` で追加された挙動:
 
 - Report API が ``SalesforceReportTruncatedError`` を投げたら、自動でブラウザ経由に
   取り直す（``route=ROUTE_BROWSER_FALLBACK_TRUNCATED``）
@@ -688,7 +688,7 @@ class TestBrowserFallbackIncomplete:
 
     境界:
     - 2000 行ちょうども「Report API の上限以下」なので失敗
-      （``_fetch_with_auto_fallback()`` の ``<= _REPORT_API_ROW_LIMIT`` の判定で
+      （``fetch_with_auto_fallback()`` の ``<= _REPORT_API_ROW_LIMIT`` の判定で
       カバーされる）
     - 2001 行は成功
 

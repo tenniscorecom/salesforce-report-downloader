@@ -1,16 +1,16 @@
 r"""src/service/browser.py — ブラウザ経由の取得。
 
 ``download_scheduled()`` の 1 件分で、管理表の「2000件超」列が真のときに呼ばれる。
-または ``_fetch_with_auto_fallback()`` が ``SalesforceReportTruncatedError`` /
+または ``fetch_with_auto_fallback()`` が ``SalesforceReportTruncatedError`` /
 ``EmptyReportError`` を受けて自動でブラウザに切り替えるときに使われる。
 
 `selenium` 依存を、実際にブラウザ経由のレポートを使うときだけ読み込むよう、
 ここで初めて import する（管理表で誰も「2000件超」を「○」にしていない
 運用では `src.service` を import しても `selenium` は要らない）。
 
-    from src.service.browser import _fetch_via_browser
+    from src.service.browser import fetch_via_browser
 
-``_fetch_via_browser()`` の本体・使い回しブラウザ・``login_with_credentials()``
+``fetch_via_browser()`` の本体・使い回しブラウザ・``login_with_credentials()``
 の動きは `src.service` パッケージに集約する前のものから変更していない。
 """
 
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("src.service")
 
 
-def _fetch_via_browser(
+def fetch_via_browser(
     entry: ReportEntry,
     *,
     browser_sessions: dict[type[SalesforceReportBrowser], SalesforceReportBrowser] | None = None,

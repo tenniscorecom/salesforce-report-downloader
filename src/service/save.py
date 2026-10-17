@@ -1,13 +1,13 @@
 r"""src/service/save.py — 保存とフォルダ検査。
 
 `download_scheduled()` の 1 件単位で「フォルダ検査 → 取得 → 保存」を担当する
-`_save()` / `_write_csv()` / `_require_folder()` を置く。下位モジュール
+`save_report()` / `_write_csv()` / `require_folder()` を置く。下位モジュール
 （`api.py` / `browser.py` / `soql.py`）には依存しない（`src.paths`
 と `src.exceptions` だけ）。
 
-    from src.service.save import _save, _write_csv, _require_folder
+    from src.service.save import save_report, _write_csv, require_folder
 
-`_save()` は ``~`` 一時ファイルに書いてから ``os.rename`` / ``os.replace``
+`save_report()` は ``~`` 一時ファイルに書いてから ``os.rename`` / ``os.replace``
 で最終パスへ移す（``paths.move_into_place()`` が上書きしない保存ヘルパー）。
 ``_write_csv()`` は ``atomic_write()`` を使った一時ファイル書き込み。
 """
@@ -33,12 +33,12 @@ from src.exceptions import (
 from src.sheets.master import ReportEntry
 from src.soql_reports import soql_report_for
 from src.soql_reports.column_names import extract_main_object, load_column_names_for
-from src.soql_reports.runner import _apply_column_names
+from src.soql_reports.runner import apply_column_names
 
 logger = logging.getLogger("src.service")
 
 
-def _require_folder(entry: ReportEntry) -> None:
+def require_folder(entry: ReportEntry) -> None:
     """保存先フォルダが無ければ `ReportFolderNotFoundError`。**勝手に作らない。**
 
     作らずに失敗させる。無いのは書き間違いのことが多く、勝手に作ると
@@ -46,7 +46,7 @@ def _require_folder(entry: ReportEntry) -> None:
 
     検査するのは「**ベースフォルダ**」のみ。出力パスは「ベース / 概要」の
     2 階層になったが、ここで作るかを分けるのはベースの有無だけで十分
-    （概要のフォルダは ``_save()`` が ``mkdir(exist_ok=True)`` で自動作成する。
+    （概要のフォルダは ``save_report()`` が ``mkdir(exist_ok=True)`` で自動作成する。
     ここで概要の有無まで検査すると、保存のたびに人が概要フォルダを掘る必要が
     出て、運用上の意味がない）。
 
@@ -61,7 +61,7 @@ def _require_folder(entry: ReportEntry) -> None:
         raise ReportFolderNotFoundError(entry.key, base)
 
 
-def _save(
+def save_report(
     entry: ReportEntry,
     table: Table,
     *,
@@ -106,10 +106,10 @@ def _save(
     で ``HHMM`` 単位で毎回置き換える（古いファイルの内容は消える）。
 
     **概要のフォルダは保存前にここで ``mkdir`` する。** ベースフォルダは
-    ``_download()`` 側の ``_require_folder()`` で先に検査済みなので、
+    ``_download()`` 側の ``require_folder()`` で先に検査済みなので、
     ``parents=False`` で「無ければ失敗する」をそのまま流用できる（ベースが既に
-    無い場合はここで ``FileNotFoundError`` が出る。先に ``_require_folder()`` で
-    ``ReportFolderNotFoundError`` に変換する流れが壊れないよう、 ``_save()`` 単体で
+    無い場合はここで ``FileNotFoundError`` が出る。先に ``require_folder()`` で
+    ``ReportFolderNotFoundError`` に変換する流れが壊れないよう、 ``save_report()`` 単体で
     動くテスト経路のために ``OSError`` のまま伝播させる）。**dry-run 中は
     ``mkdir`` もしない**（``comken.runtime.dry_run`` のブロック内では保存もしない設計に
     沿って、フォルダだけ作ると「書き込まないのにフォルダだけが残る」事故を防ぐ）。
@@ -149,7 +149,7 @@ def _save(
         if not table and not entry.allow_empty:
             raise EmptyReportError(entry.key, entry.summary, entry.url)
         # **dry-run は副作用を出さない契約。** ファイルも一時ファイルも作らない。
-        # ``_save()`` の戻り値パスは「保存しようとしたパス」と同じ ``base`` を返す
+        # ``save_report()`` の戻り値パスは「保存しようとしたパス」と同じ ``base`` を返す
         # （連番探索は行わない。dry-run は競合判定まで含めて副作用を出さない運用）
         if is_dry_run():
             return base
@@ -170,10 +170,10 @@ def _save(
 def _prepare_output_directory(base: Path) -> None:
     """概要フォルダを保存前に ``mkdir`` する。dry-run 中は何もしない。
 
-    ベースフォルダは ``_require_folder()`` で先に検査済みなので ``parents=False``
+    ベースフォルダは ``require_folder()`` で先に検査済みなので ``parents=False``
     で「無ければ失敗する」をそのまま流用できる（ベースが既に無い場合はここで
-    ``FileNotFoundError`` が出る。先に ``_require_folder()`` で
-    ``ReportFolderNotFoundError`` に変換する流れが壊れないよう、 ``_save()`` 単体で
+    ``FileNotFoundError`` が出る。先に ``require_folder()`` で
+    ``ReportFolderNotFoundError`` に変換する流れが壊れないよう、 ``save_report()`` 単体で
     動くテスト経路のために ``OSError`` のまま伝播させる）。
     """
     if not is_dry_run():
@@ -192,7 +192,7 @@ def _apply_soql_columns_if_needed(entry: ReportEntry, table: Table) -> Table:
     経緯は ``docs/HISTORY.md`` 参照。
 
     見出しが衝突すると ``SoqlColumnNameConflictError`` が送出されるが、
-    その場合は ``_save()`` の ``except`` へ流れるので CSV は書かれない。
+    その場合は ``save_report()`` の ``except`` へ流れるので CSV は書かれない。
     Report API / ブラウザ経由は ``SoqlReport`` を見ないので、 そのまま
     ``table`` を返す。
     """
@@ -201,12 +201,12 @@ def _apply_soql_columns_if_needed(entry: ReportEntry, table: Table) -> Table:
 
     report_cls = soql_report_for(entry.key)
     # ``table.columns`` は ``Table`` が所有する ``list`` で、 後続の
-    # ``_apply_column_names()`` は新しい Table を返すので元の list は
+    # ``apply_column_names()`` は新しい Table を返すので元の list は
     # 書き変わらない。 コピーは不要
     original_columns = table.columns
     soql_text = report_cls().soql()
     extra = _load_soql_extra_column_names(entry, report_cls, soql_text)
-    updated = _apply_column_names(report_cls, table, extra=extra)
+    updated = apply_column_names(report_cls, table, extra=extra)
     _log_column_name_replacements(entry, original_columns, report_cls, extra)
     return updated
 
@@ -322,7 +322,7 @@ def _write_csv(path: Path, table: Table) -> None:
     複数のプロジェクトが同時に呼ぶので、直接書くと**読んでいる最中のファイルが
     半端な状態**になりうる。同じフォルダ内の置き換えは一度に入れ替わる。
 
-    **注意:** ``_save()`` はこの関数を **一時ファイル**
+    **注意:** ``save_report()`` はこの関数を **一時ファイル**
     （``paths.make_temp_csv_path()`` が返した ``~`` プレフィックスのパス）に対して
     呼び、最終パスへの ``os.replace`` は行わない（``paths.move_into_place()``
     が ``os.rename`` で移す。上書きしない）。``_write_csv()`` の引数は

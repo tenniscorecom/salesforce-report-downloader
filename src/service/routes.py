@@ -3,16 +3,16 @@ r"""src/service/routes.py — 取得経路の選択と「Report API 経路の自
 ``download_scheduled()`` の 1 件単位で、管理表の「SOQL」「2000件超」列に応じて
 Report API / SOQL / ブラウザの 3 経路を選ぶ。 そこから先が `_fetch()` で、
 Report API 経路での自動切替（``SalesforceReportTruncatedError`` → ブラウザ）は
-``_fetch_with_auto_fallback()`` が担当する。
+``fetch_with_auto_fallback()`` が担当する。
 
     from src.service.routes import (
         _fetch,
-        _fetch_with_auto_fallback,
-        _is_api_path,
-        _planned_route,
+        fetch_with_auto_fallback,
+        is_api_path,
+        planned_route,
     )
 
-``_is_api_path()`` / ``_planned_route()`` は予定経路の判定用。
+``is_api_path()`` / ``planned_route()`` は予定経路の判定用。
 ``_download()`` が ``_log_fetch_start()`` の前に「予定していた経路」を出す
 ためのヘルパで、 ``_fetch()`` と同じ優先順位（SOQL > ブラウザ > API）を
 そのまま写している。
@@ -36,9 +36,9 @@ from src.exceptions import (
     BrowserFallbackFailedError,
     BrowserFallbackIncompleteError,
 )
-from src.service.api import _fetch_via_api
-from src.service.browser import _fetch_via_browser
-from src.service.soql import _fetch_via_soql
+from src.service.api import fetch_via_api
+from src.service.browser import fetch_via_browser
+from src.service.soql import fetch_via_soql
 from src.sheets.master import ReportEntry
 
 if TYPE_CHECKING:
@@ -47,16 +47,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger("src.service")
 
 # Report API の上限。2000件超で打ち切られたレポートをブラウザで取り直して、
-# この行数以下しか取れなければ全件取れていない（``_fetch_with_auto_fallback()`` で
+# この行数以下しか取れなければ全件取れていない（``fetch_with_auto_fallback()`` で
 # 判定して ``BrowserFallbackIncompleteError`` に流す） — 値は公開しないので
 # パッケージ private として保持する。
 _REPORT_API_ROW_LIMIT = 2000
 
 
-def _planned_route(entry: ReportEntry) -> str:
+def planned_route(entry: ReportEntry) -> str:
     """``_fetch()`` と同じ優先順位で「予定していた経路」を返す。
 
-    「取得開始」ログは ``_require_folder()`` の前に出すので、Salesforce へ
+    「取得開始」ログは ``require_folder()`` の前に出すので、Salesforce へ
     問い合わせる前の段階では「実際に何を使うか」は未確定。``_fetch()`` の
     分岐ロジック（``use_soql`` → SOQL / ``exceeds_row_limit`` → ブラウザ /
     どちらも偽 → API）をそのまま写して、予定していた経路の文字列だけを
@@ -70,7 +70,7 @@ def _planned_route(entry: ReportEntry) -> str:
     return ROUTE_API
 
 
-def _is_api_path(entry: ReportEntry) -> bool:
+def is_api_path(entry: ReportEntry) -> bool:
     """このレポートが「Report API」経路かどうか。
 
     SOQL 経由・ブラウザ経由（最初から）は自動切替対象外。``use_soql=False`` かつ
@@ -93,9 +93,9 @@ def _fetch(
 
     管理表の「SOQL」「2000件超」列で経路を切り替える（優先順位順）:
 
-    1. ``entry.use_soql`` が真 → SOQL経由（`_fetch_via_soql()`）
-    2. ``entry.exceeds_row_limit`` が真 → ブラウザ経由（`_fetch_via_browser()`）
-    3. どちらも偽 → 通常の Report API（``_fetch_via_api()``）
+    1. ``entry.use_soql`` が真 → SOQL経由（`fetch_via_soql()`）
+    2. ``entry.exceeds_row_limit`` が真 → ブラウザ経由（`fetch_via_browser()`）
+    3. どちらも偽 → 通常の Report API（``fetch_via_api()``）
 
     **Report API 経路での「自動切替」は `_download()` 側でオーケストレーションする。
     この関数は与えられた経路をそのまま実行するだけのシンプルな役割に留め、
@@ -109,22 +109,22 @@ def _fetch(
 
     ``browser_sessions`` は ``_download_scheduled_locked()`` で作られた
     使い回し用の dict。``None`` のときは従来通り「その場で開いて閉じる」
-    （``_fetch_via_browser()`` 側のキーワード既定値）。
+    （``fetch_via_browser()`` 側のキーワード既定値）。
     """
     if entry.use_soql:
         if filters is not None:
             raise ValueError(f"SOQL経由のレポートには実行時フィルタを指定できません: {entry.key}")
-        return _fetch_via_soql(entry)
+        return fetch_via_soql(entry)
     if entry.exceeds_row_limit:
         if filters is not None:
             raise ValueError(
                 f"ブラウザ経由のレポートには実行時フィルタを指定できません: {entry.key}"
             )
-        return _fetch_via_browser(entry, browser_sessions=browser_sessions)
-    return _fetch_via_api(entry, filters)
+        return fetch_via_browser(entry, browser_sessions=browser_sessions)
+    return fetch_via_api(entry, filters)
 
 
-def _fetch_with_auto_fallback(
+def fetch_with_auto_fallback(
     entry: ReportEntry,
     *,
     filters: list[dict] | None,
@@ -140,10 +140,10 @@ def _fetch_with_auto_fallback(
 
     Report API 経路以外（SOQL・最初からブラウザ）のときは自動切替せず、``_fetch()`` の
     戻り値をそのまま ``route=ROUTE_SOQL`` / ``route=ROUTE_BROWSER`` で返す。
-    0行+``allow_empty=False`` の自動切替は ``_download()`` 側で ``_save()`` が
+    0行+``allow_empty=False`` の自動切替は ``_download()`` 側で ``save_report()`` が
     ``EmptyReportError`` を投げた後に行う。
     """
-    if not _is_api_path(entry):
+    if not is_api_path(entry):
         # SOQL / 最初からブラウザ経由は自動切替しない
         table = _fetch(entry, filters, browser_sessions=browser_sessions)
         route = ROUTE_SOQL if entry.use_soql else ROUTE_BROWSER
@@ -170,7 +170,7 @@ def _fetch_with_auto_fallback(
             entry.summary,
         )
         try:
-            browser_table = _fetch_via_browser(entry, browser_sessions=browser_sessions)
+            browser_table = fetch_via_browser(entry, browser_sessions=browser_sessions)
         except Exception as browser_exc:
             # ブラウザ取り直し自体に失敗 → 自動切替は成功しなかった扱いとし、
             # ``BrowserFallbackFailedError`` で「ブラウザ取り直し失敗」を表現する。

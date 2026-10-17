@@ -253,7 +253,7 @@ def output_path(
     （概要のフォルダ名）の 2 階層。ファイル名は次のどちらか:
 
     - ``entry.overwrite`` が ``False``（既定）: ``{管理番号}_{YYYYMMDD}_{HHMM}.csv``
-      （毎回新しいファイル名。衝突時は呼び出し側 ``service._save()`` が連番で別名にする）
+      （毎回新しいファイル名。衝突時は呼び出し側 ``service.save_report()`` が連番で別名にする）
     - ``entry.overwrite`` が ``True``: ``{管理番号}_{HHMM}.csv``（同じ ``HHMM`` なら
       翌日に同じファイル名で上書きされる。時刻だけ。日付はファイル名に入らない）
 
@@ -265,13 +265,13 @@ def output_path(
     ので、上書きモードのときは ``schedule_run_time`` が必ず渡る。
 
     **概要のフォルダは保存時に呼び出し側が ``mkdir`` で作る**（この関数は作らない）。
-    ベースのフォルダは作らないし検査もしない（検査は ``service._require_folder`` の責務）。
+    ベースのフォルダは作らないし検査もしない（検査は ``service.require_folder`` の責務）。
 
     ``overwrite`` が ``False`` のときは常に新規ファイルとして扱う（同じパスへの上書きは
-    想定しない。衝突回避は呼び出し側 ``service._save()`` の ``move_into_place`` の責務）。
+    想定しない。衝突回避は呼び出し側 ``service.save_report()`` の ``move_into_place`` の責務）。
     ``move_into_place()`` は書き終えた一時ファイルを ``os.rename`` で移すので、
     本番の名前の空ファイルは作らない。
-    ``overwrite`` が ``True`` のときは ``HHMM`` 単位で上書きする（``service._save()``
+    ``overwrite`` が ``True`` のときは ``HHMM`` 単位で上書きする（``service.save_report()``
     が ``os.replace`` で同名ファイルを上書きする。連番は付かない）。
 
     Args:
@@ -296,7 +296,7 @@ def output_path(
     if entry.overwrite:
         # **上書きモード:** ``{管理番号}_{HHMM}.csv`` の名前で ``os.replace`` を
         # かける（=同じ ``HHMM`` なら同じパスになり、翌日の同時刻に上書きされる）。
-        # 連番は付けない。呼び出し側 ``service._save()`` が ``os.replace`` で
+        # 連番は付けない。呼び出し側 ``service.save_report()`` が ``os.replace`` で
         # 同名ファイルを上書きする。日付はファイル名に入らない
         return (
             folder
@@ -315,7 +315,7 @@ def base_folder(entry: ReportEntry) -> Path:
 
     設定シート（管理表と同じブック内）の「グループ→ベースパス」を引いて
     ``report_folder()`` に委譲する。フォルダは作らないし検査もしない
-    （存在検査は ``service._require_folder`` の責務）。
+    （存在検査は ``service.require_folder`` の責務）。
 
     ``MASTER_PATH`` は呼び出し時点のモジュール変数を参照する（テストでは
     ``monkeypatch.setattr(paths, "MASTER_PATH", ...)`` で差し替える）。

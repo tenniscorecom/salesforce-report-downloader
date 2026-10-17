@@ -1,7 +1,7 @@
-"""``SoqlReport`` の基底クラス・登録・``soql_report_for()``・``_apply_column_names()`` の検証。
+"""``SoqlReport`` の基底クラス・登録・``soql_report_for()``・``apply_column_names()`` の検証。
 
-SOQL レポートの取得・保存は管理表ルート（``src.service._save()``）に統一
-したため、 別ルート用のテストは持たない。 ``_apply_column_names()`` の単体
+SOQL レポートの取得・保存は管理表ルート（``src.service.save_report()``）に統一
+したため、 別ルート用のテストは持たない。 ``apply_column_names()`` の単体
 テストと、 ``SoqlReport`` サブクラスの登録・引き当ての挙動を確認する。
 """
 
@@ -20,7 +20,7 @@ from comken.exceptions import DownloaderError
 from src.exceptions import SoqlReportNotRegisteredError
 from src.soql_reports import _registry, soql_report_for
 from src.soql_reports.base import SoqlReport
-from src.soql_reports.runner import _apply_column_names
+from src.soql_reports.runner import apply_column_names
 
 ROWS = [{"Id": "001", "Name": "山田"}, {"Id": "002", "Name": "鈴木"}]
 
@@ -335,7 +335,7 @@ class _ColumnNamesMergeExistingReport(SoqlReport):
     """``COLUMN_NAMES`` の置き換え先が結果に元々ある列名と重なるときのテスト用。
 
     ``A`` を ``B`` に置き換える ``COLUMN_NAMES`` で、結果にも ``B`` があるケース
-    （置換後に見出し ``B`` が 2 つ並ぶ）を再現する。 ``runner._apply_column_names()``
+    （置換後に見出し ``B`` が 2 つ並ぶ）を再現する。 ``runner.apply_column_names()``
     の衝突検出は ``new_columns`` 全列を見る必要があり、元の実装は
     ``original == new`` の列を飛ばしていたためにこのケースを見逃していた。
     """
@@ -350,12 +350,12 @@ class _ColumnNamesMergeExistingReport(SoqlReport):
 
 
 class TestApplyColumnNames:
-    """``runner._apply_column_names()`` の挙動確認。"""
+    """``runner.apply_column_names()`` の挙動確認。"""
 
     def test_replaces_only_headers(self):
         """値・行順・列順は変わらず、見出しだけ置き換わる。"""
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "山田"}])
-        result = _apply_column_names(_ColumnNamesReport, table)
+        result = apply_column_names(_ColumnNamesReport, table)
         assert result.columns == ["Id", "名前"]  # Amount は COLUMN_NAMES に無いので残る
         assert result.to_rows() == [{"Id": "1", "名前": "山田"}]
 
@@ -363,7 +363,7 @@ class TestApplyColumnNames:
         """``COLUMN_NAMES`` に無い列は API 名のまま。"""
         table = Table(["Id", "Name", "Amount"], [{"Id": "1", "Name": "x", "Amount": "100"}])
         # ``_ColumnNamesReport.COLUMN_NAMES`` は ``Name`` / ``Amount`` のみ
-        result = _apply_column_names(_ColumnNamesReport, table)
+        result = apply_column_names(_ColumnNamesReport, table)
         assert result.columns == ["Id", "名前", "金額"]
         assert result.to_rows() == [{"Id": "1", "名前": "x", "金額": "100"}]
 
@@ -371,14 +371,14 @@ class TestApplyColumnNames:
         """結果に無いキーは無視される（SOQL を変えても対応表を貼り直さずに済む）。"""
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
         # ``_ColumnNamesExtraReport`` の ``Missing`` キーは結果に無いので無視
-        result = _apply_column_names(_ColumnNamesExtraReport, table)
+        result = apply_column_names(_ColumnNamesExtraReport, table)
         assert result.columns == ["Id", "名前"]
         assert result.to_rows() == [{"Id": "1", "名前": "x"}]
 
     def test_empty_column_names_returns_input_unchanged(self):
         """``COLUMN_NAMES`` が空なら入力がそのまま返る（オブジェクト同一でなくてよい）。"""
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
-        result = _apply_column_names(_ColumnNamesEmptyReport, table)
+        result = apply_column_names(_ColumnNamesEmptyReport, table)
         assert result.columns == ["Id", "Name"]
         assert result.to_rows() == [{"Id": "1", "Name": "x"}]
 
@@ -391,7 +391,7 @@ class TestApplyColumnNames:
             [{"Id": "1", "Name": "x", "Account.Name": "y"}],
         )
         with pytest.raises(SoqlColumnNameConflictError) as caught:
-            _apply_column_names(_ColumnNamesOverlapReport, table)
+            apply_column_names(_ColumnNamesOverlapReport, table)
         # ``KEY`` と、衝突した見出しと元の列名が両方出ている
         message = str(caught.value)
         assert "9012" in message
@@ -410,7 +410,7 @@ class TestApplyColumnNames:
 
         table = Table(["Id", "A", "B"], [{"Id": "1", "A": "x", "B": "y"}])
         with pytest.raises(SoqlColumnNameConflictError) as caught:
-            _apply_column_names(_ColumnNamesMergeExistingReport, table)
+            apply_column_names(_ColumnNamesMergeExistingReport, table)
         # ``KEY`` と、衝突した見出し ``B``、元の列名 ``A`` / ``B`` が両方出ている
         # （``B`` を元の列としても持つため、 ``B → B`` の素通りも衝突とみなす）
         message = str(caught.value)

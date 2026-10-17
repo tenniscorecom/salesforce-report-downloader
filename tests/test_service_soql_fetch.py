@@ -1,4 +1,4 @@
-"""_fetch() の SOQL経由フォールバックと、_save() の COLUMN_NAMES 適用テスト。
+"""_fetch() の SOQL経由フォールバックと、save_report() の COLUMN_NAMES 適用テスト。
 
 管理表の「SOQL」列（``ReportEntry.use_soql``）が真だと、_fetch() がレポートAPIでも
 ブラウザ経由でもなく、comken の ``soql_report_for()`` で引いた ``SoqlReport`` 経由で
@@ -6,12 +6,12 @@
 
 取得は ``SalesforceBase.bulk_query()`` 経由（同期の ``query()`` ではない）。
 
-``_save()`` 側では、SOQL 経由のときだけ ``SoqlReport.COLUMN_NAMES`` を保存直前に
+``save_report()`` 側では、SOQL 経由のときだけ ``SoqlReport.COLUMN_NAMES`` を保存直前に
 適用する（Report API / ブラウザ経由では適用しない）。管理表ルートに統一して
 いるので、``SoqlReport`` 経由で取得した Table もここで同じ動きを保証する。
 
 2026-10 に ``soql-collector`` の ``列名の対応.csv`` からの自動取り込みを
-``主オブジェクト × SOQL列名`` に切り替えた。 ``_save()`` は ``soql()``
+``主オブジェクト × SOQL列名`` に切り替えた。 ``save_report()`` は ``soql()``
 の ``FROM <名前>`` から主オブジェクトを取り、 ``COLUMN_NAMES`` の手書きに
 加えてこの CSV からも自動で見出しを差し替える。 手書きが優先される。
 ファイルが無い / 該当主オブジェクトの行が無い / 取れない SOQL ケースは
@@ -21,7 +21,7 @@ WARNING だけで API 名保存に倒れる（テストでも検証する）。
 （加工前の生データ）に対して ``transform()`` を呼んで保存用 Table を得る形に
 した。 加工の例外／非 Table 戻り値は ``SoqlTransformError`` に包まれ、
 当該レポートだけの失敗として記録される。 未完成の SOQL（ ``1 行目に
-【未完成】`` の印）は ``_fetch_via_soql()`` の ``bulk_query()`` 呼び出し前
+【未完成】`` の印）は ``fetch_via_soql()`` の ``bulk_query()`` 呼び出し前
 に ``SoqlIncompleteError`` で止める。 いずれも ``_failure_row()`` で
 「Salesforce」区分に入り、 履歴に失敗 1 行が残る（ ``download_scheduled()``
 は次のレポートの取得を続ける）。
@@ -49,11 +49,11 @@ from src.exceptions import (
     SoqlTransformError,
 )
 from src.service.routes import _fetch
-from src.service.save import _save
+from src.service.save import save_report
 from src.service.soql import (
     INCOMPLETE_SOQL_MARKER,
-    _fetch_via_soql,
     _verify_soql_count,
+    fetch_via_soql,
 )
 from src.sheets.master import ReportEntry
 from src.soql_reports import _registry
@@ -97,7 +97,7 @@ class TestFetchRoutesToSoql:
     def test_uses_soql_when_use_soql_is_true(self):
         table = MagicMock()
         with patch(
-            "src.service.routes._fetch_via_soql",
+            "src.service.routes.fetch_via_soql",
             return_value=table,
         ) as fetch_via_soql:
             result = _fetch(SOQL_ENTRY)
@@ -107,8 +107,8 @@ class TestFetchRoutesToSoql:
 
     def test_soql_takes_priority_over_exceeds_row_limit(self):
         with (
-            patch("src.service.routes._fetch_via_soql") as fetch_via_soql,
-            patch("src.service.routes._fetch_via_browser") as fetch_via_browser,
+            patch("src.service.routes.fetch_via_soql") as fetch_via_soql,
+            patch("src.service.routes.fetch_via_browser") as fetch_via_browser,
         ):
             _fetch(SOQL_AND_EXCEEDS_ENTRY)
 
@@ -118,7 +118,7 @@ class TestFetchRoutesToSoql:
     def test_uses_api_when_use_soql_is_false(self):
         with (
             patch("src.service.api.site_for") as site_for,
-            patch("src.service.routes._fetch_via_soql") as fetch_via_soql,
+            patch("src.service.routes.fetch_via_soql") as fetch_via_soql,
         ):
             _fetch(ENTRY)
 
@@ -131,7 +131,7 @@ class TestFetchRoutesToSoql:
 
 
 class TestFetchViaSoql:
-    """_fetch_via_soql() — SOQL経由で取得し、_fetch() と同じ Table を返す。"""
+    """fetch_via_soql() — SOQL経由で取得し、_fetch() と同じ Table を返す。"""
 
     def test_returns_table_from_bulk_query(self):
         table = Table(["Id", "Name"], [{"Id": "001", "Name": "山田"}])
@@ -150,7 +150,7 @@ class TestFetchViaSoql:
         )
         site = MagicMock(return_value=client)
         with patch("src.service.soql.site_for", return_value=site) as site_for:
-            result = _fetch_via_soql(SOQL_ENTRY)
+            result = fetch_via_soql(SOQL_ENTRY)
 
         # 件数比較は同じ接続のうちに行うため、 ``site_for`` は 1 回しか呼ばれない
         # （=ログインが 1 回だけ）
@@ -181,7 +181,7 @@ class TestFetchViaSoql:
 
         with patch("src.soql_reports._registry.registered_reports", return_value=(_NoCheckReport,)):
             with patch("src.service.soql.site_for", return_value=site):
-                result = _fetch_via_soql(SOQL_ENTRY)
+                result = fetch_via_soql(SOQL_ENTRY)
 
         client.__enter__.return_value.request.assert_not_called()
         assert result is table
@@ -190,11 +190,11 @@ class TestFetchViaSoql:
         """管理表の「SOQL」列が○なのに、対応する SoqlReport が無ければ設定ミスとして止める。"""
         unregistered = replace(SOQL_ENTRY, key="9999")
         with pytest.raises(SoqlReportNotRegisteredError, match="9999"):
-            _fetch_via_soql(unregistered)
+            fetch_via_soql(unregistered)
 
 
 # ---------------------------------------------------------------
-# 以下、_save() の COLUMN_NAMES 適用テスト（管理表ルートで動く新規仕様）
+# 以下、save_report() の COLUMN_NAMES 適用テスト（管理表ルートで動く新規仕様）
 # ---------------------------------------------------------------
 
 
@@ -279,7 +279,7 @@ def _registered_for_save(monkeypatch, *classes: type[SoqlReport]) -> None:
 
 @pytest.fixture
 def output_folder(monkeypatch, tmp_path) -> Path:
-    """``_save()`` の出力先（``paths.output_path`` の戻り値）を ``tmp_path`` 配下に向ける。"""
+    """``save_report()`` の出力先（``paths.output_path`` の戻り値）を ``tmp_path`` 配下に向ける。"""
     folder = tmp_path / "out"
     folder.mkdir()
     _patched_paths_output(monkeypatch, folder)
@@ -287,7 +287,7 @@ def output_folder(monkeypatch, tmp_path) -> Path:
 
 
 class TestSaveAppliesColumnNames:
-    """管理表ルート（``_save()`` 経由）で ``COLUMN_NAMES`` が保存 CSV の見出しへ反映される。"""
+    """管理表ルート（``save_report()``）で ``COLUMN_NAMES`` が保存 CSV の見出しへ反映される。"""
 
     def test_column_names_applied_to_csv_headers(
         self,
@@ -304,7 +304,7 @@ class TestSaveAppliesColumnNames:
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
-        saved = _save(entry, table)
+        saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -322,7 +322,7 @@ class TestSaveAppliesColumnNames:
 
         ``SoqlReport.COLUMN_NAMES`` を持つレポートが登録されていても、
         API 経路では適用しない（``SoqlReport`` 経由でしか取らないので
-        そもそも ``_apply_column_names()`` は呼ばれない、というのが正）。
+        そもそも ``apply_column_names()`` は呼ばれない、というのが正）。
         """
         # ``_ColumnNamesReport`` を登録しておく（API 経路では使われない）
         _registered_for_save(monkeypatch, _ColumnNamesReport)
@@ -332,7 +332,7 @@ class TestSaveAppliesColumnNames:
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
-        saved = _save(entry, table)
+        saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -363,7 +363,7 @@ class TestSaveAppliesColumnNames:
         tmp_csv = paths_module_inner.make_temp_csv_path(final_csv)
 
         with pytest.raises(SoqlColumnNameConflictError) as caught:
-            _save(entry, table)
+            save_report(entry, table)
 
         # 衝突した見出し・元列名・KEY がメッセージに出る
         message = str(caught.value)
@@ -377,7 +377,7 @@ class TestSaveAppliesColumnNames:
 
 
 # ---------------------------------------------------------------
-# 以下、_save() の ``列名の対応.csv`` 経由の COLUMN_NAMES 適用テスト
+# 以下、save_report() の ``列名の対応.csv`` 経由の COLUMN_NAMES 適用テスト
 # 2026-10 から (主オブジェクト, SOQL列名) で引く形になっている
 # ---------------------------------------------------------------
 
@@ -407,7 +407,7 @@ def column_csv_path(tmp_path, monkeypatch):
 
 
 class TestSaveAppliesFileColumnNames:
-    """``_save()`` が ``列名の対応.csv`` から自動で ``COLUMN_NAMES`` を組み立てる検証。"""
+    """``save_report()`` が ``列名の対応.csv`` から自動で ``COLUMN_NAMES`` を組み立てる検証。"""
 
     def test_save_applies_file_column_names_to_csv(
         self,
@@ -434,7 +434,7 @@ class TestSaveAppliesFileColumnNames:
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
-        saved = _save(entry, table)
+        saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -466,7 +466,7 @@ class TestSaveAppliesFileColumnNames:
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
-        saved = _save(entry, table)
+        saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -498,7 +498,7 @@ class TestSaveAppliesFileColumnNames:
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
-        saved = _save(entry, table)
+        saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -527,7 +527,7 @@ class TestSaveAppliesFileColumnNames:
         )
 
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            saved = _save(entry, table)
+            saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -559,7 +559,7 @@ class TestSaveAppliesFileColumnNames:
         )
 
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            saved = _save(entry, table)
+            saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -608,7 +608,7 @@ class TestSaveAppliesFileColumnNames:
         tmp_csv = paths_inner.make_temp_csv_path(final_csv)
 
         with pytest.raises(ColumnNamesCSVFormatError):
-            _save(entry, table)
+            save_report(entry, table)
 
         assert not final_csv.exists()
         assert not tmp_csv.exists()
@@ -622,7 +622,7 @@ class TestSaveAppliesFileColumnNames:
     ):
         """Report API 経由（ ``use_soql=False`` ）のときは ``列名の対応.csv`` が
         有っても見出しは変わらない。 ``SoqlReport`` 経由でしか取らないので、
-        そもそも ``_apply_column_names()`` は呼ばれないのが正。"""
+        そもそも ``apply_column_names()`` は呼ばれないのが正。"""
         # ``_ColumnNamesFromFileOnlyReport`` を登録しておく（API 経路では使われない）
         _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
         _write_csv(
@@ -639,7 +639,7 @@ class TestSaveAppliesFileColumnNames:
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
-        saved = _save(entry, table)
+        saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -670,7 +670,7 @@ class TestSaveAppliesFileColumnNames:
         )
 
         with caplog.at_level(logging.INFO, logger="src.service"):
-            _save(entry, table)
+            save_report(entry, table)
 
         # ``ファイル=`` と ``手書き=`` の両方が出ている
         assert "ファイル=" in caplog.text
@@ -694,7 +694,7 @@ class TestSaveNoFromInSoql:
         caplog,
     ):
         """``FROM`` の無い SOQL では主オブジェクトが取れず、 API 名のまま保存される
-        （ ``column_names`` 側ではなく ``service._save()`` 側で WARNING が出る）。"""
+        （ ``column_names`` 側ではなく ``service.save_report()`` 側で WARNING が出る）。"""
 
         class _NoFromReport(SoqlReport):
             KEY = "9300"
@@ -719,11 +719,11 @@ class TestSaveNoFromInSoql:
         )
 
         with caplog.at_level(logging.WARNING, logger="src.service"):
-            saved = _save(entry, table)
+            saved = save_report(entry, table)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
-        # 手書きの COLUMN_NAMES は適用されない（ extra が空のため ``_apply_column_names`` の
+        # 手書きの COLUMN_NAMES は適用されない（ extra が空のため ``apply_column_names`` の
         # 引数 ``extra={}`` で COLUMN_NAMES がそのまま使われるはずだが、
         # バグが無いようにするためにも結果を確認）
         assert result.columns == ["Id", "名前"]
@@ -761,7 +761,7 @@ class TestSaveNoFromInSoql:
 
         # DEBUG まで拾わないと SOQL 本文の DEBUG 記録を確認できない
         with caplog.at_level(logging.DEBUG, logger="src.service"):
-            _save(entry, table)
+            save_report(entry, table)
 
         service_records = [r for r in caplog.records if r.name == "src.service"]
         warnings_and_above = [r for r in service_records if r.levelno >= logging.WARNING]
@@ -780,7 +780,7 @@ class TestSaveNoFromInSoql:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# _fetch_via_soql() の件数比較（2026-10 改定）
+# fetch_via_soql() の件数比較（2026-10 改定）
 # 偽の Salesforce（ ``MagicMock`` ）でリクエストを組み立て、 一致・不一致・
 # 比べるための値が取れない・HTTP エラー・ ``CHECK_COUNT=False``・0 件同士を
 # それぞれ検証する
@@ -836,7 +836,7 @@ def _payload_with_row_count(row_count: int | object) -> tuple[dict, dict]:
 class TestVerifySoqlCount:
     """``_verify_soql_count()`` — SOQL 件数とレポート総件数の比較。
 
-    ``_fetch_via_soql()`` の ``bulk_query()`` 直後に動く検証ロジック。
+    ``fetch_via_soql()`` の ``bulk_query()`` 直後に動く検証ロジック。
     """
 
     def test_match_returns_silently_and_logs(self, caplog):
@@ -1059,7 +1059,7 @@ class TestFetchViaSoqlCountCheckDisabled:
             return_value=(_NoCheckReport,),
         ):
             with patch("src.service.soql.site_for", return_value=site):
-                result = _fetch_via_soql(_make_soql_entry())
+                result = fetch_via_soql(_make_soql_entry())
 
         client.__enter__.return_value.request.assert_not_called()
         assert result is soql_table
@@ -1144,7 +1144,7 @@ class TestCountCheckSanityCheck:
 # 加工は ``bulk_query()`` → 件数比較 → ``transform()`` の順で行われ、
 # 件数の比較は **加工前** の生の結果に対して行われる（=レポートの総件数と
 # 比べられるのは加工前の件数）。 加工後の結果は保存 CSV にそのまま書かれ、
-# ``_save()`` の ``COLUMN_NAMES`` 適用はこの **あと** で行われる。
+# ``save_report()`` の ``COLUMN_NAMES`` 適用はこの **あと** で行われる。
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -1196,7 +1196,7 @@ class TestFetchViaSoqlTransform:
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _PlainReport)
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
-            result = _fetch_via_soql(SOQL_ENTRY)
+            result = fetch_via_soql(SOQL_ENTRY)
 
         # 加工していないので ``bulk_query()`` の戻り値と一致（同じオブジェクト）
         assert result is table
@@ -1216,7 +1216,7 @@ class TestFetchViaSoqlTransform:
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _FilterReport)
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
-            result = _fetch_via_soql(SOQL_ENTRY)
+            result = fetch_via_soql(SOQL_ENTRY)
 
         # 行が絞られ、 値もそのまま
         assert result.columns == ["Id", "StageName", "Amount"]
@@ -1257,7 +1257,7 @@ class TestFetchViaSoqlTransform:
         with caplog.at_level(logging.INFO, logger="src.service"):
             with patch("src.service.soql.site_for", return_value=site):
                 # 例外が出ずに Table が返る
-                result = _fetch_via_soql(SOQL_ENTRY)
+                result = fetch_via_soql(SOQL_ENTRY)
 
         # 件数一致のログが出ている（件数=3 = 加工前の件数）
         assert "SOQL 件数がレポート総件数と一致しました" in caplog.text
@@ -1294,7 +1294,7 @@ class TestFetchViaSoqlTransform:
         _patch_soql_registry(monkeypatch, _RaisingReport)
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             with pytest.raises(SoqlTransformError) as caught:
-                _fetch_via_soql(SOQL_ENTRY)
+                fetch_via_soql(SOQL_ENTRY)
 
         # 元の例外が ``__cause__`` に繋がっている
         assert isinstance(caught.value.__cause__, ValueError)
@@ -1326,7 +1326,7 @@ class TestFetchViaSoqlTransform:
         with caplog.at_level(logging.DEBUG, logger="src.service"):
             with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
                 with pytest.raises(SoqlTransformError):
-                    _fetch_via_soql(SOQL_ENTRY)
+                    fetch_via_soql(SOQL_ENTRY)
 
         # ``src.service`` 由来の全ログ（ DEBUG 含む） に行のマーカーが漏れていない
         service_records = [r for r in caplog.records if r.name == "src.service"]
@@ -1351,7 +1351,7 @@ class TestFetchViaSoqlTransform:
         _patch_soql_registry(monkeypatch, _NoneTransformReport)
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             with pytest.raises(SoqlTransformError) as caught:
-                _fetch_via_soql(SOQL_ENTRY)
+                fetch_via_soql(SOQL_ENTRY)
 
         message = str(caught.value)
         assert "NoneType" in message
@@ -1374,7 +1374,7 @@ class TestFetchViaSoqlTransform:
         _patch_soql_registry(monkeypatch, _DictTransformReport)
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             with pytest.raises(SoqlTransformError) as caught:
-                _fetch_via_soql(SOQL_ENTRY)
+                fetch_via_soql(SOQL_ENTRY)
 
         assert "dict" in str(caught.value)
         assert "戻り値が Table ではありません" in str(caught.value)
@@ -1407,7 +1407,7 @@ class TestFetchViaSoqlTransform:
         _patch_soql_registry(monkeypatch, _FilterReport)
         with patch("src.service.soql.site_for", return_value=site):
             with pytest.raises(SoqlCountMismatchError):
-                _fetch_via_soql(SOQL_ENTRY)
+                fetch_via_soql(SOQL_ENTRY)
 
         # 不一致で先に落ちるので transform() は呼ばれない
         assert transform_called == []
@@ -1415,11 +1415,11 @@ class TestFetchViaSoqlTransform:
     def test_transform_zero_rows_with_allow_empty_false_is_empty_error_in_save(
         self, monkeypatch, output_folder
     ):
-        """``transform()`` が 0 行を返したときは、 既存の ``_save()`` の
+        """``transform()`` が 0 行を返したときは、 既存の ``save_report()`` の
         ``ALLOW_EMPTY=False`` の判定がそのまま動く。
 
-        ここでは ``_save()`` まで動かして ``EmptyReportError`` で保存されないことを
-        検証する。  ``_fetch_via_soql()`` だけでは ``ALLOW_EMPTY`` 判定は走らない
+        ここでは ``save_report()`` まで動かして ``EmptyReportError`` で保存されないことを
+        検証する。  ``fetch_via_soql()`` だけでは ``ALLOW_EMPTY`` 判定は走らない
         （判定は保存時の責務） 。"""
         from src.exceptions import EmptyReportError
 
@@ -1435,19 +1435,19 @@ class TestFetchViaSoqlTransform:
 
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _EmptyTransformReport)
-        # ``_save()`` は ``soql_report_for(entry.key)`` でクラスを引くので
+        # ``save_report()`` は ``soql_report_for(entry.key)`` でクラスを引くので
         # ``_registry`` 経由でこのテスト用クラスが見える必要がある
         entry = replace(SOQL_ENTRY, key=_EmptyTransformReport.KEY)
 
         # SOQL 取得フェーズは fake を渡す
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
-            fetched = _fetch_via_soql(entry)
+            fetched = fetch_via_soql(entry)
         # 加工後は 0 行
         assert len(fetched) == 0
 
         # 保存フェーズで ``allow_empty=False`` のまま ``EmptyReportError`` が出る
         with pytest.raises(EmptyReportError):
-            _save(entry, fetched)
+            save_report(entry, fetched)
 
     def test_transform_failure_row_uses_salesforce_cause(self):
         """``SoqlTransformError`` は ``ComkenError`` 系なので ``_failure_row()``
@@ -1472,7 +1472,7 @@ class TestFetchViaSoqlTransform:
 # 未完成の SOQL（ ``1 行目に【未完成】`` ）の停止（2026-10 追加）
 #
 # soql-collector が下書きを出し直すときに 1 行目に付ける印。
-# ``_fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止まる。
+# ``fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止まる。
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -1494,7 +1494,7 @@ class TestFetchViaSoqlIncompleteMarker:
         client = _patched_soql_client(table)
         with patch("src.service.soql.site_for", return_value=client):
             with pytest.raises(SoqlIncompleteError) as caught:
-                _fetch_via_soql(SOQL_ENTRY)
+                fetch_via_soql(SOQL_ENTRY)
 
         # メッセージに管理番号・概要・印の説明が出ている
         message = str(caught.value)
@@ -1521,7 +1521,7 @@ class TestFetchViaSoqlIncompleteMarker:
         client = _patched_soql_client(table)
         with patch("src.service.soql.site_for", return_value=client):
             with pytest.raises(SoqlIncompleteError):
-                _fetch_via_soql(SOQL_ENTRY)
+                fetch_via_soql(SOQL_ENTRY)
 
         client.__enter__.return_value.bulk_query.assert_not_called()
 
@@ -1539,7 +1539,7 @@ class TestFetchViaSoqlIncompleteMarker:
         _patch_soql_registry(monkeypatch, _OkReport)
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
             # 止まらずに進む
-            result = _fetch_via_soql(SOQL_ENTRY)
+            result = fetch_via_soql(SOQL_ENTRY)
 
         assert result is table
 
@@ -1555,7 +1555,7 @@ class TestFetchViaSoqlIncompleteMarker:
         table = _soql_table_with_rows()
         _patch_soql_registry(monkeypatch, _OkReport)
         with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
-            result = _fetch_via_soql(SOQL_ENTRY)
+            result = fetch_via_soql(SOQL_ENTRY)
 
         assert result is table
 
@@ -1579,7 +1579,7 @@ class TestFetchViaSoqlIncompleteSanityCheck:
 
     def test_sanity_check_detects_when_marker_check_disabled(self):
         """``INCOMPLETE_SOQL_MARKER`` のチェックを実質「常に偽」にした（印を
-        元の値と違う文字列に差し替え） ``_fetch_via_soql()`` の挙動を確認する。
+        元の値と違う文字列に差し替え） ``fetch_via_soql()`` の挙動を確認する。
         印のある SOQL でも ``bulk_query()`` が呼ばれること（=印チェックで
         止まっていないこと）を確かめ、 元の実装が印チェックを実際に
         していることを保証する。"""
@@ -1606,7 +1606,7 @@ class TestFetchViaSoqlIncompleteSanityCheck:
                 site = _patched_soql_client(table)
                 # 印チェックを通り抜けたので ``bulk_query()`` が呼ばれる
                 with patch("src.service.soql.site_for", return_value=site):
-                    _fetch_via_soql(SOQL_ENTRY)
+                    fetch_via_soql(SOQL_ENTRY)
 
                 # ``site`` は ``MagicMock(return_value=client)`` の形なので、
                 # 実クライアントは ``site.return_value`` にある
@@ -1623,13 +1623,13 @@ class TestFetchViaSoqlIncompleteSanityCheck:
 
 class TestTransformSanityCheck:
     """``transform()`` を呼ばない実装で差し替えたとき、 加工が効かなくなること
-    を確認するサニティチェック。 元の実装が ``_fetch_via_soql()`` の中で
+    を確認するサニティチェック。 元の実装が ``fetch_via_soql()`` の中で
     ``instance.transform(table)`` を呼んでいることを保証する。"""
 
     def test_sanity_check_detects_when_transform_skipped(self, monkeypatch):
         from src.service import soql as service_module
 
-        original = service_module._fetch_via_soql
+        original = service_module.fetch_via_soql
 
         def _bypass_transform(*args, **kwargs):
             # ``transform()`` を呼ばずに ``bulk_query()`` の結果をそのまま返す実装
@@ -1639,7 +1639,7 @@ class TestTransformSanityCheck:
             with site() as salesforce:
                 return salesforce.bulk_query(instance.soql())
 
-        service_module._fetch_via_soql = _bypass_transform
+        service_module.fetch_via_soql = _bypass_transform
         try:
             # 加工を期待しているケースで、 加工後の Table ではなく加工前のものが返る
             class _FilterReport(SoqlReport):
@@ -1657,9 +1657,9 @@ class TestTransformSanityCheck:
                 return_value=(_FilterReport,),
             ):
                 with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
-                    result = service_module._fetch_via_soql(SOQL_ENTRY)
+                    result = service_module.fetch_via_soql(SOQL_ENTRY)
 
             # 壊した実装では ``transform()`` が呼ばれず、 全件が返る
             assert len(result) == 3
         finally:
-            service_module._fetch_via_soql = original
+            service_module.fetch_via_soql = original

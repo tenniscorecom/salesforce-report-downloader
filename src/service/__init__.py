@@ -29,10 +29,10 @@ r"""src/service/ — 取得の本体（パッケージ）。
 このパッケージが持つもの:
 - 1件を取得して保存し履歴に残す流れ（``attempt.py`` の ``download_scheduled`` と
   ``_download_scheduled_locked`` / ``_download`` / ``_Attempt``）
-- Salesforce への問い合わせ経路の選択（``routes.py`` の ``_fetch`` / ``_fetch_with_auto_fallback``）
+- Salesforce への問い合わせ経路の選択（``routes.py`` の ``_fetch`` / ``fetch_with_auto_fallback``）
 - Report API / ブラウザ / SOQL の各取得（``api.py`` / ``browser.py`` / ``soql.py``）
-- 保存とフォルダ検査（``save.py`` の ``_save`` / ``_write_csv`` / ``_require_folder``）
-- スケジュールによる対象選定（``scheduler.py`` の ``_select_targets`` / ``_matched_schedule_key``）
+- 保存とフォルダ検査（``save.py`` の ``save_report`` / ``_write_csv`` / ``require_folder``）
+- スケジュールによる対象選定（``scheduler.py`` の ``select_targets`` / ``_matched_schedule_key``）
 
 ここに書かないもの:
 - 「このプロジェクトのときは」という分岐 → main.py / src/run.py

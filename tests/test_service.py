@@ -213,7 +213,7 @@ def paths(tmp_path, monkeypatch):
     2026-09 に「担当者 / 概要」のフォルダ階層は廃止されたが、定期取得と SOQL の
     共通化で「ベース / 概要」の 2 階層に戻した（人が業務ごとに探しやすくする
     ため）。 ``ベース`` 配下に pre-create するのは ``ベース`` 自体だけ
-    （概要フォルダは ``_save()`` が ``mkdir(exist_ok=True)`` で自動作成する）。
+    （概要フォルダは ``save_report()`` が ``mkdir(exist_ok=True)`` で自動作成する）。
     """
     base_path = tmp_path / "ベース"
     base_path.mkdir()
@@ -712,13 +712,13 @@ class TestDownloadScheduledRecord:
             "_write_csv",
             side_effect=check_no_final,
         ):
-            path = save_module._save(entry, table)
+            path = save_module.save_report(entry, table)
         assert path.is_file()
 
     def test_temp_and_final_files_removed_on_write_error(self, paths):
         """CSV の書き込み中に例外が出たら、本番のファイルも一時ファイルも残らない。
 
-        ``_write_csv`` を例外を投げる関数に差し替え、 ``_save()`` の ``except``
+        ``_write_csv`` を例外を投げる関数に差し替え、 ``save_report()`` の ``except``
         経路で両方が片付けられることを検証する。
         """
         entry = load_master(paths["master_path"])["1001"]
@@ -735,7 +735,7 @@ class TestDownloadScheduledRecord:
             side_effect=failing_write,
         ):
             with pytest.raises(OSError):
-                save_module._save(entry, table)
+                save_module.save_report(entry, table)
 
         # 一時ファイルも最終ファイルも残らない（``summary_dir`` は ``mkdir`` で
         # 作られているが、配下には何もない）
@@ -779,9 +779,9 @@ class TestDownloadScheduledRecord:
         新方式はその時点でファイルを作らないので assert は通る（=新方式が
         「本番名の空ファイルを一瞬も作らない」を守っている）。
 
-        続けて **同じ ``_write_csv`` モック**を、保ったまま ``_save()`` の前に
+        続けて **同じ ``_write_csv`` モック**を、保ったまま ``save_report()`` の前に
         「最終パスの空ファイルを ``open("x").close()`` で作る」処理を挟む
-        壊した ``_save()`` で呼び直す。今度は assert が落ちて、壊した版が
+        壊した ``save_report()`` で呼び直す。今度は assert が落ちて、壊した版が
         「本番名の空ファイルを作ってしまう」ことを検出できる（=このテストが
         落ちなければ、新方式の assert が緩すぎる／壊した版がちゃんと壊れて
         いないことになる）。
@@ -808,14 +808,14 @@ class TestDownloadScheduledRecord:
 
         # **新方式（修正後）:** assert が通る（最終ファイルはまだ無い）
         with patch.object(save_module, "_write_csv", side_effect=check_no_final):
-            path = save_module._save(entry, table)
+            path = save_module.save_report(entry, table)
         assert path.is_file()
         # 後始末
         path.unlink()
 
-        # **壊した版（修正前）:** 「``_save()`` の ``_write_csv(tmp_path, ...)``
+        # **壊した版（修正前）:** 「``save_report()`` の ``_write_csv(tmp_path, ...)``
         # を呼ぶ前に最終パスの空ファイルを作る」動きを再現する。新方式の
-        # ``_write_csv`` モックは保ったまま、 ``_save()`` の手前で空ファイルを
+        # ``_write_csv`` モックは保ったまま、 ``save_report()`` の手前で空ファイルを
         # 作るだけの細い壊し方をする
         def broken_save_then_check(entry, table, *, schedule_run_time=None, current=None):
             # **壊した版の動作:** 最終パスに空ファイルを作る（旧 ``_reserve_unique_path`` 相当）
@@ -824,14 +824,14 @@ class TestDownloadScheduledRecord:
                 base_local.open("x").close()
             except FileExistsError:
                 pass
-            return save_module._save(
+            return save_module.save_report(
                 entry,
                 table,
                 schedule_run_time=schedule_run_time,
                 current=current,
             )
 
-        # ``_write_csv`` モックを保ったまま壊した ``_save`` 相当の呼び出しを
+        # ``_write_csv`` モックを保ったまま壊した ``save_report`` 相当の呼び出しを
         # 行う。assert が失敗する（＝新方式の assert が壊した版を検出する）
         with patch.object(save_module, "_write_csv", side_effect=check_no_final):
             with pytest.raises(AssertionError) as caught:
@@ -871,8 +871,8 @@ class TestDownloadScheduledRecord:
         """ベースフォルダが無いときは ``ScheduledDownloadFailedError`` で抜け、
         概要のフォルダも作られない（勝手に作らない原則）。
 
-        ``_require_folder()`` がベースフォルダの不在を ``ReportFolderNotFoundError``
-        に変換し、その後 ``mkdir`` は走らない（ ``_save()`` に到達する前に
+        ``require_folder()`` がベースフォルダの不在を ``ReportFolderNotFoundError``
+        に変換し、その後 ``mkdir`` は走らない（ ``save_report()`` に到達する前に
         例外で抜けるため）。 ``mkdir`` が ``parents=False`` で走るとベースが
         無いときに ``FileNotFoundError`` で落ちるが、それを**概要側で**
         起こしてしまうと運用上の意味が無いので、ベース無しのときは概要の
@@ -904,7 +904,7 @@ class TestDownloadScheduledRecord:
             download_scheduled()
         # ベースは作られない
         assert not missing_base.exists()
-        # ベース配下の「概要」フォルダも作られない（ ``_save()`` に到達しないため）
+        # ベース配下の「概要」フォルダも作られない（ ``save_report()`` に到達しないため）
         assert not (missing_base / "顧客一覧").exists()
 
     def test_history_saves_folder_is_base_plus_summary(self, paths):
@@ -2088,7 +2088,7 @@ class TestDownloadScheduled:
         original_write_csv = save_module._write_csv
 
         def fail_first_write(path, table):
-            # ``_save()`` が 2026-10 から一時ファイル（``~`` プレフィックス）に対して
+            # ``save_report()`` が 2026-10 から一時ファイル（``~`` プレフィックス）に対して
             # ``_write_csv()`` を呼ぶので、「1001_」を含むパス（最終名・一時ファイル両方）で
             # 失敗させる
             if "1001_" in path.name:
@@ -2858,7 +2858,7 @@ class TestUnscheduledReportIsSkipped:
         「有効× 1 件 / 予定外 1 件」の管理表を ``download_scheduled()`` に通し、
         内訳ログの件数が実際の外れ方と一致することを ``caplog`` で確かめる。
         既存テスト ``test_warning_lists_each_unscheduled_enabled_report`` の
-        「ログの件数」と同じ発想だが、こちらは ``_select_targets()`` が出す
+        「ログの件数」と同じ発想だが、こちらは ``select_targets()`` が出す
         4 区分（有効× / スケジュール行なし / 予定外 / 当日取得済）の件数を
         一度に固定する回帰テスト。
         """
@@ -3478,7 +3478,7 @@ class TestTruncatedSkip:
     受けてブラウザ経由に自動で切り替え）を入れた結果、**「当日中の再実行で
     Salesforce へ問い合わせない」スキップは廃止された**。同じ日の 2 回目でも
     Report API → ブラウザ自動切替が動くので、毎回 Salesforce への問い合わせが
-    発生する。``_select_targets`` の ``already_failed`` は常に空リストになる。
+    発生する。``select_targets`` の ``already_failed`` は常に空リストになる。
     2026-10-05 に ``comken`` 側 ``history.truncated_today()`` も削除された
     （自動切替で取り直す用途が無くなったため）。
 
@@ -3578,7 +3578,7 @@ class TestCommandLine:
 
 # ── 保存ファイルが 0 バイトだったケースの検査 ─────────────────────────────
 class TestSavedFileEmpty:
-    """``_save()`` が ``_write_csv()`` の直後にファイルサイズを検査し、
+    """``save_report()`` が ``_write_csv()`` の直後にファイルサイズを検査し、
     列があるのに 0 バイトなら ``SavedFileEmptyError`` で失敗させる。会社の実行で
     「ログ上は取得成功」なのにファイルが 0 バイトだった事例への防御。
 
@@ -3589,9 +3589,9 @@ class TestSavedFileEmpty:
     """
 
     def test_save_raises_when_written_file_is_empty(self, paths, monkeypatch):
-        """``_write_csv`` を「空ファイルだけ作る」関数に差し替えて ``_save`` を呼ぶと
+        """``_write_csv`` を「空ファイルだけ作る」関数に差し替えて ``save_report`` を呼ぶと
         ``SavedFileEmptyError`` が送出される。最終パスへ ``os.rename`` された
-        空ファイルは ``_save()`` の ``except Exception`` 経路で ``unlink`` されて残らない
+        空ファイルは ``save_report()`` の ``except Exception`` 経路で ``unlink`` されて残らない
         （一時ファイルも ``rename`` で消えているので ``missing_ok=True`` で安全）。
         """
         entry = load_master(paths["master_path"])["1001"]
@@ -3605,13 +3605,13 @@ class TestSavedFileEmpty:
 
         with patch.object(save_module, "_write_csv", side_effect=empty_write):
             with pytest.raises(SavedFileEmptyError) as caught:
-                save_module._save(entry, table)
+                save_module.save_report(entry, table)
 
         # メッセージに管理番号・保存パス・行数・対処のいずれかが入っている
         message = str(caught.value)
         assert "1001" in message
         assert "0 バイト" in message
-        # 最終パスも一時ファイルも残らない（``_save()`` の ``except`` 経路の ``unlink``）
+        # 最終パスも一時ファイルも残らない（``save_report()`` の ``except`` 経路の ``unlink``）
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert list(summary_dir.glob("1001_*.csv")) == []
         assert list(summary_dir.glob("~*")) == []
@@ -3622,9 +3622,9 @@ class TestSavedFileEmpty:
         table = Table(["名前", "金額"], ROWS)
 
         with caplog.at_level(logging.INFO, logger="src.service"):
-            path = save_module._save(entry, table)
+            path = save_module.save_report(entry, table)
 
-        # 戻り値は ``_save()`` が組み立てた保存パス
+        # 戻り値は ``save_report()`` が組み立てた保存パス
         assert path.is_file()
         # ログにバイト数が出る
         assert any(
@@ -3664,7 +3664,7 @@ class TestSavedFileEmpty:
         assert row["成否"] == "失敗"
         assert row["エラーコード"] == "SavedFileEmptyError"
         assert row["原因区分"] == "Salesforce"
-        # ``_save()`` の ``except`` 経路で ``unlink`` 済みなので、ファイルは残らない
+        # ``save_report()`` の ``except`` 経路で ``unlink`` 済みなので、ファイルは残らない
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert list(summary_dir.glob("1001_*.csv")) == []
         # 一時ファイル（``~`` プレフィックス）も残らない
@@ -3689,7 +3689,7 @@ class TestOverwriteMode:
     def test_overwrite_saves_to_hhmm_filename(self, paths):
         """上書き ○ のときは ``{管理番号}_{HHMM}.csv`` の名前で保存される（日付無し）。
 
-        ``schedule_run_time`` / ``now`` を ``_save`` に渡してファイル名を固定する
+        ``schedule_run_time`` / ``now`` を ``save_report`` に渡してファイル名を固定する
         （渡さないと ``clock_now()`` の値で揺れ、HHMM がテストのたびに変わる）。
         """
         entry = self._entry(paths, overwrite=True)
@@ -3697,7 +3697,7 @@ class TestOverwriteMode:
         fixed_now = dt.datetime(2026, 9, 18, 9, 30)  # noqa: DTZ001
         run_time = dt.time(9, 30)
         with patch("src.service.api.site_for", return_value=fake_salesforce()):
-            saved = save_module._save(
+            saved = save_module.save_report(
                 entry,
                 table,
                 schedule_run_time=run_time,
@@ -3719,7 +3719,7 @@ class TestOverwriteMode:
         run_time = dt.time(9, 30)
 
         with patch("src.service.api.site_for", return_value=fake_salesforce(first_rows)):
-            save_module._save(
+            save_module.save_report(
                 entry,
                 Table(["名前", "金額"], first_rows),
                 schedule_run_time=run_time,
@@ -3732,7 +3732,7 @@ class TestOverwriteMode:
         assert first_files[0].name == "1001_0930.csv"
 
         with patch("src.service.api.site_for", return_value=fake_salesforce(second_rows)):
-            second_path = save_module._save(
+            second_path = save_module.save_report(
                 entry,
                 Table(["名前", "金額"], second_rows),
                 schedule_run_time=run_time,
@@ -3757,14 +3757,14 @@ class TestOverwriteMode:
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
 
         with patch("src.service.api.site_for", return_value=fake_salesforce(first_rows)):
-            save_module._save(
+            save_module.save_report(
                 entry,
                 Table(["名前", "金額"], first_rows),
                 schedule_run_time=dt.time(9, 30),
                 current=fixed_now,
             )
         with patch("src.service.api.site_for", return_value=fake_salesforce(second_rows)):
-            save_module._save(
+            save_module.save_report(
                 entry,
                 Table(["名前", "金額"], second_rows),
                 schedule_run_time=dt.time(18, 0),
@@ -3780,7 +3780,7 @@ class TestOverwriteMode:
         entry = self._entry(paths, overwrite=True)
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
         with patch("src.service.api.site_for", return_value=fake_salesforce()):
-            save_module._save(
+            save_module.save_report(
                 entry,
                 Table(["名前", "金額"], ROWS),
                 schedule_run_time=dt.time(9, 0),
@@ -3795,7 +3795,7 @@ class TestOverwriteMode:
         一時ファイルも残らない。
 
         ``os.replace`` は書き込み成功後に動くので、書き込み失敗では既存ファイルは
-        触らない。 ``_save()`` の ``except`` 経路が一時ファイルを ``unlink`` する。
+        触らない。 ``save_report()`` の ``except`` 経路が一時ファイルを ``unlink`` する。
         """
         entry = self._entry(paths, overwrite=True)
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
@@ -3811,7 +3811,7 @@ class TestOverwriteMode:
 
         with patch.object(save_module, "_write_csv", side_effect=failing_write):
             with pytest.raises(OSError):
-                save_module._save(
+                save_module.save_report(
                     entry,
                     Table(["名前", "金額"], ROWS),
                     schedule_run_time=run_time,
@@ -3830,7 +3830,7 @@ class TestOverwriteMode:
         fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001
         run_time = dt.time(9, 0)
         with patch("src.service.api.site_for", return_value=fake_salesforce()):
-            saved = save_module._save(
+            saved = save_module.save_report(
                 entry,
                 Table(["名前", "金額"], ROWS),
                 schedule_run_time=run_time,
@@ -3845,8 +3845,8 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
     """``_download()`` の「取得開始」ログが Salesforce へ問い合わせる前に出る回帰テスト。
 
     取得中に固まったときに「どのレポートで止まったか」をログで分かるように
-    することが目的なので、ログは ``_require_folder()`` の前、
-    =Salesforce へ問い合わせる前に出ていなければならない。``_fetch_with_auto_fallback()``
+    することが目的なので、ログは ``require_folder()`` の前、
+    =Salesforce へ問い合わせる前に出ていなければならない。``fetch_with_auto_fallback()``
     が呼ばれた時点の ``caplog`` を ``side_effect`` で捕捉し、呼ばれた時点で
     既に「取得開始」ログが出ていることを確認する。壊れた版（=ログを取得の
     後ろに出す）に戻すと、このテストは落ちる。
@@ -3926,13 +3926,13 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         return base_path, history_path
 
     def test_soql_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
-        """``use_soql=True`` のエントリは、``_fetch_with_auto_fallback()`` が
+        """``use_soql=True`` のエントリは、``fetch_with_auto_fallback()`` が
         呼ばれた時点で予定経路 ``SOQL`` の「取得開始」ログが既に出ている。
         """
         entry = self._make_entry("9001", use_soql=True)
         _, history_path = self._setup(tmp_path, monkeypatch, entry)
 
-        # ``_fetch_with_auto_fallback()`` が呼ばれた時点の ``caplog`` を捕捉する。
+        # ``fetch_with_auto_fallback()`` が呼ばれた時点の ``caplog`` を捕捉する。
         # この ``side_effect`` の中で ``caplog.records`` をコピーすれば、
         # 「Salesforce へ問い合わせる前」に出たログだけが手に入る
         captured: list[logging.LogRecord] = []
@@ -3945,7 +3945,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
                 attempt_module,
-                "_fetch_with_auto_fallback",
+                "fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
@@ -3961,7 +3961,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             "取得完了後に出るため caplog を捕捉した時点では 0 件になる）: "
             f"{[r.message for r in captured]}"
         )
-        # 予定経路は SOQL。``_planned_route()`` の優先順位（``use_soql`` を
+        # 予定経路は SOQL。``planned_route()`` の優先順位（``use_soql`` を
         # 最初に見る）に従う
         assert "経路=SOQL" in start_records[0].message
         # 管理番号も含まれている（=どのレポートで止まったかがログから追える）
@@ -3969,7 +3969,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
 
     def test_api_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
         """``use_soql=False`` / ``exceeds_row_limit=False`` の通常 API 経路でも
-        同じ順序で「取得開始」ログが ``_fetch_with_auto_fallback()`` の前に出る。
+        同じ順序で「取得開始」ログが ``fetch_with_auto_fallback()`` の前に出る。
         """
         entry = self._make_entry("9002", use_soql=False, exceeds_row_limit=False)
         _, history_path = self._setup(tmp_path, monkeypatch, entry)
@@ -3984,7 +3984,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
                 attempt_module,
-                "_fetch_with_auto_fallback",
+                "fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):
@@ -3999,7 +3999,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         assert "9002" in start_records[0].message
 
     def test_browser_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
-        """``exceeds_row_limit=True`` のエントリも、``_fetch_with_auto_fallback()``
+        """``exceeds_row_limit=True`` のエントリも、``fetch_with_auto_fallback()``
         が呼ばれる前に予定経路「ブラウザ」の「取得開始」ログが出ている。
         """
         entry = self._make_entry("9003", exceeds_row_limit=True)
@@ -4015,7 +4015,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
                 attempt_module,
-                "_fetch_with_auto_fallback",
+                "fetch_with_auto_fallback",
                 side_effect=_explode,
             ),
         ):

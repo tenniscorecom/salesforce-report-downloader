@@ -3,9 +3,9 @@ r"""src/service/scheduler.py — 定期取得の対象選定と共有レポー�
 ``download_scheduled()`` から呼ばれる「対象選定」ヘルパーを置く。
 
     from src.service.scheduler import (
-        _select_targets,
+        select_targets,
         _matched_schedule_key,
-        _warn_shared_reports,
+        warn_shared_reports,
     )
 
 ``_matched_schedule_key()`` は ``entry`` のスケジュール行を見て「今取るべきか」
@@ -27,7 +27,7 @@ from src.sheets.schedule import ScheduleRule
 logger = logging.getLogger("src.service")
 
 
-def _warn_shared_reports(entries: dict[str, ReportEntry]) -> None:
+def warn_shared_reports(entries: dict[str, ReportEntry]) -> None:
     """同じ Salesforce レポートを複数の管理番号が指していればログに出す。
 
     エラーにはしない（意図している場合もある）。**気づけるようにするだけ**。
@@ -53,14 +53,14 @@ def _matched_schedule_key(
     スケジュールキーは、取得すべきだった場合に「どのスケジュール行が根拠になったか」を
     表し、履歴の ``スケジュールキー`` 列にそのまま記録する。取得しないときは
     ``(False, "", 理由)`` を返し、第3要素で外した理由を返す（外さないときは空文字）。
-    理由は「予定外」/「当日取得済」の2値で、``_select_targets()`` の内訳ログに使う
+    理由は「予定外」/「当日取得済」の2値で、``select_targets()`` の内訳ログに使う
     （両方「スケジュール行は有るが今回は取らない」ケースの細分）。
 
     判定ロジック:
 
     - スケジュール行が無いレポートは取得しない（``(False, "", "")`` を返す）。
       「スケジュール」シートに紐付かないレポートは黙って取らない（気づけるよう、
-      ``_select_targets()`` 側で 1 実行 1 回のログを出す）
+      ``select_targets()`` 側で 1 実行 1 回のログを出す）
     - スケジュール行がある場合、いずれかの行が ``is_due()`` True で、かつ
       ``schedule_succeeded_today()`` が False（=今日まだ成功していない）なら取得。
       複数の行が True を返す場合は取得時刻が一番遅い行のキーを採用（それより早い
@@ -81,7 +81,7 @@ def _matched_schedule_key(
     パッケージ ``__init__`` 側に置いた）。
     """
     # スケジュール行が無いレポートは ``due_rules`` が空になり、取らない。警告ログは
-    # ``_select_targets()`` 側で出す。 ``is_due()`` と ``rules_by_report.get()`` は
+    # ``select_targets()`` 側で出す。 ``is_due()`` と ``rules_by_report.get()`` は
     # ここで 1 回ずつだけ評価し、 戻り値（ ``due_rules`` ）から後の判定を組み立てる
     # ——元の実装は ``due_rules`` のリスト内包と末尾の ``any(...)`` で同じ評価を
     # 2 回ずつ走らせていた
@@ -107,7 +107,7 @@ def _matched_schedule_key(
     return False, "", "予定外"
 
 
-def _select_targets(
+def select_targets(
     entries: dict[str, ReportEntry],
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,

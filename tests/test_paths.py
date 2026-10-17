@@ -99,7 +99,7 @@ def paths(tmp_path, monkeypatch):
 
     ベースパス（設定シート）だけを作り、その配下に「担当者」「概要」の
     サブフォルダは作らない（``output_path()`` が指す概要フォルダは呼び出し側
-    ``service._save()`` が保存時に ``mkdir`` で作る）。
+    ``service.save_report()`` が保存時に ``mkdir`` で作る）。
     """
     base_path = tmp_path / "ベース"
     base_path.mkdir()

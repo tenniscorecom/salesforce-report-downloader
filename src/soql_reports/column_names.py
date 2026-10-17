@@ -22,7 +22,7 @@
 - フォーマット不正用の例外 ``ColumnNamesCSVFormatError``（``src.exceptions`` 由来）
 
 **ここに書かないもの:**
-- ``_apply_column_names()`` の本体 → ``src.soql_reports.runner``
+- ``apply_column_names()`` の本体 → ``src.soql_reports.runner``
 - ファイルパスの組み立て → ``src.paths.COLUMN_NAMES_CSV_PATH``
 
 **キャッシュ方針:** SOQL レポートは数本なので、保存のたびに読み直す（YAGNI）。
@@ -143,7 +143,7 @@ def load_column_names_for(
 ) -> dict[str, str]:
     """``main_object`` に対応する ``{SOQL列名: 表示名}`` を返す。
 
-    戻り値は ``runner._apply_column_names()`` に渡して使う想定。
+    戻り値は ``runner.apply_column_names()`` に渡して使う想定。
     **手書きの ``SoqlReport.COLUMN_NAMES`` が優先**なので、呼び出し側で
     ``{**file_dict, **report_cls.COLUMN_NAMES}`` の形でマージする。
 
