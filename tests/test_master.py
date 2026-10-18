@@ -224,7 +224,7 @@ class TestReportIdCaching:
 
     def test_report_id_recomputes_when_exception_raised(self):
         """``report_id_from_url`` が例外を出してもキャッシュせず、 次の参照で再度
-        同じ例外が出る（ ``cached_property`` の既定動作）。 1 回目のメッセージに
+        同じ例外が出る（``cached_property`` の既定動作）。 1 回目のメッセージに
         管理番号を添える契約はそのまま。"""
         entry = ReportEntry(
             key="1001",
@@ -249,7 +249,7 @@ class TestReportIdCaching:
                 _value = entry.report_id
                 del _value
 
-        # 2 回とも呼ぶ（ = キャッシュしない）
+        # 2 回とも呼ぶ（= キャッシュしない）
         assert parse.call_count == 2
         # どちらも管理番号を添えたメッセージのまま
         assert "管理番号 1001" in str(first_exc.value)
@@ -270,5 +270,5 @@ class TestReportIdCaching:
                 entries = load_master(master)
 
         assert parse.call_count == 1
-        # 同じ entry から取り出しても parse は再呼ばれない（ = キャッシュ済み）
+        # 同じ entry から取り出しても parse は再呼ばれない（= キャッシュ済み）
         assert entries["1001"].report_id == "00O5g00000ABCDE"

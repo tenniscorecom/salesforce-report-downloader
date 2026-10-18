@@ -434,7 +434,7 @@ def _convert(value: Any, value_type: Any, spec: ColumnSpec, row: int, cls: type)
 
     型ごとの変換処理は ``_CONVERTERS`` の dict に委譲する。 ``_convert`` 本体は
     「空欄チェック → choices チェック → 型分岐のディスパッチ」だけに専念し、
-    複雑度を下げる。 各変換関数（ ``_convert_bool`` / ``_convert_int`` など）は
+    複雑度を下げる。 各変換関数（``_convert_bool`` / ``_convert_int`` など）は
     引数シグネチャを ``(value, text, spec, row)`` で統一し、 ``_CONVERTERS``
     から同じ呼び出し方で使えるようにする。
     """
@@ -471,7 +471,7 @@ def _convert_bool(value: Any, text: str, spec: ColumnSpec, row: int) -> bool:
 
 def _convert_int(value: Any, text: str, spec: ColumnSpec, row: int) -> int:
     """``_CONVERTERS`` の int 変換。 ``bool`` を int 扱いにしないよう先に弾き、
-    Excel の小数表現（ ``1001.0`` ）は整数に丸める。"""
+    Excel の小数表現（``1001.0``）は整数に丸める。"""
     if isinstance(value, bool):
         raise MasterRowValueError(row, spec.header, value, "数字を入れてください。")
     if isinstance(value, int):
@@ -520,7 +520,7 @@ def _convert_str(value: Any, text: str, spec: ColumnSpec, row: int) -> str:
 # ``_convert`` が型から変換関数を引き直すための dict。 キーは変換対象の型そのもの。
 # 値はシグネチャ ``(value, text, spec, row)`` の呼び出し可能オブジェクト。
 # 新しい型を足すときは、ここに関数を登録するだけで ``_convert`` 本体の分岐は
-# 増やさずに済む（ ``_convert`` の複雑度を下げるための仕掛け）。
+# 増やさずに済む（``_convert`` の複雑度を下げるための仕掛け）。
 _CONVERTERS: dict[type, Any] = {
     bool: _convert_bool,
     int: _convert_int,
@@ -529,9 +529,9 @@ _CONVERTERS: dict[type, Any] = {
     str: _convert_str,
 }
 
-# ``from __future__ import annotations`` 経由の文字列型ヒント（ ``"bool"`` など）は
+# ``from __future__ import annotations`` 経由の文字列型ヒント（``"bool"`` など）は
 # ``_candidate_types`` が空タプルを返すため ``_CONVERTERS`` のキー引きでヒットしない。
-# そこで「 ``__name__`` が一致する型」を名前で引ける索引も 1 つ用意する。
+# そこで「``__name__`` が一致する型」を名前で引ける索引も 1 つ用意する。
 _CONVERTER_KEYS_BY_NAME: dict[str, type] = {cls.__name__: cls for cls in _CONVERTERS}
 
 

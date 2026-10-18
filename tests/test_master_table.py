@@ -507,8 +507,8 @@ class TestEnabledMarkReplacesToBool:
 
     ``report_master._to_bool`` を削除し、 ``_convert()`` の bool 分岐で
     comken の ``comken.core.text.is_enabled_mark()`` を直接呼ぶようにした。
-    「有効」列のセルが取る代表的な値（ ``○`` / ``×`` / ``有効`` / ``はい`` /
-    ``true`` / ``True`` / 前後の空白付き / 空欄 / bool / int ）について、
+    「有効」列のセルが取る代表的な値（``○`` / ``×`` / ``有効`` / ``はい`` /
+    ``true`` / ``True`` / 前後の空白付き / 空欄 / bool / int）について、
     旧 ``_to_bool`` と同じ結果であることをここで固定する。
     """
 

@@ -62,7 +62,7 @@ def apply_column_names(
     conflicts: dict[str, list[str]] = {}
     for original, new in zip(table.columns, new_columns, strict=True):
         # ``column_names.get(col, col)`` の ``col`` は ``str`` なので結果は常に
-        # ``str``（ ``None`` にはならない）。 Pyright は ``str | None`` と推論する
+        # ``str``（``None`` にはならない）。 Pyright は ``str | None`` と推論する
         # ことがあるので、 ``key: str = ...`` でローカル束縛して型を確定させる
         key: str = new
         conflicts.setdefault(key, []).append(original)

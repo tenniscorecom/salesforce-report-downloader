@@ -57,7 +57,7 @@ class NewReport(SoqlReport):
     # 任意: 取得した ``Table`` を Python で加工して保存する。 既定は何もしない。
     # サマリーレポートを Python で組み立てる用途（今までサマリーレポートで
     # やっていたものを Python で加工して代わりにする）以外は上書きしなくてよい。
-    # 列名の置き換え（ ``COLUMN_NAMES`` / ``列名の対応.csv`` ）はこのあとに
+    # 列名の置き換え（``COLUMN_NAMES`` / ``列名の対応.csv``）はこのあとに
     # ``save_report()`` が保存直前に適用するため、 加工後の列名がそのまま CSV に出る。
     #
     # 例 1: Table の ``filter`` で行を絞る
@@ -77,7 +77,7 @@ class NewReport(SoqlReport):
     #         summary = df.groupby("StageName", as_index=False)["Amount"].sum()
     #         return Table.from_dataframe(summary)
     #
-    # 加工中の例外は ``SoqlTransformError`` （ ``DownloaderError`` 系）に包まれ、
+    # 加工中の例外は ``SoqlTransformError`` （``DownloaderError`` 系）に包まれ、
     # そのレポートだけの失敗として記録される（次レポートの取得は続く）。
     def transform(self, table: Table) -> Table:
         """TODO: 必要なら取得した ``Table`` を加工して返す（上書きは任意）。"""

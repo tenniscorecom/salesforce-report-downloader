@@ -204,20 +204,20 @@ class SoqlTransformError(DownloaderError):
     は ``ComkenError`` 系だけを「想定した失敗」として次レポートへ続ける
     設計のため、 そのままでは 1 本の加工のミスで他のレポートの取得が
     止まってしまう。 そこで ``transform()`` の中で起きた例外は
-    ``DownloaderError`` 系（ ``ComkenError`` の subclass ）に包み直して、
+    ``DownloaderError`` 系（``ComkenError`` の subclass）に包み直して、
     取得フローがまとめて拾えるようにする。 ``_failure_row()`` 側では
     ``ComkenError`` 系として「Salesforce」区分に入る。
 
-    戻り値が ``Table`` でない（ ``None`` を返した等）場合も同じ例外で
+    戻り値が ``Table`` でない（``None`` を返した等）場合も同じ例外で
     知らせる（保存に ``Table`` 以外を渡すと ``_write_csv`` が壊れるため、
     手前で落とす）。
 
-    メッセージには **行の値は出さない**（ ``str(exc)`` の全文は載せない）。
+    メッセージには **行の値は出さない**（``str(exc)`` の全文は載せない）。
     元の例外クラス名と「加工に失敗した」事実だけを書き、 ``from exc``
-    で元の例外をつなぐ（ ``__cause__`` から辿れる）。
+    で元の例外をつなぐ（``__cause__`` から辿れる）。
 
-    発生箇所: ``src.service.fetch_via_soql()`` （ ``bulk_query()`` の直後、
-    件数の比較（ ``CHECK_COUNT`` ）と同じ接続のうち、加工前の Table に対して
+    発生箇所: ``src.service.fetch_via_soql()`` （``bulk_query()`` の直後、
+    件数の比較（``CHECK_COUNT``）と同じ接続のうち、加工前の Table に対して
     呼ばれる）。
 
     対処:
@@ -243,7 +243,7 @@ class SoqlTransformError(DownloaderError):
 
 
 class SoqlIncompleteError(DownloaderError):
-    """soql-collector の下書きに未完成の印（ ``【未完成】`` ）が残っている
+    """soql-collector の下書きに未完成の印（``【未完成】``）が残っている
 
     soql-collector は SOQL の下書きを出すときに、 補えなかった部分を
     ``【未完成】`` で始まる行として残す。 その印のある SOQL はそのままでは
@@ -259,7 +259,7 @@ class SoqlIncompleteError(DownloaderError):
     soql-collector 側の ``INCOMPLETE_MARKER`` と同じ。 変えるときは
     両方を同時に変える。
 
-    発生箇所: ``src.service.fetch_via_soql()`` （ ``bulk_query()`` を呼ぶ前）
+    発生箇所: ``src.service.fetch_via_soql()`` （``bulk_query()`` を呼ぶ前）
 
     対処:
         soql-collector の下書きに作れなかった部分が残っています。

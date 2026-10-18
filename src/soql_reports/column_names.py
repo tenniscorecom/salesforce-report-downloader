@@ -153,7 +153,7 @@ def load_column_names_for(
 
     挙動:
         - ``列名の対応.csv`` が無い → 空 dict + WARNING （取得は続行）
-        - 見出しだけで行が無い（ ``soql-collector`` 走り立て直後）→ 空 dict + WARNING （取得は続行）
+        - 見出しだけで行が無い（``soql-collector`` 走り立て直後）→ 空 dict + WARNING （取得は続行）
         - ファイルは有るが ``main_object`` の行が無い → 空 dict + WARNING （取得は続行）
         - ``SOQL列名`` / ``表示名`` が空の行 → 飛ばす
         - フォーマット不正（旧形式の見出しも含む）→ ``ColumnNamesCSVFormatError``（取得を止める）

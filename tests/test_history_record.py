@@ -194,7 +194,7 @@ def test_record_writes_byte_identical_row_to_history_csv(
 
     # 「取得経路」列の期待値: ``entry`` が use_soql=False / exceeds_row_limit=False
     # （既定）なので ``_route_of(entry)`` は ``ROUTE_API`` を返す。
-    # ``row.route`` は空のまま（``HistoryRow(route="")`` ）なので
+    # ``row.route`` は空のまま（``HistoryRow(route="")``）なので
     # ``record()`` は ``_route_of(entry)`` の結果を履歴に書く
     from comken.services.salesforce_downloader.history import ROUTE_API
 

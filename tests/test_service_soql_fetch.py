@@ -20,10 +20,10 @@ WARNING だけで API 名保存に倒れる（テストでも検証する）。
 2026-10 に ``SoqlReport.transform()`` を追加し、 ``bulk_query()`` の結果
 （加工前の生データ）に対して ``transform()`` を呼んで保存用 Table を得る形に
 した。 加工の例外／非 Table 戻り値は ``SoqlTransformError`` に包まれ、
-当該レポートだけの失敗として記録される。 未完成の SOQL（ ``1 行目に
+当該レポートだけの失敗として記録される。 未完成の SOQL（``1 行目に
 【未完成】`` の印）は ``fetch_via_soql()`` の ``bulk_query()`` 呼び出し前
 に ``SoqlIncompleteError`` で止める。 いずれも ``_failure_row()`` で
-「Salesforce」区分に入り、 履歴に失敗 1 行が残る（ ``download_scheduled()``
+「Salesforce」区分に入り、 履歴に失敗 1 行が残る（``download_scheduled()``
 は次のレポートの取得を続ける）。
 """
 
@@ -389,7 +389,7 @@ _HEADER: list[str] = ["主オブジェクト", "SOQL列名", "表示名", "備�
 def _write_csv(path: Path, rows: list[list[str]]) -> None:
     """``列名の対応.csv`` を ``comken.toolbox.csv.CSV`` で書く（soql-collector と同じ形）。
 
-    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（ ``CSV`` クラスの既定）。
+    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（``CSV`` クラスの既定）。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     dict_rows: list[dict[str, Value]] = [dict(zip(_HEADER, row, strict=True)) for row in rows]
@@ -482,7 +482,7 @@ class TestSaveAppliesFileColumnNames:
         column_csv_path,
     ):
         """``COLUMN_NAMES`` と ``列名の対応.csv`` の両方に同じキーがあると、
-        手書き（ ``COLUMN_NAMES`` ）が勝つ。"""
+        手書き（``COLUMN_NAMES``）が勝つ。"""
         _registered_for_save(monkeypatch, _ColumnNamesManualReport)
         # ファイル側は ``Name -> ファイル表示名`` を提案。手書き ``名前（手書き）`` が勝つ
         _write_csv(
@@ -565,7 +565,7 @@ class TestSaveAppliesFileColumnNames:
             result = csv_file.read()
         # Opportunity の主オブジェクトには該当行が無いので API 名のまま
         assert result.columns == ["Id", "Name", "Amount"]
-        # WARNING に主オブジェクト名が出ている（ ``列名の対応に主オブジェクト=Opportunity`` ）
+        # WARNING に主オブジェクト名が出ている（``列名の対応に主オブジェクト=Opportunity``）
         assert "列名の対応に主オブジェクト=" in caplog.text
         assert "Opportunity" in caplog.text
 
@@ -578,7 +578,7 @@ class TestSaveAppliesFileColumnNames:
         """``列名の対応.csv`` のフォーマットが壊れている（旧形式も見出しに必要な列が無い）
         と ``ColumnNamesCSVFormatError`` で失敗し、 CSV が一切残らない。"""
         _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
-        # 旧形式の見出し（ ``主オブジェクト`` 列が無い）= フォーマット不正
+        # 旧形式の見出し（``主オブジェクト`` 列が無い）= フォーマット不正
         column_csv_path.parent.mkdir(parents=True, exist_ok=True)
         with CSV(
             column_csv_path,
@@ -620,7 +620,7 @@ class TestSaveAppliesFileColumnNames:
         output_folder,
         column_csv_path,
     ):
-        """Report API 経由（ ``use_soql=False`` ）のときは ``列名の対応.csv`` が
+        """Report API 経由（``use_soql=False``）のときは ``列名の対応.csv`` が
         有っても見出しは変わらない。 ``SoqlReport`` 経由でしか取らないので、
         そもそも ``apply_column_names()`` は呼ばれないのが正。"""
         # ``_ColumnNamesFromFileOnlyReport`` を登録しておく（API 経路では使われない）
@@ -681,7 +681,7 @@ class TestSaveAppliesFileColumnNames:
 
 
 class TestSaveNoFromInSoql:
-    """SOQL から主オブジェクトを取り出せないケース（ ``FROM`` が無い等）の挙動確認。
+    """SOQL から主オブジェクトを取り出せないケース（``FROM`` が無い等）の挙動確認。
 
     取得は失敗させず、 WARNING を 1 行出して API 名のまま保存する。
     """
@@ -694,7 +694,7 @@ class TestSaveNoFromInSoql:
         caplog,
     ):
         """``FROM`` の無い SOQL では主オブジェクトが取れず、 API 名のまま保存される
-        （ ``column_names`` 側ではなく ``service.save_report()`` 側で WARNING が出る）。"""
+        （``column_names`` 側ではなく ``service.save_report()`` 側で WARNING が出る）。"""
 
         class _NoFromReport(SoqlReport):
             KEY = "9300"
@@ -723,7 +723,7 @@ class TestSaveNoFromInSoql:
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
-        # 手書きの COLUMN_NAMES は適用されない（ extra が空のため ``apply_column_names`` の
+        # 手書きの COLUMN_NAMES は適用されない（extra が空のため ``apply_column_names`` の
         # 引数 ``extra={}`` で COLUMN_NAMES がそのまま使われるはずだが、
         # バグが無いようにするためにも結果を確認）
         assert result.columns == ["Id", "名前"]
@@ -781,7 +781,7 @@ class TestSaveNoFromInSoql:
 
 # ─────────────────────────────────────────────────────────────────────
 # fetch_via_soql() の件数比較（2026-10 改定）
-# 偽の Salesforce（ ``MagicMock`` ）でリクエストを組み立て、 一致・不一致・
+# 偽の Salesforce（``MagicMock``）でリクエストを組み立て、 一致・不一致・
 # 比べるための値が取れない・HTTP エラー・ ``CHECK_COUNT=False``・0 件同士を
 # それぞれ検証する
 # ─────────────────────────────────────────────────────────────────────
@@ -806,8 +806,8 @@ def _make_soql_entry(url: str | None = None) -> ReportEntry:
 
 def _build_fake_client(soql_table: Table, *, request_return: object) -> MagicMock:
     """``bulk_query()`` が ``soql_table`` を返し、 ``request()`` が ``request_return``
-    （ ``(payload, headers)`` あるいは ``SalesforceRequestError`` を投げるよう
-    ``side_effect`` に設定する ``MagicMock`` ）を返す偽クライアントを作る。"""
+    （``(payload, headers)`` あるいは ``SalesforceRequestError`` を投げるよう
+    ``side_effect`` に設定する ``MagicMock``）を返す偽クライアントを作る。"""
     client = MagicMock()
     client.__enter__.return_value.bulk_query.return_value = soql_table
     client.__enter__.return_value.data_path.side_effect = lambda suffix: (
@@ -824,7 +824,7 @@ def _payload_with_row_count(row_count: int | object) -> tuple[dict, dict]:
     """``RowCount`` が ``reportMetadata.aggregates`` の 0 番目にあるレスポンスを作る。
 
     ``row_count`` はそのまま ``factMap["T!T"]["aggregates"][0]`` に入る
-    （ ``int`` / ``dict`` / ``bool`` など検証したい形を直接渡せる）。
+    （``int`` / ``dict`` / ``bool`` など検証したい形を直接渡せる）。
     """
     payload = {
         "reportMetadata": {"aggregates": ["RowCount"]},
@@ -891,7 +891,7 @@ class TestVerifySoqlCount:
         assert "次回の取得で一致します" in message
         # WARNING ログにも件数の比較が出ている（目印の行値は出ない）
         assert "SOQL=1, レポート=2" in caplog.text
-        # SOQL 本文・行値が漏れていない（ INFO も含めて ）
+        # SOQL 本文・行値が漏れていない（INFO も含めて）
         service_records = [r for r in caplog.records if r.name == "src.service"]
         for record in service_records:
             assert soql_body_marker not in record.getMessage(), (
@@ -933,7 +933,7 @@ class TestVerifySoqlCount:
         assert "RowCount が見つかりません" in caplog.text
 
     def test_url_with_no_report_id_skips_comparison_with_warning(self, caplog):
-        """URL がレポートの URL でない（ ``report_id_from_url`` で例外）ときは
+        """URL がレポートの URL でない（``report_id_from_url`` で例外）ときは
         WARNING を出して比べる対象が無いことを示し、例外は出さない。"""
         soql_table = Table(["Id"], [{"Id": "1"}])
         client = _build_fake_client(soql_table, request_return=({}, {}))
@@ -943,7 +943,7 @@ class TestVerifySoqlCount:
         with caplog.at_level(logging.WARNING, logger="src.service"):
             _verify_soql_count(bad_url_entry, soql_table, client.__enter__.return_value)
 
-        # ``request()`` が呼ばれていない（ ID が取れないので比較しようがない）
+        # ``request()`` が呼ばれていない（ID が取れないので比較しようがない）
         client.__enter__.return_value.request.assert_not_called()
         assert "レポート ID を URL から取り出せません" in caplog.text
 
@@ -960,7 +960,7 @@ class TestVerifySoqlCount:
         assert "HTTP 500" in caplog.text
 
     def test_http_401_propagates(self):
-        """401 は既存の取得失敗と同じ扱い（ ``SalesforceRequestError`` をそのまま
+        """401 は既存の取得失敗と同じ扱い（``SalesforceRequestError`` をそのまま
         上位へ送出）。WARNING で握りつぶさない。"""
         soql_table = Table(["Id"], [{"Id": "1"}])
         exc = SalesforceRequestError("GET", "/x", 401, "unauthorized")
@@ -972,7 +972,7 @@ class TestVerifySoqlCount:
         assert caught.value.status_code == 401
 
     def test_http_403_propagates(self):
-        """403 も既存の取得失敗と同じ扱い（ ``SalesforceRequestError`` をそのまま）。"""
+        """403 も既存の取得失敗と同じ扱い（``SalesforceRequestError`` をそのまま）。"""
         soql_table = Table(["Id"], [{"Id": "1"}])
         exc = SalesforceRequestError("GET", "/x", 403, "forbidden")
         client = _build_fake_client(soql_table, request_return=exc)
@@ -1013,14 +1013,14 @@ class TestVerifySoqlCount:
         assert "RowCount が見つかりません" in caplog.text
 
     def test_non_http_salesforce_error_logs_warning_and_returns(self, caplog):
-        """HTTP 以外の ``SalesforceError``（ ``SalesforceRequestError`` でない
+        """HTTP 以外の ``SalesforceError``（``SalesforceRequestError`` でない
         ``SalesforceError``、 例: 通信断・タイムアウトなど）は WARNING を出して
         保存は続ける。 ``_fetch_report_total_count()`` 内で ``SalesforceRequestError``
         より広い ``SalesforceError`` を補足する形になっていることを検証する。
         """
         soql_table = Table(["Id"], [{"Id": "1"}])
-        # ``SalesforceError`` を直接投げる（ ``SalesforceRequestError`` の
-        # subclass ではない形 ── 401/403 扱いではない ）
+        # ``SalesforceError`` を直接投げる（``SalesforceRequestError`` の
+        # subclass ではない形 ── 401/403 扱いではない）
         exc = SalesforceError("connection lost")
         client = _build_fake_client(soql_table, request_return=exc)
 
@@ -1073,7 +1073,7 @@ class TestFetchViaSoqlCountCheckDisabled:
 class TestCountMismatchFailureRow:
     """``SoqlCountMismatchError`` を ``_failure_row()`` に通したときの履歴行。
 
-    既存の ``_failure_row()`` の区分ルール（ ``ComkenError`` 系は「Salesforce」
+    既存の ``_failure_row()`` の区分ルール（``ComkenError`` 系は「Salesforce」
     区分）に従うため、 ``SoqlCountMismatchError`` は ``cause="Salesforce"``
     で記録される。
     """
@@ -1121,11 +1121,11 @@ class TestCountCheckSanityCheck:
 
         service_module._verify_soql_count = _always_match
         try:
-            # 不一致ケース（ SOQL=1 件 / レポート=99 件 ）で、
+            # 不一致ケース（SOQL=1 件 / レポート=99 件）で、
             # 壊した実装では何も起きないはず → pytest.raises が失敗する
             soql_table = Table(["Id"], [{"Id": "1"}])
             client = _build_fake_client(soql_table, request_return=_payload_with_row_count(99))
-            # 壊した実装を直接呼ぶ（ ``_verify_soql_count`` というローカル名は
+            # 壊した実装を直接呼ぶ（``_verify_soql_count`` というローカル名は
             # 束縛済みのため、 モジュールの属性経由で参照する）。新シグネチャは
             # ``(entry, table, salesforce)`` なので偽の client を直接渡す
             service_module._verify_soql_count(
@@ -1230,7 +1230,7 @@ class TestFetchViaSoqlTransform:
 
         ``bulk_query()`` が 3 件を返し、 ``Report API`` の ``RowCount`` が 3。
         ``transform()`` が 2 行に絞っても、 比較は加工前の 3 件で行われるので
-        不一致にならず保存に進む（ ``SoqlCountMismatchError`` が出ない）。
+        不一致にならず保存に進む（``SoqlCountMismatchError`` が出ない）。
         """
 
         class _FilterReport(SoqlReport):
@@ -1268,7 +1268,7 @@ class TestFetchViaSoqlTransform:
     def test_transform_exception_becomes_soql_transform_error(self, monkeypatch):
         """``transform()`` の中で ``ValueError`` が出ると ``SoqlTransformError``
         に包まれる。 ``from exc`` で元の例外が ``__cause__`` に繋がり、
-        メッセージに元の例外の種類（ ``ValueError`` ）が含まれる。"""
+        メッセージに元の例外の種類（``ValueError``）が含まれる。"""
 
         marker = "TRANSFORM_VALUE_MARKER_in_row"
 
@@ -1298,7 +1298,7 @@ class TestFetchViaSoqlTransform:
 
         # 元の例外が ``__cause__`` に繋がっている
         assert isinstance(caught.value.__cause__, ValueError)
-        # メッセージに元の例外の種類（ ``ValueError`` ）が入っている
+        # メッセージに元の例外の種類（``ValueError``）が入っている
         message = str(caught.value)
         assert "ValueError" in message
         assert "9001" in message
@@ -1328,7 +1328,7 @@ class TestFetchViaSoqlTransform:
                 with pytest.raises(SoqlTransformError):
                     fetch_via_soql(SOQL_ENTRY)
 
-        # ``src.service`` 由来の全ログ（ DEBUG 含む） に行のマーカーが漏れていない
+        # ``src.service`` 由来の全ログ（DEBUG 含む） に行のマーカーが漏れていない
         service_records = [r for r in caplog.records if r.name == "src.service"]
         for record in service_records:
             assert marker not in record.getMessage(), (
@@ -1460,16 +1460,16 @@ class TestFetchViaSoqlTransform:
         assert row.error_code == "SoqlTransformError"
         assert row.succeeded is False
         # ``DownloadedComkenError`` 系の取り決めに従い ``fetched_from_salesforce``
-        # は ``False``（ ``_failure_row()`` は例外の型だけから組み立てる）。
+        # は ``False``（``_failure_row()`` は例外の型だけから組み立てる）。
         # 技術的には ``bulk_query()`` が成功してから失敗しているのでデータ自体は
-        # 取れているが、 既存の 3 状態（ ``fetched`` / ``saved`` ）の単純化は
-        # 維持する（ ``cause`` で Salesforce 区分に入れば履歴から追える）
+        # 取れているが、 既存の 3 状態（``fetched`` / ``saved``）の単純化は
+        # 維持する（``cause`` で Salesforce 区分に入れば履歴から追える）
         assert row.fetched_from_salesforce is False
         assert row.saved_to_file is None
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 未完成の SOQL（ ``1 行目に【未完成】`` ）の停止（2026-10 追加）
+# 未完成の SOQL（``1 行目に【未完成】``）の停止（2026-10 追加）
 #
 # soql-collector が下書きを出し直すときに 1 行目に付ける印。
 # ``fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止まる。
@@ -1501,7 +1501,7 @@ class TestFetchViaSoqlIncompleteMarker:
         assert "9001" in message
         assert "顧客一覧" in message
         assert INCOMPLETE_SOQL_MARKER in message
-        # **SOQL 本文は漏れていない** （ ``bulk_query()`` が受け取る予定の SOQL の
+        # **SOQL 本文は漏れていない** （``bulk_query()`` が受け取る予定の SOQL の
         # 2 行目以降がメッセージに入っていないこと）
         assert "SELECT Id, StageName FROM Opportunity" not in message
         # ``bulk_query()`` が呼ばれていない（=Salesforce に問い合わせていない）
@@ -1526,8 +1526,8 @@ class TestFetchViaSoqlIncompleteMarker:
         client.__enter__.return_value.bulk_query.assert_not_called()
 
     def test_marker_inside_value_does_not_stop(self, monkeypatch):
-        """印が本文の途中（ ``WHERE 名前 = '【未完成】'`` のような文字列値）に
-        出るだけなら止まらない（ 1 行目が ``SELECT`` で始まっているため）。"""
+        """印が本文の途中（``WHERE 名前 = '【未完成】'`` のような文字列値）に
+        出るだけなら止まらない（1 行目が ``SELECT`` で始まっているため）。"""
 
         class _OkReport(SoqlReport):
             KEY = "9001"
@@ -1544,7 +1544,7 @@ class TestFetchViaSoqlIncompleteMarker:
         assert result is table
 
     def test_marker_on_later_line_does_not_stop(self, monkeypatch):
-        """印が 2 行目以降にあるだけなら止まらない（ 1 行目は ``SELECT`` ）。"""
+        """印が 2 行目以降にあるだけなら止まらない（1 行目は ``SELECT``）。"""
 
         class _OkReport(SoqlReport):
             KEY = "9001"

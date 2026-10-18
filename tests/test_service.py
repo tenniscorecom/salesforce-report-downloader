@@ -872,7 +872,7 @@ class TestDownloadScheduledRecord:
         概要のフォルダも作られない（勝手に作らない原則）。
 
         ``require_folder()`` がベースフォルダの不在を ``ReportFolderNotFoundError``
-        に変換し、その後 ``mkdir`` は走らない（ ``save_report()`` に到達する前に
+        に変換し、その後 ``mkdir`` は走らない（``save_report()`` に到達する前に
         例外で抜けるため）。 ``mkdir`` が ``parents=False`` で走るとベースが
         無いときに ``FileNotFoundError`` で落ちるが、それを**概要側で**
         起こしてしまうと運用上の意味が無いので、ベース無しのときは概要の
@@ -904,7 +904,7 @@ class TestDownloadScheduledRecord:
             download_scheduled()
         # ベースは作られない
         assert not missing_base.exists()
-        # ベース配下の「概要」フォルダも作られない（ ``save_report()`` に到達しないため）
+        # ベース配下の「概要」フォルダも作られない（``save_report()`` に到達しないため）
         assert not (missing_base / "顧客一覧").exists()
 
     def test_history_saves_folder_is_base_plus_summary(self, paths):
@@ -1462,7 +1462,7 @@ class TestHistory:
 
     def test_record_appends_when_header_is_already_current(self, tmp_path, monkeypatch):
         """既に新 ``COLUMNS`` になっている履歴CSVに対して ``record()`` を呼ぶと、
-        既存の行を保持したまま今回の 1 行が末尾に足される（ ``CSV`` クラスの
+        既存の行を保持したまま今回の 1 行が末尾に足される（``CSV`` クラスの
         ``replace()`` でファイル全体を 1 回だけ書き直す経路）。
         """
         base_path = tmp_path / "ベース"
@@ -2005,7 +2005,7 @@ class TestDownloadScheduled:
 
         2026-09 に「ベース / 概要」の 2 階層になったので、 ``1001`` のグループ設定だけ
         存在しないベースパスを指すようにして「フォルダ未作成エラー」を起こし、
-        ``1002`` は既存パスに繋ぐ（ ``1002`` 側のベースは存在する前提）。
+        ``1002`` は既存パスに繋ぐ（``1002`` 側のベースは存在する前提）。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -2190,7 +2190,7 @@ class TestDownloadScheduled:
         # ``make_master_with_schedule`` を経由せず、 ``make_master`` だけ使うと
         # スケジュール行が自動で付くため、 「スケジュール」シート無しを再現するには
         # ``Excel`` を直接組み立てる。 ここは「スケジュール」シート無しシナリオの
-        # 警告回帰テストの位置づけ（ ``TestUnscheduledReportIsSkipped`` が
+        # 警告回帰テストの位置づけ（``TestUnscheduledReportIsSkipped`` が
         # 機能テスト、 ここでは「``make_master`` を経由しない経路でも警告が出る」
         # という表現テスト）。
         from comken.core.table import Table

@@ -85,11 +85,11 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
     ``SoqlReport.transform()`` を加工前の生の結果に対して呼ぶ。 件数の比較は
     加工前の件数で行われる（レポートの総件数と比べられるのは加工前の件数
     のため）。 加工後が 0 行のときは既存の ``ALLOW_EMPTY`` 判定がそのまま動く。
-    ``transform()`` の中で起きた例外（ ``ComkenError`` 系以外も含む）は
-    ``SoqlTransformError`` （ ``DownloaderError`` 系）に包み直す。 戻り値が
-    ``Table`` でない（ ``None`` を返した等）場合も ``SoqlTransformError``
+    ``transform()`` の中で起きた例外（``ComkenError`` 系以外も含む）は
+    ``SoqlTransformError`` （``DownloaderError`` 系）に包み直す。 戻り値が
+    ``Table`` でない（``None`` を返した等）場合も ``SoqlTransformError``
     で止める。 どちらも ``from exc`` で元の例外を繋ぐ。 メッセージには
-    **行の値や SOQL 本文を含めない** （ ``str(exc)`` をそのまま載せない）。
+    **行の値や SOQL 本文を含めない** （``str(exc)`` をそのまま載せない）。
     """
     report_cls = soql_report_for(entry.key)
     instance = report_cls()
@@ -117,7 +117,7 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
         # （=ログイン 2 回）にならない。 比較は **加工前** の生の結果で行う。
         if report_cls.CHECK_COUNT:
             _verify_soql_count(entry, table, salesforce)
-        # 加工（ transform() ）。 例外／非 Table 戻り値は ``SoqlTransformError``
+        # 加工（transform()）。 例外／非 Table 戻り値は ``SoqlTransformError``
         # に包み直して、 当該レポートだけの失敗として記録させる（次レポートへ続く）。
         # 元の例外クラス名だけをメッセージに含め、 ``str(exc)`` の全文は載せない
         # （行の値／ SOQL 本文が漏れないため）。
@@ -144,7 +144,7 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
 def _verify_soql_count(entry: ReportEntry, table: Table, salesforce: Any) -> None:
     """SOQL の件数と、レポート API の総件数が合うか検証する。
 
-    接続は呼び出し元（ ``fetch_via_soql()`` ）から渡された ``salesforce`` を
+    接続は呼び出し元（``fetch_via_soql()``）から渡された ``salesforce`` を
     **そのまま使う** ── ここで ``site_for()`` をもう一度呼ぶとログインが
     2 回走るため、 接続は外側からもらう（同じ ``with site() as salesforce:`` の
     うちに呼び出される前提）。
@@ -204,13 +204,13 @@ def _fetch_report_total_count(salesforce: Any, report_id: str) -> int | None:
     形式が違う（``dict`` の ``value`` を採る場合を含む）など、**取れる形に
     なっていない**ときは ``None`` 。 **401 / 403 は ``SalesforceRequestError``
     のまま上位へ送出**（既存の取得失敗扱いに揃え、 WARNING で握りつぶさない）。
-    それ以外の ``SalesforceError`` （ ``SalesforceRequestError`` 以外の通信
+    それ以外の ``SalesforceError`` （``SalesforceRequestError`` 以外の通信
     断・タイムアウト等）は WARNING を 1 行出して ``None`` を返し、保存は続ける
     （HTTP 以外の致命的なら、それは Salesforce 全体に問題があるときで、
     レポートの本体の取得は別経路で実行済み ── 件数比較だけを諦めて続行する
     方が、 取得済みのレコードを捨てずに済む）。
 
-    実装は soql-collector の ``445b817`` （ ``src/fetch.py`` ）から移植した
+    実装は soql-collector の ``445b817`` （``src/fetch.py``）から移植した
     ヘルパーとほぼ同じ形。**値の形**は ``int`` の他に ``{"label": ..., "value": n}``
     形式の ``dict`` を受ける（bool は除外）。取れる形が無い場合は WARNING を
     1 行出し、 ``None`` を返す。
@@ -231,7 +231,7 @@ def _fetch_report_total_count(salesforce: Any, report_id: str) -> int | None:
         )
         return None
     except SalesforceError:
-        # HTTP 以外の ``SalesforceError`` （ ``SalesforceRequestError`` 以外の
+        # HTTP 以外の ``SalesforceError`` （``SalesforceRequestError`` 以外の
         # 通信断・タイムアウト等）。 401/403 は ``SalesforceRequestError`` 側で
         # 既に再送出しているので、 ここはそれ以外の Salesforce 系のみ捕捉する。
         # 件数比較のためだけなので、 WARNING を 1 行出して保存は続ける
@@ -256,10 +256,10 @@ def _extract_row_count_from_report_payload(payload: object) -> int | None:
 
     ``reportMetadata.aggregates`` の中で ``"RowCount"`` の位置にある
     ``factMap["T!T"]["aggregates"]`` の値を返す。位置が取れない /
-    値が想定形でない（ ``int`` / ``{"value": int}`` の ``dict`` 以外 /
-    ``bool`` ）のときは ``None`` 。
+    値が想定形でない（``int`` / ``{"value": int}`` の ``dict`` 以外 /
+    ``bool``）のときは ``None`` 。
 
-    実装は「 ``_resolve_report_metadata()`` で ``reportMetadata`` /
+    実装は「``_resolve_report_metadata()`` で ``reportMetadata`` /
     ``aggregates`` まで安全に取り出す → ``_find_row_count_index()`` で
     ``RowCount`` の位置を特定 → ``_coerce_row_count_value()`` で値を
     ``int`` に整形」の 3 段構成にして複雑度を下げる。 1 段目・2 段目で
@@ -339,7 +339,7 @@ def _coerce_row_count_value(value: object) -> int | None:
 
     Salesforce の API は ``int`` か ``{"label": ..., "value": n}`` 形式の
     ``dict`` を返す。 ``bool`` は ``int`` のサブクラスなので先に除外する。
-    それ以外の形（ ``str`` / ``float`` / その他 ``dict`` ）は ``None`` 。
+    それ以外の形（``str`` / ``float`` / その他 ``dict``）は ``None`` 。
     想定値 ``int`` / ``{"value": int}`` の ``dict`` しか受け付けない理由は
     親関数 ``_extract_row_count_from_report_payload()`` の docstring に
     従う（件数の比較にしか使わないので、要件外の形は黙って捨てる）。
@@ -357,7 +357,7 @@ def _coerce_dict_value(value: dict) -> int | None:
     """``{"value": int}`` 形式の ``dict`` を ``int`` に整形する。
 
     ``bool`` は ``int`` のサブクラスなので先に除外する。 それ以外の
-    キー（ ``label`` 等）は使わないので、 ``"value"`` だけが対象。
+    キー（``label`` 等）は使わないので、 ``"value"`` だけが対象。
     """
     inner = value.get("value")
     if isinstance(inner, bool):

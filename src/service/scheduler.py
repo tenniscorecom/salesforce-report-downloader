@@ -82,7 +82,7 @@ def _matched_schedule_key(
     """
     # スケジュール行が無いレポートは ``due_rules`` が空になり、取らない。警告ログは
     # ``select_targets()`` 側で出す。 ``is_due()`` と ``rules_by_report.get()`` は
-    # ここで 1 回ずつだけ評価し、 戻り値（ ``due_rules`` ）から後の判定を組み立てる
+    # ここで 1 回ずつだけ評価し、 戻り値（``due_rules``）から後の判定を組み立てる
     # ——元の実装は ``due_rules`` のリスト内包と末尾の ``any(...)`` で同じ評価を
     # 2 回ずつ走らせていた
     rules = rules_by_report.get(entry.key, ())

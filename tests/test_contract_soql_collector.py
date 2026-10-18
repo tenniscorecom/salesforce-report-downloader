@@ -84,7 +84,7 @@ class TestContractSampleLoad:
         }
 
     def test_task_returns_subject(self):
-        """``Task`` は ``Subject → 件名`` の 1 件だけが返る（ ``Opportunity`` の
+        """``Task`` は ``Subject → 件名`` の 1 件だけが返る（``Opportunity`` の
         行は混ざらない）。"""
         result = column_names_module.load_column_names_for(
             "Task",
@@ -96,7 +96,7 @@ class TestContractSampleLoad:
         self,
         caplog: pytest.LogCaptureFixture,
     ):
-        """サンプル CSV に無い主オブジェクト（ ``Contact`` ）を引くと
+        """サンプル CSV に無い主オブジェクト（``Contact``）を引くと
         空 dict ＋ WARNING が出る（取得は止めない）。"""
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
             result = column_names_module.load_column_names_for(
@@ -168,7 +168,7 @@ class TestContractSampleSave:
     """``save_report()`` の保存 CSV の見出しがサンプル CSV の表示名に置き換わる検証。
 
     既存の ``tests/test_service_soql_fetch.py::TestSaveAppliesFileColumnNames``
-    と同じやり方（ ``COLUMN_NAMES_CSV_PATH`` を差し替えて ``save_report()`` を呼ぶ）。
+    と同じやり方（``COLUMN_NAMES_CSV_PATH`` を差し替えて ``save_report()`` を呼ぶ）。
     ここでは **契約の見本ファイルそのもの**を使って soql-collector の出力と
     一致しているかを確かめる。
     """
@@ -181,7 +181,7 @@ class TestContractSampleSave:
     ):
         """サンプルを ``COLUMN_NAMES_CSV_PATH`` に使い、 SOQL の結果 ``Id, Name,
         Amount, Account.Name`` を ``save_report()`` に通すと、 保存 CSV の見出しが
-        ``Id, 商談名, 金額, 取引先名`` になる（ ``Opportunity`` 行だけが残る）。"""
+        ``Id, 商談名, 金額, 取引先名`` になる（``Opportunity`` 行だけが残る）。"""
         entry = ReportEntry(
             key=_ContractSampleReport.KEY,
             summary="契約テスト",
@@ -269,7 +269,7 @@ class TestContractSamplesMatchAcrossRepos:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 未完成の SOQL（ ``tests/contract/未完成のSOQL.contract.txt`` ）
+# 未完成の SOQL（``tests/contract/未完成のSOQL.contract.txt``）
 # soql-collector が下書きを出し直すときに 1 行目に付ける ``【未完成】`` の印
 # を含む見本。 ``fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に止める
 # ことを検証する。
@@ -348,7 +348,7 @@ class TestContractIncompleteSoql:
         message = str(caught.value)
         assert "9301" in message
         assert "契約テスト" in message
-        # **SOQL 本文は漏れていない** （ 2 行目以降の SOQL がメッセージに入っていない）
+        # **SOQL 本文は漏れていない** （2 行目以降の SOQL がメッセージに入っていない）
         assert "SELECT" not in message
         assert "Opportunity" not in message
 

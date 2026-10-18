@@ -642,7 +642,7 @@ def _download(
     try:
         try:
             # 「取得 → 保存」を順に呼ぶ。 ``save_report()`` が ``EmptyReportError`` を
-            # 投げるケース（ 0 件 + ``allow_empty=False`` ）のため、 ``fetch_with_auto_fallback``
+            # 投げるケース（0 件 + ``allow_empty=False``）のため、 ``fetch_with_auto_fallback``
             # までと ``save_report()`` は別々に呼ぶ。 そうすると ``save_report()`` が例外を
             # 投げても ``route`` には ``fetch_with_auto_fallback()`` が確定した
             # 値が入っており、 0 行の自動切替判定で正しく使える。
@@ -706,14 +706,14 @@ def _try_empty_report_browser_fallback(
     """``EmptyReportError`` 時のブラウザ自動切替を試みる。
 
     0 行 + ``allow_empty=False`` の「自動切替」が走る可能性がある唯一の場所。
-    ブラウザに切り替えて 0 行以外が取れればそのパスを返す（ ``record_success`` まで
+    ブラウザに切り替えて 0 行以外が取れればそのパスを返す（``record_success`` まで
     済ませて返す）。 ブラウザに切り替えても 0 行、または自動切替の前提条件を満たさ
     ないときは ``None`` を返し、 呼び出し元 ``_download()`` が
     ``EmptyReportError`` をそのまま失敗として扱う。
 
-    ブラウザ取得自体が失敗した場合（ ``fetch_via_browser`` が例外）は
+    ブラウザ取得自体が失敗した場合（``fetch_via_browser`` が例外）は
     ``BrowserFallbackFailedError`` を投げる — 0 件取り直しのフォールバック失敗を
-    2000 件超の取り直し失敗と同じ型で表現するため（ ``_failure_row()`` で
+    2000 件超の取り直し失敗と同じ型で表現するため（``_failure_row()`` で
     「Salesforce」区分に入る）。
     """
     if not (
@@ -758,10 +758,10 @@ def _try_empty_report_browser_fallback(
         return None
 
     # ブラウザで取れたので、 保存し直して履歴は「成功・自動切替」で記録
-    # （ ``_Attempt`` の開始時刻はそのまま使い、 route だけ書き換える）
+    # （``_Attempt`` の開始時刻はそのまま使い、 route だけ書き換える）
     # 「自動切替: API → ブラウザ（0件取り直し）」の事実は、 この関数に入る前に
     # 出した WARNING
-    # （ "Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます" ）
+    # （"Report API が 0 行を返したため、ブラウザ経由に自動で切り替えます"）
     # が出ているので、 ここでは ``_log_fetch_start()`` を再度呼ばない（重複させない）。
     path = save_report(
         entry,
@@ -786,7 +786,7 @@ def _record_failure_safely(
 ) -> None:
     """``record_failure()`` 時の履歴エラーを ``HistoryWriteError`` に変換する。
 
-    履歴書き込み中の失敗は「元の原因」（ ``exc`` ）を ``HistoryWriteError.__cause__`` で
+    履歴書き込み中の失敗は「元の原因」（``exc``）を ``HistoryWriteError.__cause__`` で
     辿れるようにしておき、 呼び出し側で 1 件の失敗として記録されるようにする。
     履歴書き込みが成功したときはそのまま戻る。
     """

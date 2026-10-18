@@ -36,7 +36,7 @@ _HEADER: list[str] = ["主オブジェクト", "SOQL列名", "表示名", "備�
 def _write_csv(path: Path, rows: list[list[str]]) -> None:
     """``列名の対応.csv`` を ``comken.toolbox.csv.CSV`` で書く（soql-collector と同じ形）。
 
-    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（ ``CSV`` クラスの既定）。
+    soql-collector は UTF-8 BOM 付き CRLF の CSV を出力する（``CSV`` クラスの既定）。
     ヘッダは ``_HEADER`` の順で固定し、 ``rows`` はデータ行の ``list[list[str]]`` 。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -240,8 +240,8 @@ class TestLoadColumnNamesFor:
         assert str(csv_path) in message
 
     def test_old_format_header_raises_format_error(self, csv_path: Path):
-        """旧形式の見出し（ ``管理番号, 概要, SOQL列名, 表示名, 備考`` ）のファイルは
-        ``ColumnNamesCSVFormatError`` で止める（ ``主オブジェクト`` 列が無い）。
+        """旧形式の見出し（``管理番号, 概要, SOQL列名, 表示名, 備考``）のファイルは
+        ``ColumnNamesCSVFormatError`` で止める（``主オブジェクト`` 列が無い）。
 
         新規の ``soql-collector`` で取り直すまで、 CSV 形式の不一致を運用側に
         気づかせるためのテスト。 旧形式のファイルは無視せず明示的に失敗させる。"""
@@ -277,7 +277,7 @@ class TestLoadColumnNamesFor:
 
         見出しすら無いケースは、 CSV 形式が壊れている運用上の問題として
         ``ColumnNamesCSVFormatError`` で止める。 見出しはあるが行が無い
-        （``読み込み結果が空`` ）ケースは、 ``WARNING`` で「該当主オブジェクトの
+        （``読み込み結果が空``）ケースは、 ``WARNING`` で「該当主オブジェクトの
         行が無い」を出して続行する。 ``test_header_only_file_returns_empty_with_warning``
         参照。
         """
@@ -293,7 +293,7 @@ class TestLoadColumnNamesFor:
         assert "対処" in message
 
     def test_format_error_on_unreadable_bytes(self, csv_path: Path):
-        """ファイルが壊れている（ ``UnicodeDecodeError`` ）ときもフォーマット不正で止まる。"""
+        """ファイルが壊れている（``UnicodeDecodeError``）ときもフォーマット不正で止まる。"""
         path = csv_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"\xff\xfe" + b"not utf-8 at all " * 4)
@@ -371,7 +371,7 @@ class TestApplyColumnNamesExtra:
         assert result.to_rows() == [{"Id": "1", "名前": "x"}]
 
     def test_extra_alone_works_when_column_names_empty(self):
-        """``extra`` 単独（ ``COLUMN_NAMES`` が空）でも動く。"""
+        """``extra`` 単独（``COLUMN_NAMES`` が空）でも動く。"""
         table = Table(["Id", "Name"], [{"Id": "1", "Name": "x"}])
         result = apply_column_names(_ColumnNamesEmptyReport, table, extra={"Name": "名前"})
         assert result.columns == ["Id", "名前"]
@@ -403,7 +403,7 @@ def csv_path(tmp_path, monkeypatch) -> Path:
     """``paths.COLUMN_NAMES_CSV_PATH`` を ``tmp_path`` 配下に差し替える。
 
     ``column_names.py`` 側が ``from src.paths import COLUMN_NAMES_CSV_PATH`` で
-    モジュール変数を取り込んでいる（ ``paths.COLUMN_NAMES_CSV_PATH`` を直接
+    モジュール変数を取り込んでいる（``paths.COLUMN_NAMES_CSV_PATH`` を直接
     参照しているわけではない）。 両方を patch しないと ``load_column_names_for``
     が既定の UNC パスを読みに行くので注意。
     戻り値はテストが CSV を書き込むパス（実ファイルはまだ無い）。

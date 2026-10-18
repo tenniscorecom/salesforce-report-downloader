@@ -77,7 +77,7 @@ def save_report(
     **保存の流れ:**
     本番の名前の空ファイルを **一瞬も作らない** ため、 次の順序で書く。
 
-    1. 同じフォルダに **一時ファイル**（ ``~`` プレフィックス + UUID）に CSV を全部書く
+    1. 同じフォルダに **一時ファイル**（``~`` プレフィックス + UUID）に CSV を全部書く
     2. 通常モード（``entry.overwrite`` が ``False``）は ``os.rename`` で最終パス
        （または連番 ``_1`` / ``_2`` …）へ移す — ``os.rename`` は Windows で
        移し先が存在すると ``FileExistsError`` になるので、それを「次の連番候補
@@ -128,7 +128,7 @@ def save_report(
     （``move_into_place()`` がまだ移せていない）と最終ファイル（移せたが 0 バイト
     検査で落とすケース）は ``unlink(missing_ok=True)`` で後始末する。
 
-    **複雑度を下げる:** 本体は「 ``base`` を決める → 一時ファイルを
+    **複雑度を下げる:** 本体は「``base`` を決める → 一時ファイルを
     用意 → ``EmptyReportError`` / dry-run を判定 → SOQL 用の列名適用 → CSV を書く
     → 最終パスへ移す → 0 バイト検査」の手順に絞り、 各手順を ``_prepare_*`` /
     ``_finalize_*`` / ``_verify_*`` / ``_cleanup_*`` 系のヘルパーに委譲して
@@ -216,9 +216,9 @@ def _load_soql_extra_column_names(
 ) -> dict[str, str]:
     """``列名の対応.csv`` からこのレポートの主オブジェクトに該当する行を引く。
 
-    主オブジェクトが取れない（ SOQL に ``FROM`` が無い等）ときは空 ``dict`` を
+    主オブジェクトが取れない（SOQL に ``FROM`` が無い等）ときは空 ``dict`` を
     返し、 API 名のまま保存させる（取得は失敗させない）。 WARNING には SOQL 本文
-    （ WHERE の値等）を出さず、 DEBUG にだけ本文を出す（既存の
+    （WHERE の値等）を出さず、 DEBUG にだけ本文を出す（既存の
     ``logger.debug("SOQL: %s", ...)`` と同ルール）。
     """
     main_object = extract_main_object(soql_text)
@@ -274,7 +274,7 @@ def _finalize_save(tmp_path: Path, base: Path, entry: ReportEntry) -> Path:
     ``HHMM`` なら同じパスになり、 翌日の同時刻に上書きされる。 ``os.replace`` は
     Windows でも移し先が存在するとそのまま上書きする（``os.rename`` と違い
     ``FileExistsError`` にならない）。 書き込みは既に ``_write_csv()`` で終わって
-    いるので、 ここで失敗したら既存ファイルはそのまま残る契約（ ``except`` 経路
+    いるので、 ここで失敗したら既存ファイルはそのまま残る契約（``except`` 経路
     で ``tmp_path`` だけ片付ける）。 連番探索は行わない。
 
     **通常モード:** 一時ファイルを最終パスへ ``os.rename``。 移し先が存在すれば
@@ -307,9 +307,9 @@ def _verify_saved_file_not_empty(final_path: Path, table: Table, entry: ReportEn
 def _cleanup_failed_save(tmp_path: Path, final_path: Path | None) -> None:
     """失敗時に一時ファイルと（移せていれば）最終ファイルを ``unlink`` で片付ける。
 
-    ``final_path`` が決まっていれば（ ``move_into_place`` が成功したあとに 0 バイト
+    ``final_path`` が決まっていれば（``move_into_place`` が成功したあとに 0 バイト
     検査で落とすケース）削除する。 ``tmp_path`` は ``move_into_place`` に成功して
-    いれば既に存在しない（ rename で消えた）ので ``missing_ok=True`` で安全。
+    いれば既に存在しない（rename で消えた）ので ``missing_ok=True`` で安全。
     """
     if final_path is not None:
         final_path.unlink(missing_ok=True)

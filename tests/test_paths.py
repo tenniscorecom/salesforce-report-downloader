@@ -274,7 +274,7 @@ class TestOverwriteColumnMissing:
     """管理表に「上書き」列が無い（=既定値を持つ列の見出しごと無い）場合の挙動。
 
     既存管理表が壊れずに動き続けるよう、 ``default=False`` の列は見出しごと
-    無くても ``False`` として読める（ ``_require_headers`` の仕組み）。
+    無くても ``False`` として読める（``_require_headers`` の仕組み）。
     """
 
     def test_master_without_overwrite_column_reads_as_false(self, tmp_path, monkeypatch):

@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-# プロジェクトルート（ ``src/`` の親）と comken の場所を ``sys.path`` に足す。
+# プロジェクトルート（``src/`` の親）と comken の場所を ``sys.path`` に足す。
 # ``conftest.py`` は pytest が最初にロードするため、各テストが import する
 # 前にこの調整が効く。
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent

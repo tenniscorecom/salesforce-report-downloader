@@ -8,7 +8,7 @@
 - 未完成印のある SOQL は **実行前** に止まり、 ファイルが残らず、 履歴に
   失敗 1 行が残る
 
-ことを確かめるためのもの。 単体テスト（ ``test_service_soql_fetch.py`` ）が
+ことを確かめるためのもの。 単体テスト（``test_service_soql_fetch.py``）が
 ``fetch_via_soql()`` 単体の挙動を見ているのに対し、 ここでは管理表・
 スケジュール・履歴・保存先を含めたフル実行を確認する。
 """
@@ -41,7 +41,7 @@ def _make_master_with_two_reports(
     base_path: Path,
     row_b: list,
 ) -> Path:
-    """``1001``（常に有効）と ``1002``（ ``row_b`` で指定） の 2 件の管理表を作る。"""
+    """``1001``（常に有効）と ``1002``（``row_b`` で指定） の 2 件の管理表を作る。"""
     master_path = tmp_path / "レポート管理表.xlsx"
 
     HEADERS = [
@@ -192,7 +192,7 @@ def _patch_clock(monkeypatch) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 加工（ ``transform()`` ） の例外で 1 件失敗しても、 次レポートの取得が続く
+# 加工（``transform()``） の例外で 1 件失敗しても、 次レポートの取得が続く
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -210,7 +210,7 @@ class _TransformRaises(SoqlReport):
 
 def _fake_salesforce_bulk_query_returning_table(table: Table) -> MagicMock:
     """``bulk_query()`` が ``table`` を返し、 件数比較の ``request()`` が
-    ``RowCount`` 無し（ WARNING で握りつぶされて続行する）のを返す偽 Salesforce。"""
+    ``RowCount`` 無し（WARNING で握りつぶされて続行する）のを返す偽 Salesforce。"""
     client = MagicMock()
     client.__enter__.return_value.bulk_query.return_value = table
     client.__enter__.return_value.data_path.side_effect = lambda suffix: (
@@ -232,7 +232,7 @@ class TestDownloadScheduledTransformFailure:
         ``ScheduledDownloadFailedError`` で ``fetch_via_soql()`` から見た ``1002``
         の例外を ``__cause__`` に繋いで送出される。
 
-        ``1002`` は SOQL 経由（ ``use_soql=True`` ）にして ``fetch_via_soql()`` を
+        ``1002`` は SOQL 経由（``use_soql=True``）にして ``fetch_via_soql()`` を
         経由させ、 ``transform()`` の例外を ``SoqlTransformError`` に包ませる。"""
         _enable_1002(monkeypatch, url=URL_B, use_soql=True)
         _patch_clock(monkeypatch)
@@ -261,7 +261,7 @@ class TestDownloadScheduledTransformFailure:
 
         # ``__cause__`` に ``SoqlTransformError`` が繋がっている
         assert isinstance(caught.value.__cause__, SoqlTransformError)
-        # 履歴は 2 行（ ``1001`` 成功 / ``1002`` 失敗）
+        # 履歴は 2 行（``1001`` 成功 / ``1002`` 失敗）
         history_rows = _read_history(paths_two_reports["history_path"])
         assert len(history_rows) == 2
 
@@ -271,7 +271,7 @@ class TestDownloadScheduledTransformFailure:
         assert row_1001["成否"] == "成功"
         assert row_1001["保存結果"] == "成功"
 
-        # ``1002`` は失敗（ SoqlTransformError ）
+        # ``1002`` は失敗（SoqlTransformError）
         row_1002 = history_rows[1]
         assert row_1002["管理番号"] == "1002"
         assert row_1002["成否"] == "失敗"
@@ -283,7 +283,7 @@ class TestDownloadScheduledTransformFailure:
         assert summary_dir.is_dir()
         assert any(summary_dir.glob("*.csv"))
 
-        # ``1002`` のフォルダは作られない（ ``save_report()`` に到達していないため）
+        # ``1002`` のフォルダは作られない（``save_report()`` に到達していないため）
         summary_dir_b = paths_two_reports["base_path"] / "レポートB"
         assert not summary_dir_b.exists()
 
@@ -325,7 +325,7 @@ class TestDownloadScheduledTransformFailure:
 
         # 送出された ``ScheduledDownloadFailedError`` のメッセージにマーカーが漏れていない
         assert marker not in str(caught.value)
-        # ``__cause__`` （ ``SoqlTransformError`` ） のメッセージにも漏れていない
+        # ``__cause__`` （``SoqlTransformError``） のメッセージにも漏れていない
         assert marker not in str(caught.value.__cause__)
 
         # 履歴の「エラー内容」列にもマーカーが漏れていない
@@ -333,7 +333,7 @@ class TestDownloadScheduledTransformFailure:
         error_row = next(r for r in history_rows if r["管理番号"] == "1002")
         assert marker not in error_row["エラー内容"]
 
-        # ``src.service`` 由来の全ログ（ DEBUG 含む） にもマーカーが漏れていない
+        # ``src.service`` 由来の全ログ（DEBUG 含む） にもマーカーが漏れていない
         service_records = [r for r in caplog.records if r.name == "src.service"]
         for record in service_records:
             assert marker not in record.getMessage(), (
@@ -388,7 +388,7 @@ class TestDownloadScheduledIncompleteSoql:
 
         # ``__cause__`` が ``SoqlIncompleteError``
         assert isinstance(caught.value.__cause__, SoqlIncompleteError)
-        # 履歴 2 行（ 1001 成功 / 1002 失敗 ）
+        # 履歴 2 行（1001 成功 / 1002 失敗）
         history_rows = _read_history(paths_two_reports["history_path"])
         assert len(history_rows) == 2
 
@@ -402,7 +402,7 @@ class TestDownloadScheduledIncompleteSoql:
         summary_dir = paths_two_reports["base_path"] / "レポートA"
         assert any(summary_dir.glob("*.csv"))
 
-        # ``1002`` のフォルダは作られない（ save_report() に到達していない）
+        # ``1002`` のフォルダは作られない（save_report() に到達していない）
         summary_dir_b = paths_two_reports["base_path"] / "レポートB"
         assert not summary_dir_b.exists()
 
@@ -410,7 +410,7 @@ class TestDownloadScheduledIncompleteSoql:
         self, monkeypatch, paths_two_reports, caplog
     ):
         """未完成印の ``SoqlIncompleteError`` のメッセージに SOQL 本文
-        （ 2 行目以降 ）が漏れない（マーカーで確認）。"""
+        （2 行目以降）が漏れない（マーカーで確認）。"""
 
         marker = "INCOMPLETE_SOQL_BODY_MARKER_in_message"
 
