@@ -65,7 +65,7 @@ _FIRST_DATA_ROW = 2
 # 効くよう、十分な行数を確保する
 _SCHEDULE_DROPDOWN_ROW_COUNT = 1000
 
-# 「管理表」シート向けの案内文（旧 `ReportEntry.GUIDE_INTRO` を移設）
+# 「管理表」シート向けの案内文
 REPORT_ENTRY_GUIDE_INTRO = (
     f"「{ReportEntry.SHEET_NAME}」シートに行を足すだけで、新しいレポートを取得できます。"
     "プログラム（コード）を直す必要はありません。"
@@ -88,19 +88,17 @@ def create_template(
 
     **既存ファイルに対象シートがある場合は自動マイグレーションする。**
     ``column()`` 宣言に列を追加・削除した直後でも、運用中の管理表に対してそのまま
-    実行して良い。古いシートに書かれた実データは新しい列構成に揃え直して保持し、
-    増えた列は空欄、減った列は捨てられる（既定値が無い必須列はユーザーが後で埋める）。
-    マイグレーション時は ``rows``（初期行）は**無視**され、既存データが優先される。
+    実行して良い。古いシートの実データは新しい列構成に揃え直して保持し、増えた列は空欄、
+    減った列は捨てられる。このとき ``rows``（初期行）は**無視**され、既存データが優先される。
 
-    **初期行は「データ」として扱う（=記入例ではない）。** 雛形に置いた時点で
-    本物の行なので、背景色は付けず `check` もそのまま通る想定（=ユーザーが
-    後で有効化してから取得する）。
+    **初期行は「データ」として扱う（=記入例ではない）。** 背景色は付けず `check` も
+    そのまま通る想定（ユーザーが後で有効化してから取得する）。
 
     Args:
         path: 作成先（.xlsx）。
         row_cls: 雛形のもとになる `MasterRow` のサブクラス。
         rows: 初期行。`row_cls` のインスタンスの ``Sequence``。既存ファイルに
-            対象シートがある場合は無視される（マイグレーション優先）。
+            対象シートがある場合は無視される。
     """
     path = Path(path)
     specs = row_cls.column_specs()
@@ -108,8 +106,7 @@ def create_template(
 
     existing_rows = _existing_rows_or_none(path, row_cls, specs)
     if existing_rows is not None:
-        # 既存データを新しい列構成に揃え直す（増減は吸収、並び順は宣言順）。
-        # 初期行は無視する（既存ファイルがある＝マイグレーション優先）
+        # 既存データを新しい列構成に揃え直す（増減は吸収、並び順は宣言順）
         rows_dicts = existing_rows
     else:
         rows_dicts = [_row_to_dict(row, specs) for row in rows]
@@ -123,56 +120,13 @@ def create_template(
         len(headers),
     )
 
-    # 同名シートが残っていると ``create_data_sheet()`` が ``SheetAlreadyExistsError``
-    # を投げるため、書き込み前に既存シートを削除する。ファイルが無ければ何もしない
-    _delete_existing_template_sheets(path, [row_cls.SHEET_NAME])
-
-    # 空の雛形でも Excel テーブルを成立させるため、API が要求する見出しだけを
-    # 持つ Table を作る。実データが無い場合の仮行は create_table が保持しない。
-    template_table = CoreTable(headers, rows_dicts)
-    with Excel(path) as excel:
-        excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
-    logger.debug("雛形: データシート作成: path=%s, sheet=%s", path, row_cls.SHEET_NAME)
+    _write_template_data_sheet(path, row_cls, headers, rows_dicts)
 
     book = load_workbook(path)
     sheet = book[f"PY_{row_cls.SHEET_NAME}"]
-
-    # **全セルに雛形用のフォントを当てる。** 既存のフォント属性（太字など）は
-    # そのまま使い回し、`name` だけ書き換える（後勝ちで上書きすると太字まで消える）。
-    # データ行（見出し＋初期行＋将来の行追加ぶん）全体に適用するため
-    # `_DATA_VALIDATION_ROWS` ぶんの余裕を足した範囲を渡す
-    _apply_template_font(sheet, len(rows_dicts) + _DATA_VALIDATION_ROWS)
-    logger.debug(
-        "雛形: テンプレートフォント適用: sheet=%s, 対象=%d 行", row_cls.SHEET_NAME, len(rows_dicts)
-    )
-    # **`choices` がある列にドロップダウンを付ける。** データ行の先頭から
-    # 十分な行数ぶんの範囲に適用し、あとから行を足しても効くようにする
-    _apply_choice_validations(sheet, specs, len(rows_dicts))
-
-    # 管理表シートの場合、同じブックに「設定」シートがあれば「グループ」列に
-    # 「設定」シートの「グループ」列を参照するドロップダウンを追加で付ける
-    # （スケジュール・設定シート単体の雛形では `row_cls` が違うので適用されない）
-    if row_cls is ReportEntry:
-        group_last_row = _FIRST_DATA_ROW + len(rows_dicts) - 1 + _DATA_VALIDATION_ROWS
-        _apply_group_validation(book, sheet, group_last_row)
-
-    # 「スケジュール」シートの場合、「取得頻度」と矛盾する「曜日」「日付」を
-    # 赤く塗る条件付き書式を付ける（編集時点で気づかせるため）
-    if row_cls is ScheduleRule:
-        schedule_last_row = _FIRST_DATA_ROW + len(rows_dicts) - 1 + _DATA_VALIDATION_ROWS
-        _apply_schedule_conditional_formatting(sheet, schedule_last_row, row_cls)
-
-    _auto_width(sheet)
-    sheet.freeze_panes = "A2"
-
+    _decorate_template_sheet(book, sheet, row_cls, specs, len(rows_dicts))
     _write_class_guide(book, row_cls, specs)
-
-    # openpyxl が新規ブックに自動で作る空の「Sheet」が残っていれば削除する。
-    # create_template() のどのステップからも書き込まれない、pristine な残骸。
-    # 万一将来どこかで「Sheet」という名前のシートに実際にデータを書くようになった
-    # 場合に誤って消さないよう、A1 が空のときだけ消す
-    if "Sheet" in book.sheetnames and book["Sheet"]["A1"].value is None:
-        del book["Sheet"]
+    if _drop_empty_default_sheet(book):
         logger.debug("雛形: openpyxl 作成の空シート 'Sheet' を削除: path=%s", path)
 
     book.save(path)
@@ -181,21 +135,72 @@ def create_template(
     return path
 
 
+def _write_template_data_sheet(
+    path: Path, row_cls: type[MasterRow], headers: list[str], rows_dicts: list[dict]
+) -> None:
+    """既存の同名シートを消して、見出し＋データ行の Excel テーブルを書く。"""
+    # 同名シートが残っていると ``create_data_sheet()`` が ``SheetAlreadyExistsError``
+    # を投げるため、書き込み前に削除する。ファイルが無ければ何もしない
+    _delete_existing_template_sheets(path, [row_cls.SHEET_NAME])
+
+    # 空の雛形でも Excel テーブルを成立させるため、見出しだけを持つ Table を作る
+    template_table = CoreTable(headers, rows_dicts)
+    with Excel(path) as excel:
+        excel.create_data_sheet(row_cls.SHEET_NAME).create_table(row_cls.__name__, template_table)
+    logger.debug("雛形: データシート作成: path=%s, sheet=%s", path, row_cls.SHEET_NAME)
+
+
+def _decorate_template_sheet(
+    book: Workbook,
+    sheet: Worksheet,
+    row_cls: type[MasterRow],
+    specs: list[tuple[str, ColumnSpec, Any, Any]],
+    row_count: int,
+) -> None:
+    """データシートにフォント・入力規則・条件付き書式・列幅・見出し固定を付ける。"""
+    # 全セルに雛形用のフォントを当てる。既存のフォント属性（太字など）は残し、`name` だけ
+    # 書き換える。将来の行追加ぶん（`_DATA_VALIDATION_ROWS`）の余裕を足した範囲に適用する
+    _apply_template_font(sheet, row_count + _DATA_VALIDATION_ROWS)
+    logger.debug(
+        "雛形: テンプレートフォント適用: sheet=%s, 対象=%d 行", row_cls.SHEET_NAME, row_count
+    )
+    # `choices` がある列にドロップダウンを付ける（あとから行を足しても効く範囲）
+    _apply_choice_validations(sheet, specs, row_count)
+
+    last_row = _FIRST_DATA_ROW + row_count - 1 + _DATA_VALIDATION_ROWS
+    # 管理表シートの「グループ」列には、「設定」シートを参照するドロップダウンを付ける
+    if row_cls is ReportEntry:
+        _apply_group_validation(book, sheet, last_row)
+    # 「スケジュール」シートには、「取得頻度」と矛盾する「曜日」「日付」を赤くする書式を付ける
+    if row_cls is ScheduleRule:
+        _apply_schedule_conditional_formatting(sheet, last_row, row_cls)
+
+    _auto_width(sheet)
+    sheet.freeze_panes = "A2"
+
+
+def _drop_empty_default_sheet(book: Workbook) -> bool:
+    """openpyxl が新規ブックに自動で作る空の「Sheet」を削除する。削除したら True。
+
+    誤ってデータのあるシートを消さないよう、A1 が空のときだけ消す。
+    """
+    if "Sheet" in book.sheetnames and book["Sheet"]["A1"].value is None:
+        del book["Sheet"]
+        return True
+    return False
+
+
 def create_combined_workbook(path: str | Path) -> Path:
     """「管理表」「スケジュール」「設定」の3シートを 1 つの Excel ブックにまとめて生成する。
 
-    **3クラスぶんの列説明を 1 つの「記入方法」シートにまとめる。** シートごとに
-    分けると、ブックを開いた担当者が「どれを見ればよいか」が分かりにくくなるため
-    （非エンジニアが 1 枚で把握できるようにする）。
+    **3クラスぶんの列説明を 1 つの「記入方法」シートにまとめる**（非エンジニアが
+    1 枚で把握できるようにする）。「管理表」シートの冒頭案内
+    （`REPORT_ENTRY_GUIDE_INTRO`）は「記入方法」シートの先頭に置く。
 
-    「管理表」シートの冒頭案内（`REPORT_ENTRY_GUIDE_INTRO`）は、3シートまとめた
-    「記入方法」シートの先頭に置く（旧 `ReportEntry.GUIDE_INTRO` を移設したもの）。
-
-    **初期行は ``src.initial_rows`` から取る。** 3リスト（`REPORT_ENTRIES` /
-    `SCHEDULE_RULES` / `GROUP_SETTINGS`）の `MasterRow` インスタンスが雛形の
-    最初から入る。**既存ファイルに対象シートがある場合はマイグレーションが優先され、
-    初期行は無視される**（3クラスは互いに独立に判定するため、「管理表だけ既存
-    データがある」「設定シートはまだ無いので初期行から作る」のような混在もありえる）。
+    **初期行は ``src.initial_rows`` から取る**（`REPORT_ENTRIES` / `SCHEDULE_RULES` /
+    `GROUP_SETTINGS`）。**既存ファイルに対象シートがある場合はマイグレーションが優先され、
+    初期行は無視される**（3クラスは互いに独立に判定するので、「管理表だけ既存データがある」
+    のような混在もありえる）。
 
     Args:
         path: 作成先（.xlsx）。
@@ -204,98 +209,58 @@ def create_combined_workbook(path: str | Path) -> Path:
         作成したブックのパス。
 
     Note:
-        この関数は雛形生成用の関数であり、**実データ管理表（`レポート管理表.xlsx`）
-        を上書き生成する実行はしない。** 呼び出し側で運用判断の上、tmp_path
-        等を渡して呼び出す想定。
+        雛形生成用の関数であり、**実データ管理表（`レポート管理表.xlsx`）を上書き生成する
+        実行はしない。** 呼び出し側で tmp_path 等を渡して呼び出す想定。
     """
-    # 初期行は `src.initial_rows` から取る。**関数の入口で取り込む**のは、
-    # モジュール読込時に副作用（例: 空リスト以外の `REPORT_ENTRIES` が定義
-    # されている）を呼び出し側へ波及させないため。
+    # 関数の入口で取り込むのは、モジュール読込時の副作用を呼び出し側へ波及させないため
     from src.initial_rows import GROUP_SETTINGS, REPORT_ENTRIES, SCHEDULE_RULES
 
     path = Path(path)
-    specs_report = ReportEntry.column_specs()
-    specs_schedule = ScheduleRule.column_specs()
-    specs_settings = GroupSetting.column_specs()
-
+    # (クラス, 初期行, 「記入方法」シートの冒頭案内)
+    sheets: list[tuple[type[MasterRow], Sequence[MasterRow], str]] = [
+        (ReportEntry, REPORT_ENTRIES, REPORT_ENTRY_GUIDE_INTRO),
+        (ScheduleRule, SCHEDULE_RULES, ""),
+        (GroupSetting, GROUP_SETTINGS, ""),
+    ]
+    specs = {row_cls: row_cls.column_specs() for row_cls, _, _ in sheets}
     # 各クラスの既存データを独立に確認する（混在を許容する）
-    existing_report = _existing_rows_or_none(path, ReportEntry, specs_report)
-    existing_schedule = _existing_rows_or_none(path, ScheduleRule, specs_schedule)
-    existing_settings = _existing_rows_or_none(path, GroupSetting, specs_settings)
+    existing = {
+        row_cls: _existing_rows_or_none(path, row_cls, specs[row_cls]) for row_cls, _, _ in sheets
+    }
 
     logger.debug(
         "3シート雛形生成開始: path=%s, マイグレーション: report=%s, schedule=%s, settings=%s",
         path,
-        existing_report is not None,
-        existing_schedule is not None,
-        existing_settings is not None,
+        existing[ReportEntry] is not None,
+        existing[ScheduleRule] is not None,
+        existing[GroupSetting] is not None,
     )
 
-    # 既存シートをまとめて1回で削除（同名シートがあると ``SheetAlreadyExistsError``
-    # になるため。3回やると2回目以降が「対象シート無し」となり安全に無視される）
-    _delete_existing_template_sheets(
-        path,
-        [ReportEntry.SHEET_NAME, ScheduleRule.SHEET_NAME, GroupSetting.SHEET_NAME],
-    )
+    # 既存シートをまとめて1回で削除（同名シートがあると ``SheetAlreadyExistsError`` になる）
+    _delete_existing_template_sheets(path, [row_cls.SHEET_NAME for row_cls, _, _ in sheets])
 
     with Excel(path) as excel:
-        _write_data_sheet(
-            excel,
-            ReportEntry,
-            REPORT_ENTRIES,
-            specs_report,
-            existing_rows=existing_report,
-        )
-        _write_data_sheet(
-            excel,
-            ScheduleRule,
-            SCHEDULE_RULES,
-            specs_schedule,
-            existing_rows=existing_schedule,
-        )
-        _write_data_sheet(
-            excel,
-            GroupSetting,
-            GROUP_SETTINGS,
-            specs_settings,
-            existing_rows=existing_settings,
-        )
+        for row_cls, initial_rows, _ in sheets:
+            _write_data_sheet(
+                excel,
+                row_cls,
+                initial_rows,
+                specs[row_cls],
+                existing_rows=existing[row_cls],
+            )
     logger.debug("3シート雛形: データシート作成: path=%s", path)
 
     book = load_workbook(path)
-    _finalize_sheet(
-        book,
-        f"PY_{ReportEntry.SHEET_NAME}",
-        specs_report,
-        REPORT_ENTRIES,
-        row_cls=ReportEntry,
-    )
-    _finalize_sheet(
-        book,
-        f"PY_{ScheduleRule.SHEET_NAME}",
-        specs_schedule,
-        SCHEDULE_RULES,
-        row_cls=ScheduleRule,
-    )
-    _finalize_sheet(
-        book,
-        f"PY_{GroupSetting.SHEET_NAME}",
-        specs_settings,
-        GROUP_SETTINGS,
-        row_cls=GroupSetting,
-    )
-
-    _write_combined_guide(
-        book,
-        [
-            (ReportEntry, specs_report, REPORT_ENTRY_GUIDE_INTRO),
-            (ScheduleRule, specs_schedule, ""),
-            (GroupSetting, specs_settings, ""),
-        ],
-    )
-
-    if "Sheet" in book.sheetnames and book["Sheet"]["A1"].value is None:
-        del book["Sheet"]
+    for row_cls, initial_rows, _ in sheets:
+        _finalize_sheet(
+            book,
+            f"PY_{row_cls.SHEET_NAME}",
+            specs[row_cls],
+            initial_rows,
+            row_cls=row_cls,
+        )
+    _write_combined_guide(book, [(row_cls, specs[row_cls], intro) for row_cls, _, intro in sheets])
+    _drop_empty_default_sheet(book)
 
     book.save(path)
     book.close()
@@ -616,7 +581,7 @@ def _write_combined_guide(
 ) -> None:
     """3クラスぶんの列説明を 1 つの「記入方法」シートにまとめる。
 
-    先頭に1番目のセクションの `intro`（旧 `ReportEntry.GUIDE_INTRO` 相当）を
+    先頭に1番目のセクションの `intro`を
     置き、続いて列定義を順番に並べる。各セクションは見出し行（クラス名）で区切る。
     """
     sheet = book.create_sheet("記入方法")
@@ -790,33 +755,55 @@ def _apply_schedule_conditional_formatting(
 ) -> None:
     """「スケジュール」シートに「取得頻度」と矛盾するセルを赤く塗る条件付き書式。
 
-    ``row_cls`` の ``column()`` 宣言（``header()`` 経由）から動的に列見出しを
-    解決する（列順変更・改名に追従する）。以下のセルを赤く塗る:
+    以下のセルを赤く塗る（「取得頻度」が空の行は判定しない）:
 
-    - 「曜日」セル: 「取得頻度」が「毎週」なのに空、または「取得頻度」が「毎週」
-      以外なのに入っている
-    - 「日付」セル: 「取得頻度」が「毎月」なのに空、または「取得頻度」が「毎月」
-      以外なのに入っている
+    - 「曜日」セル: 「取得頻度」が「毎週」なのに空、または「毎週」以外なのに入っている
+    - 「日付」セル: 「取得頻度」が「毎月」なのに空、または「毎月」以外なのに入っている
 
-    「取得頻度」が空の行は判定しない（未記入の行を赤くしないため）。
-
-    ``ScheduleRule.validate()`` が読み込み時に同様の組み合わせを
-    ``MasterRowValueError`` に変換するので、これは**編集時点で書き間違いを
-    気づかせるための赤いハイライト**。読み込みは引き続き止まる。
+    ``ScheduleRule.validate()`` が読み込み時にも同じ組み合わせを止めるので、
+    これは編集時点で書き間違いに気づかせるためのハイライト。
 
     Args:
         sheet: 「スケジュール」シート。
-        last_row: 条件付き書式を適用する最終行（データ行の終端。ドロップダウン
-            と同じ範囲を共用する想定）。
-        row_cls: ``ScheduleRule`` クラス。列見出しはこの ``column()`` 宣言から
-            動的に取得する。
+        last_row: 条件付き書式を適用する最終行（ドロップダウンと同じ範囲）。
+        row_cls: ``ScheduleRule`` クラス。列見出しはこの宣言から取得する。
 
     Raises:
-        ValueError: 「取得頻度」「曜日」「日付」のいずれかの列がシートに
-            見つからない場合。雛形はこのリポジトリが生成するので、列が
-            無いのは実装バグ（黙ってスキップしない）。
+        ValueError: 「取得頻度」「曜日」「日付」のいずれかの列がシートに無い場合。
     """
-    # ScheduleRule の宣言から実際の Excel 見出しを取り出す（改名・列順変更に追従）
+    frequency_letter, weekday_letter, day_letter = _schedule_column_letters(sheet, row_cls)
+    first_row = _FIRST_DATA_ROW
+    weekday_range = f"{weekday_letter}{first_row}:{weekday_letter}{last_row}"
+    day_range = f"{day_letter}{first_row}:{day_letter}{last_row}"
+    freq_range = f"${frequency_letter}{first_row}"
+    weekday_ref = f"${weekday_letter}{first_row}"
+    day_ref = f"${day_letter}{first_row}"
+    # 「毎週」なのに「曜日」が空 → 赤
+    _add_error_rule(sheet, weekday_range, f'AND({freq_range}="毎週",{weekday_ref}="")')
+    # 「毎週」以外で「曜日」に入っている → 赤
+    _add_error_rule(
+        sheet, weekday_range, f'AND({freq_range}<>"",{freq_range}<>"毎週",{weekday_ref}<>"")'
+    )
+    # 「毎月」なのに「日付」が空 → 赤
+    _add_error_rule(sheet, day_range, f'AND({freq_range}="毎月",{day_ref}="")')
+    # 「毎月」以外で「日付」に入っている → 赤
+    _add_error_rule(sheet, day_range, f'AND({freq_range}<>"",{freq_range}<>"毎月",{day_ref}<>"")')
+    logger.debug(
+        "雛形: スケジュールシートへ条件付き書式を適用: sheet=%s, 曜日=%s, 日付=%s",
+        sheet.title,
+        weekday_range,
+        day_range,
+    )
+
+
+def _schedule_column_letters(sheet: Worksheet, row_cls: type[ScheduleRule]) -> tuple[str, str, str]:
+    """「取得頻度」「曜日」「日付」の列記号を ``(頻度, 曜日, 日付)`` で返す。
+
+    見出しは ``row_cls`` の ``column()`` 宣言から解決する（改名・列順変更に追従）。
+
+    Raises:
+        ValueError: いずれかの列がシートに無い場合（雛形は自前で生成するので実装バグ）。
+    """
     frequency_header = row_cls.header("frequency")
     weekday_header = row_cls.header("raw_weekday")
     day_header = row_cls.header("raw_day_of_month")
@@ -838,62 +825,17 @@ def _apply_schedule_conditional_formatting(
         if letter is None
     ]
     if missing:
-        # 雛形はこのリポジトリが生成する。列が無いのは実装バグ → 黙って
-        # スキップせず明示的に失敗させる
         raise ValueError(
             f"スケジュールシートに必須の列が見つかりません: {missing} / sheet={sheet.title}"
         )
-    first_row = _FIRST_DATA_ROW
-    weekday_range = f"{weekday_letter}{first_row}:{weekday_letter}{last_row}"
-    day_range = f"{day_letter}{first_row}:{day_letter}{last_row}"
-    freq_range = f"${frequency_letter}{first_row}"
-    weekday_ref = f"${weekday_letter}{first_row}"
-    day_ref = f"${day_letter}{first_row}"
-    # 「毎週」なのに「曜日」が空 → 赤
+    return cast(str, frequency_letter), cast(str, weekday_letter), cast(str, day_letter)
+
+
+def _add_error_rule(sheet: Worksheet, cell_range: str, formula: str) -> None:
+    """``formula`` が真のセルを赤く塗る条件付き書式を ``cell_range`` に足す。"""
     sheet.conditional_formatting.add(
-        weekday_range,
-        FormulaRule(
-            formula=[f'AND({freq_range}="毎週",{weekday_ref}="")'],
-            stopIfTrue=False,
-            fill=_ERROR_FILL,
-            font=_ERROR_FONT,
-        ),
-    )
-    # 「毎週」以外で「曜日」に入っている → 赤
-    sheet.conditional_formatting.add(
-        weekday_range,
-        FormulaRule(
-            formula=[f'AND({freq_range}<>"",{freq_range}<>"毎週",{weekday_ref}<>"")'],
-            stopIfTrue=False,
-            fill=_ERROR_FILL,
-            font=_ERROR_FONT,
-        ),
-    )
-    # 「毎月」なのに「日付」が空 → 赤
-    sheet.conditional_formatting.add(
-        day_range,
-        FormulaRule(
-            formula=[f'AND({freq_range}="毎月",{day_ref}="")'],
-            stopIfTrue=False,
-            fill=_ERROR_FILL,
-            font=_ERROR_FONT,
-        ),
-    )
-    # 「毎月」以外で「日付」に入っている → 赤
-    sheet.conditional_formatting.add(
-        day_range,
-        FormulaRule(
-            formula=[f'AND({freq_range}<>"",{freq_range}<>"毎月",{day_ref}<>"")'],
-            stopIfTrue=False,
-            fill=_ERROR_FILL,
-            font=_ERROR_FONT,
-        ),
-    )
-    logger.debug(
-        "雛形: スケジュールシートへ条件付き書式を適用: sheet=%s, 曜日=%s, 日付=%s",
-        sheet.title,
-        weekday_range,
-        day_range,
+        cell_range,
+        FormulaRule(formula=[formula], stopIfTrue=False, fill=_ERROR_FILL, font=_ERROR_FONT),
     )
 
 
