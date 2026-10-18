@@ -85,7 +85,7 @@ class TestPathsCache:
 
     def test_caches_by_resolved_path(self, tmp_path):
         """同じパスで2回呼ぶと、設定シートを1回しか開かない（キャッシュが効く）。"""
-        paths_module._reset_cached_master()
+        paths_module.reset_group_settings_cache()
         try:
             make_book_with_settings(
                 tmp_path / "設定.xlsx",
@@ -99,7 +99,7 @@ class TestPathsCache:
             third = paths_module._load_group_settings_cached(tmp_path / "設定.xlsx")
             assert first == third
         finally:
-            paths_module._reset_cached_master()
+            paths_module.reset_group_settings_cache()
 
 
 class TestGroupSettingDirectLoad:

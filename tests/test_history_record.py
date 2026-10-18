@@ -230,7 +230,7 @@ def test_record_writes_failure_row_with_unchanged_column_layout(
         "comken.services.salesforce_downloader.paths.HISTORY_PATH", tmp_path / "履歴.csv"
     )
     # キャッシュを破棄（前テストで作られたキャッシュが影響しないように）
-    paths_module._reset_cached_master()
+    paths_module.reset_group_settings_cache()
 
     history_path = tmp_path / "履歴.csv"
     # 失敗（保存先フォルダ無し）のケース: Salesforce取得結果=空、保存結果=空、
@@ -336,7 +336,7 @@ def history_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     # ``load_master()`` の初回キャッシュが残ると ``MASTER_PATH`` を差し替えても
     # 内部のキャッシュから読まれる可能性があるので
-    paths_module._reset_cached_master()
+    paths_module.reset_group_settings_cache()
     return tmp_path / "履歴.csv"
 
 

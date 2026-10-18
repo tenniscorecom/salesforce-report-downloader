@@ -41,8 +41,7 @@ class ReportNotRegisteredError(DownloaderError):
     管理番号はコードに定数で書く（CUSTOMER_LIST = "1001"）。管理表から行を消したり、
     番号を打ち間違えたりすると、どのレポートを指しているか決められない。
 
-    発生箇所: download_scheduled() の `_validate_filters_by_report()` /
-    src.paths の `_find()`
+    発生箇所: download_scheduled() の `_validate_filters_by_report()`
 
     対処:
         管理表を開いて、その管理番号の行があるか確認する。

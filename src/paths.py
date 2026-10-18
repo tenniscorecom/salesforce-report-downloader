@@ -1,7 +1,7 @@
 """src/paths.py — 管理表の置き場所と、保存先パスの組み立て。
 
 `download_scheduled()` が Salesforce から落とした CSV を置く**唯一の保存先パス**を
-組み立てる関数と、管理表・グループ設定のプロセス内キャッシュを置く。
+組み立てる関数と、グループ設定のプロセス内キャッシュを置く。
 
 **import 時に `requests` を読まない**（BO 環境で動かす前提）。
 `comken.toolbox.salesforce` に依存しないことで、`requests` の入っていない環境でも
@@ -28,7 +28,7 @@ comken の `append_history()` へ委譲する。
 - レポートの唯一の保存先パスを組み立てる `output_path`
 - 設定シートから保存先フォルダを返す `report_folder`
 - 一時ファイル→最終パスのリネーム（連番フォールバック付き）`move_into_place`
-- 管理表・グループ設定のプロセス内キャッシュ
+- グループ設定のプロセス内キャッシュ
 - 管理表の置き場所の定数（`MASTER_PATH`）
 - ``soql-collector`` の出力（列名対応 CSV）の置き場所 ``COLUMN_NAMES_CSV_PATH``
 
@@ -52,10 +52,7 @@ from comken.core.dates import now as clock_now
 from comken.exceptions import DownloaderError
 from comken.services.salesforce_downloader.paths import SALESFORCE_DOWNLOADER_FOLDER
 
-from src.exceptions import (
-    GroupNotRegisteredError,
-    ReportNotRegisteredError,
-)
+from src.exceptions import GroupNotRegisteredError
 from src.sheets.master import ReportEntry
 
 logger = logging.getLogger(__name__)
@@ -91,53 +88,11 @@ MASTER_PATH = SALESFORCE_DOWNLOADER_FOLDER / MASTER_FILENAME
 COLUMN_NAMES_CSV_PATH = SALESFORCE_DOWNLOADER_FOLDER / "soql-collector" / "列名の対応.csv"
 
 
-def _report_disabled_error(report_key: str, summary: str, master_path: Path) -> DownloaderError:
-    """``DownloaderError`` の「管理表で『無効』になっているレポートを取ろうとした」文言。
-
-    発生箇所: src.paths の `_find()`
-    """
-    return DownloaderError(
-        f"このレポートは無効になっています: {report_key}（{summary}）\n"
-        f"管理表: {master_path}\n"
-        "また使うなら「有効」列を有効に戻してください。"
-        "\n対処: また使うなら管理表の「有効」を「有効」に戻してください。"
-        "使わないなら、呼び出し側のコードから消してください。"
-    )
-
-
-# ── 管理表のプロセス内キャッシュ ──────────────────────────────────────
-# `_find()` が `output_path()` などの公開 API から呼ばれるたびに
-# `load_master()` を実行すると、**ループの中でレポートを N 件取ると
-# 管理表 Excel を N 回開く**ことになる。 管理表は 1 回の実行中に変わらないので、
-# **解決済み絶対パス**をキーにプロセス内キャッシュを持つ（``Config(path)``
-# と同じ考え方: 相対パスと絶対パスを同一視し、``Path.resolve()`` の Windows UNC /
-# 8.3 形式の揺れも吸収する）。
-#
-# キャッシュの無効化条件:
-# - **同じパスのファイルを書き換えても反映されない。** ``stat()`` による更新
-#   確認は意図的に行わない（``Config`` と同じ理由:  Windows で 1 回 25
-#   マイクロ秒、共有サーバーではネットワーク往復。 業務ツールは実行中の
-#   管理表の書き換えを想定しない）。
-# - 反映が必要なときは ``_reset_cached_master()`` を呼んで再アクセスする。
-# - ファイルが存在しないパスはキャッシュせず ``ComkenFileNotFoundError`` がそのまま上がる
-#   （メッセージにパスが含まれるので、業務担当者が共有サーバーの障害 /
-#   パス変更 / 権限喪失に気づける。プロバイダ側で業務例外への変換はしない）。
-# - ``_MASTER_CACHE_MAXSIZE``（既定 16）で **FIFO 退避** する:  業務利用では
-#   管理表は 1〜数種類しかなく到達はまず無いが、テストで大量の ``tmp_path`` を
-#   読むケースでエントリが膨らまないための安全弁。
-_MASTER_CACHE_MAXSIZE = 16
-_master_cache: OrderedDict[str, dict[str, ReportEntry]] = OrderedDict()
-
 # ── グループ設定のプロセス内キャッシュ ─────────────────────────────────────
 # `report_folder()` は管理表の1件ごとに呼ばれる。毎回 `load_group_settings()` を
-# 走らせると、設定シートを N 回開くことになるので、 管理表キャッシュと同じ
-# 設計で ``_master_cache`` とは別口の ``OrderedDict`` にキャッシュする
-# （無効化条件・退避ポリシーは ``_MASTER_CACHE_MAXSIZE`` と揃える）。
-#
-# **管理表キャッシュとはキーを分ける。** 同じ ``MASTER_PATH`` でも、将来
-# 「管理表と設定シートを別ファイルに置く」拡張に備えるため。``_reset_cached_master()``
-# からこのキャッシュも一緒に破棄するので、テストで管理表を差し替えたときに
-# 古いグループ設定が漏れない。
+# 走らせると設定シートを N 回開くので、解決済み絶対パスをキーに保持する。
+# 同じパスのファイルを書き換えても反映されない（`stat()` による更新確認はしない）。
+# 上限を超えたら古いものから捨てる（テストで大量の ``tmp_path`` を読んでも膨らまない）。
 _GROUP_SETTINGS_CACHE_MAXSIZE = 16
 _group_settings_cache: OrderedDict[str, dict[str, Path]] = OrderedDict()
 
@@ -356,53 +311,11 @@ def report_folder(entry: ReportEntry, group_settings: dict[str, Path]) -> Path:
     return base_path
 
 
-def _find(report_key: str, master_path: Path) -> ReportEntry:
-    """管理表から1行を引く。無効なものはここで止める。
-
-    管理表 Excel を読む ``load_master()`` はキャッシュ経由で呼ばれる
-    （プロセス内で同じ解決済みパスなら 1 度しか開かない）。 詳細は
-    モジュール冒頭のキャッシュ設計コメント参照。
-    """
-    entries = _load_master_cached(master_path)
-    entry = entries.get(report_key)
-    if entry is None:
-        raise ReportNotRegisteredError(report_key, sorted(entries), master_path)
-    if not entry.enabled:
-        raise _report_disabled_error(entry.key, entry.summary, master_path)
-    return entry
-
-
-def _load_master_cached(master_path: Path) -> dict[str, ReportEntry]:
-    """``load_master()`` を ``Path.resolve()`` 後の絶対パスでキャッシュする。
-
-    公開 API の ``load_master()`` は Excel を毎回読むシグネチャを残す
-    （呼び出し側がテストで生のアクセスをすることがあるため）。 その
-    公開シグネチャを持ちながら、 ``_find()`` 経由での呼び出しでは
-    Excel を開かないように、この内部関数で ``OrderedDict`` ベースの
-    1段キャッシュに流す。
-    """
-    from src.sheets.master import load_master
-
-    resolved_key = str(master_path) if master_path.is_absolute() else str(master_path.resolve())
-    cache = _master_cache
-    if resolved_key in cache:
-        cache.move_to_end(resolved_key)
-        return cache[resolved_key]
-    entries = load_master(Path(master_path))
-    cache[resolved_key] = entries
-    cache.move_to_end(resolved_key)
-    if len(cache) > _MASTER_CACHE_MAXSIZE:
-        cache.popitem(last=False)
-    return entries
-
-
 def _load_group_settings_cached(master_path: Path) -> dict[str, Path]:
     """``load_group_settings()`` を ``Path.resolve()`` 後の絶対パスでキャッシュする。
 
-    管理表キャッシュと同じポリシー（``_GROUP_SETTINGS_CACHE_MAXSIZE`` で FIFO 退避、
-    ``stat()`` による更新確認は行わない）で、設定シートの読み取りを 1 プロセス内で
-    1パスにつき 1 回に抑える。`_load_master_cached()` と同じ ``Path.resolve()`` 後の
-    キーを共有するので、両キャッシュのキーが食い違うことはない。
+    ``_GROUP_SETTINGS_CACHE_MAXSIZE`` を超えたら古いものから捨てる。
+    ``stat()`` による更新確認は行わない。
     """
     from src.sheets.group_settings import load_group_settings
 
@@ -419,17 +332,9 @@ def _load_group_settings_cached(master_path: Path) -> dict[str, Path]:
     return settings
 
 
-def _reset_cached_master() -> None:
-    """**管理表・グループ設定の両方のキャッシュを破棄する**（テスト用）。
+def reset_group_settings_cache() -> None:
+    """グループ設定のプロセス内キャッシュを破棄する（テスト用）。
 
-    テストでは ``tmp_path`` がテストごとに違う管理表 Excel を指すため、
-    前のテストのキャッシュが残ると別テストの設定が漏れる。 各テストの
-    冒頭で呼ぶ想定（``tests/test_paths.py`` の
-    autouse fixture から）。 利用者向けの公開 API ではない。
-
-    管理表を差し替えると、設定シート（同じブック内）も差し替わるので、
-    **両方のキャッシュを一緒に破棄する**（片方だけ破棄すると、古いグループ
-    設定が残って別テストの設定が漏れる）。
+    ``tmp_path`` ごとに管理表を差し替えるテストで、前のテストの設定が漏れないようにする。
     """
-    _master_cache.clear()
     _group_settings_cache.clear()

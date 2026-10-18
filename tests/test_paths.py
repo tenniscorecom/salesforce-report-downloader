@@ -59,18 +59,12 @@ SUMMARY_1003 = "停止中"
 
 @pytest.fixture(autouse=True)
 def reset_master_cache():
-    """管理表・グループ設定のプロセス内キャッシュをテストごとに破棄する。
-
-    `_find()` は ``Path.resolve()`` 後の絶対パスをキーに管理表をキャッシュする
-    ため、 ``tmp_path`` が違うテスト同士はキーが違っていて**普通はリークしない**。
-    ただしモンキーパッチで `paths.MASTER_PATH` を差し替えた直後に古いキャッシュ
-    を引きずらないよう、念のため明示的に破棄する。
-    """
-    paths_module._reset_cached_master()
+    """グループ設定のプロセス内キャッシュをテストごとに破棄する。"""
+    paths_module.reset_group_settings_cache()
     try:
         yield
     finally:
-        paths_module._reset_cached_master()
+        paths_module.reset_group_settings_cache()
 
 
 def make_master(path: Path, rows: list[list], settings_rows: list[list] | None = None) -> Path:

@@ -287,11 +287,11 @@ def _reset_paths_cache():
     読込に混入しないようにする。``test_paths.py`` と同じ ``autouse=True`` で
     全テストに作用させる。
     """
-    _paths_module._reset_cached_master()
+    _paths_module.reset_group_settings_cache()
     try:
         yield
     finally:
-        _paths_module._reset_cached_master()
+        _paths_module.reset_group_settings_cache()
 
 
 def _patch_master_path(monkeypatch: pytest.MonkeyPatch, master: Path, history: Path) -> None:

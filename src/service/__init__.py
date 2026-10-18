@@ -44,7 +44,6 @@ r"""src/service/ — 取得の本体（パッケージ）。
 - Salesforce の認証・API の叩き方 → comken/toolbox/salesforce/
 - 取得済みファイルの取り出し（`output_path`）→ src.paths
 - 管理表の置き場所（`MASTER_PATH`）→ src.paths
-- 管理表から1行を引く `_find()` → src.paths（`requests` を経由しない側に置く）
 """
 
 from __future__ import annotations

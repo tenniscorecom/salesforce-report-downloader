@@ -38,7 +38,6 @@ from comken.exceptions import (
     HistoryLockTimeoutError,
     HistoryWriteError,
 )
-from comken.services.salesforce_downloader import history as comken_history
 from comken.services.salesforce_downloader.history import (
     ROUTE_API,
     ROUTE_BROWSER_FALLBACK_EMPTY,
@@ -853,11 +852,3 @@ def _failure_row(
         schedule_key=schedule_key,
         route=route,
     )
-
-
-# ``comken.services.salesforce_downloader.history`` をモジュール属性として
-# 持っておく（テストで ``service_module.history`` 経由で差し替える運用を
-# 保ったままにするため）。 ``attempt.py`` は ``_matched_schedule_key()``
-# 経由で ``history.schedule_succeeded_today()`` を呼ぶので、 テストが
-# ``history`` の属性を書き換えると ``attempt`` 側の呼び出しも差し替わる。
-comken_history_module = comken_history
