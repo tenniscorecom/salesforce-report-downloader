@@ -183,9 +183,9 @@ comken と同じ「共有サーバー直接参照（PYTHONPATH）」方式を使
 
 - 利用側プロジェクトの `実行.bat` で、**`PYTHON_LIBRARY` だけを `PYTHONPATH` に足す**。
 - 配置時に書き換えるファイル:
-  - **`src/paths.py`** の `MASTER_PATH`（管理表の置き場所）
-  - **`comken/services/salesforce_downloader/paths.py`** の `HISTORY_PATH`
-    （履歴の置き場所、comken 側の定数）
+  - **`comken/services/salesforce_downloader/paths.py`** の
+    `SALESFORCE_DOWNLOADER_FOLDER`（共有フォルダ。履歴 `HISTORY_PATH` も管理表
+    `src/paths.py` の `MASTER_PATH` も、ここから作られる。**書き換えるのはここだけ**）
   - 仕様の詳細は `docs/salesforce-downloader.md` の「配置するときの設定」を参照
 - 定期実行の登録（何時間おきに呼ぶか）は WinActor（社内RPA基盤）側の設定で行う。
   このリポジトリには持たせない
