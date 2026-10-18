@@ -1,26 +1,17 @@
 """src/sheets/group_settings.py — グループ設定シート。
 
-**`sheets/` には、ワークブック・CSVの「1枚（1ファイル）」ごとに、そこにある列と
-意味を宣言するモジュールを集めている**（`master.py` = レポート管理表シート、
-`schedule.py` = スケジュールシート、`history.py` = 履歴CSV、
-`group_settings.py` = このファイル）。
+**`sheets/` には、ワークブック・CSVの「1枚（1ファイル）」ごとに、そこにある列と意味を
+宣言するモジュールを集めている**（`master.py` / `schedule.py` / `history.py` / このファイル）。
 
-**このシートはレポート管理表と同じブック内の別シート**として配置する。
-1行に「グループ名」と「ベースパス」を書き、管理表の `ReportEntry.group`
-から出力先を引くときに使う。**`report_folder()` の組み立てルールは
-「設定シートのベースパスをそのまま返す」だけ**。Excel の数式
-(VLOOKUP 等) ではなく Python 側で組み立てる点は変わらず、組み立てる
-内容はシンプルな「ベースパス / ファイル」の単一階層に統一した。
+**このシートはレポート管理表と同じブック内の別シート**として配置する（人がブックを
+1つだけ開けば管理表と設定の両方を確認できるように）。1行に「グループ名」と
+「ベースパス」を書き、管理表の `ReportEntry.group` から出力先を引くときに使う。
+`report_folder()` は設定シートのベースパスをそのまま返す。
 
-**Excel の見出しは「ベースURL」だが、書くのは URL ではなくフォルダのパス**で、
-「ベースパス」と呼んでいる対象そのものである。`src.paths.report_folder()`
-が組み立てルールの一次情報。
+**Excel の見出しは「ベースURL」だが、書くのは URL ではなくフォルダのパス。**
+`src.paths.report_folder()` が組み立てルールの一次情報。
 
-``load_group_settings()`` はパスを引数で受け取る（``MASTER_PATH`` は呼び出し側で
-管理する）。``schedule.py`` と同じ設計。
-
-レポート管理表本体とは別ファイルにしない理由は `schedule.py` と同じ——人が
-ブックを1つだけ開けば管理表と設定の両方を確認できるようにするため。
+``load_group_settings()`` はパスを引数で受け取る（``schedule.py`` と同じ設計）。
 """
 
 import logging
@@ -38,13 +29,12 @@ logger = logging.getLogger(__name__)
 class GroupSetting(MasterRow):
     """「設定」シートの1行。出力先の起点（ベースパス）をグループに紐付ける。
 
-    ``unique=True`` の ``group`` 列で、**同じグループ名が2行に書かれていたら
-    エラーにする**（ベースパスが2つあると、どちらに従うか決められないため）。
+    ``unique=True`` の ``group`` 列で、**同じグループ名が2行に書かれていたらエラーにする**
+    （ベースパスが2つあると決められないため）。
     """
 
     SHEET_NAME = "設定"
-    # ``PATH`` クラス変数は設定しない。``ReportEntry`` と同じく ``load_group_settings()``
-    # の引数で指定する
+    # ``PATH`` は設定しない（``load_group_settings()`` の引数で指定する）
 
     group: str = column(
         "グループ",
@@ -64,10 +54,7 @@ class GroupSetting(MasterRow):
 def load_group_settings(path: str | Path) -> dict[str, Path]:
     """設定シートを読んで、{グループ名: ベースパス} の辞書を返す。
 
-    設定シートはレポート管理表と同じブックにあるので、``path`` には管理表の
-    パスをそのまま渡す。``MASTER_PATH`` からの補完はしない（呼び出し側が
-    ``src.paths.MASTER_PATH`` を知っているので、引数で渡す方が依存の方向が
-    素直になる）。
+    設定シートは管理表と同じブックにあるので、``path`` には管理表のパスを渡す。
 
     Args:
         path: 設定シートを含む Excel のパス。

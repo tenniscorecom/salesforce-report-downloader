@@ -1,11 +1,8 @@
 """src/sheets/schedule.py — スケジュール列と取得時刻の判定。
 
-`sheets/` の他のファイルと同じく、**このファイルは「スケジュール」シートに何が
-あるか（`ScheduleRule`）と、その値を使った判定ロジックを持つ**。Excel を読む・
-雛形を作る仕組みは `src.report_master`（`sheets/` の外）にある。
-
-``load_schedule()`` はパスを引数で受け取る（``MASTER_PATH`` は呼び出し側で
-管理する）。設定シート（``src.sheets.group_settings``）と同じ設計。
+**このファイルは「スケジュール」シートに何があるか（`ScheduleRule`）と、その値を使った
+判定ロジックを持つ**。Excel を読む・雛形を作る仕組みは `src.report_master` にある。
+``load_schedule()`` はパスを引数で受け取る（``src.sheets.group_settings`` と同じ設計）。
 """
 
 import datetime as dt
@@ -43,13 +40,11 @@ WEEKDAY_NAMES = ("月", "火", "水", "木", "金", "土", "日")
 
 logger = logging.getLogger(__name__)
 
-# 「第N営業日」表記の正規表現。N は 1 以上の整数。「曜日付き」（例: 「第2営業日（月曜）」）
-# のような表記は受け付けず、もっとも素直な形の入力を要求する
+# 「第N営業日」表記（N は 1 以上の整数）。「曜日付き」などの表記は受け付けない
 _NTH_BUSINESS_DAY_PATTERN = re.compile(r"^第(\d+)営業日$")
 
-# レポート管理表と同じブック内のスケジュール管理シート名。**管理表本体と
-# 一緒に置かれる**ため、このシートが無い管理表でもエラーにせず空とみなす
-# （詳細は ``load_schedule()`` を参照）
+# レポート管理表と同じブック内のスケジュールシート名。このシートが無い管理表は空とみなす
+# （``load_schedule()`` 参照）
 SCHEDULE_SHEET_NAME = "スケジュール"
 
 
@@ -57,11 +52,9 @@ SCHEDULE_SHEET_NAME = "スケジュール"
 class ScheduleRule(MasterRow):
     """「スケジュール」シートの1行。1行 = 1つの取得ルール。
 
-    列定義は `column()` に集約されている。``曜日`` / ``日付`` 列は自由記述
-    （空欄を許す）なので ``choices`` を付けず、``weekday`` /
-    ``day_of_month`` / ``month_end`` / ``nth_business_day`` の 4 つの
-    `@property` でパース結果だけを公開する（``ReportEntry.report_id`` が
-    URL から計算派生するのと同じ考え方）。
+    列定義は `column()` に集約されている。``曜日`` / ``日付`` 列は自由記述（空欄を許す）
+    なので、``weekday`` / ``day_of_month`` / ``month_end`` / ``nth_business_day`` の
+    `@property` でパース結果だけを公開する。
 
     Attributes:
         schedule_key: 列「スケジュールキー」。このルールを一意に識別するキー。
@@ -117,10 +110,8 @@ class ScheduleRule(MasterRow):
         help="このレポートが何時までに欲しいかの目安（記録用）。"
         "取得の判定には使いません（判定に使うのは「取得開始時刻」）。空欄可",
     )
-    # `choices` を宣言しているので、読み込み時は「月〜日」のいずれかに絞り込まれる
-    # （ドロップダウンは `column_specs()` 経由で `apply_schedule_dropdowns()` から
-    # 自動付与される）。手入力でも「月曜日」のような接尾辞付き表記は ``weekday``
-    # property のパースで対応していたが、``choices`` 検査で弾かれるため無効になった
+    # `choices` で読み込み時に「月〜日」に絞り込まれる（ドロップダウンは `column_specs()` 経由で
+    # `apply_schedule_dropdowns()` が付与する）
     raw_weekday: str = column(
         "曜日",
         default="",
@@ -142,8 +133,7 @@ class ScheduleRule(MasterRow):
         "4 値から選びます。「1営業日前」「1営業日後」は、対象日が祝日のときに"
         "代わりに取得する日（前営業日/翌営業日）を表します",
     )
-    # 既定値を持たせない（書き忘れを「有効」と区別するため）。`master.py` の
-    # 「有効」列と同じ考え方
+    # 既定値を持たせない（書き忘れを「有効」と区別するため）
     enabled: bool = column(
         "有効",
         choices=("○", "×"),
@@ -154,11 +144,9 @@ class ScheduleRule(MasterRow):
     def weekday(self) -> int | None:
         """「曜日」列の値を 0=月〜6=日 の整数に変換する。空欄は None。
 
-        読み込み時は ``choices=WEEKDAY_NAMES`` で月〜日に絞り込まれているため、
-        想定外の表記（例: 「月曜日」）はここに来る前に ``MasterRowValueError``
-        として弾かれる。``DownloaderError`` は既定の挙動を逸脱した
-        場合に備えた受け皿で、テストや Python から直接 ``ScheduleRule`` を
-        組み立てたときにだけ使われる。
+        読み込み時は ``choices=WEEKDAY_NAMES`` で絞り込まれるため、想定外の表記は
+        ここに来る前に ``MasterRowValueError`` で弾かれる。``DownloaderError`` は
+        Python から直接 ``ScheduleRule`` を組み立てたときの受け皿。
 
         Raises:
             DownloaderError: 想定外の文字列が書かれている場合。
@@ -198,20 +186,13 @@ class ScheduleRule(MasterRow):
     def validate(self) -> tuple[str, str] | None:
         """行ごとの追加検証。頻度と「曜日」「日付」の組み合わせをここで検査する。
 
-        列単体では ``choices`` で「曜日=月〜日」「日付=空欄OK」までしか表せず、
-        「毎週なのに曜日が空」「毎週以外で曜日が書かれている」「毎月なのに日付が空」
-        のような行をまたぐ組み合わせは、``choices`` だけでは弾けない。読み込み時に
-        一括して ``MasterRowValueError``（行番号・列名付き）に変換するので、
-        業務担当者は「どの行の、どの列をどう直せばいいか」がメッセージで分かる。
-
-        ``_parsed_day_of_month`` は ``int()`` 由来などの ``ValueError`` をそのまま
-        投げるので、ここで「日付」列の解釈不能値を検出して ``(Excel の見出し,
-        メッセージ)`` を返す。
+        列単体の ``choices`` では、「毎週なのに曜日が空」「毎週以外で曜日が書かれている」
+        「毎月なのに日付が空」のような組み合わせは弾けない。``MasterRowValueError``
+        （行番号・列名付き）に変換されるので、業務担当者は直す場所がメッセージで分かる。
+        「日付」列の解釈不能値もここで検出する。
 
         Returns:
-            問題がなければ ``None``。問題があれば ``(Excel の見出し, 直し方の
-            メッセージ)``。``_build()`` 側が行番号を付けて ``MasterRowValueError``
-            に変換する。
+            問題がなければ ``None``。問題があれば ``(Excel の見出し, 直し方のメッセージ)``。
         """
         weekday_header = self.header("raw_weekday")
         day_header = self.header("raw_day_of_month")
@@ -263,12 +244,8 @@ class ScheduleRule(MasterRow):
     def _parsed_day_of_month(self) -> tuple[bool, int | None, int | None]:
         """「日付」列を ``(month_end, day_of_month, nth_business_day)`` に分解する。
 
-        `ReportEntry.report_id` と同じく、Excel の生セル値を 1 回パースして
-        3 つの派生プロパティへ分配する。空欄は「指定なし」、数字 1〜31 は
-        `day_of_month`、文字列「月末」は `month_end=True`、`"第N営業日"` は
-        `nth_business_day=N` として扱う。想定外の値（例: `"来月"`）は
-        ``int()`` 由来の ``ValueError`` がそのまま飛ぶ（専用のエラー型は
-        用意しない）。
+        空欄は「指定なし」、数字 1〜31 は `day_of_month`、「月末」は `month_end=True`、
+        `"第N営業日"` は `nth_business_day=N`。想定外の値は ``ValueError``。
         """
         return _parse_day_of_month(self.raw_day_of_month)
 
@@ -278,19 +255,14 @@ class ScheduleRule(MasterRow):
     ) -> bool:
         """指定時刻にこのスケジュールを実行すべきか判定する。
 
-        祝日判定は ``comken.core.dates`` の ``is_holiday`` / ``is_workday``
-        / ``nth_workday`` を直接使う。国民の祝日と会社休日を
-        まとめて判定するため、呼び出し側でカレンダーを差し替える必要はない
-        （既定の統一カレンダー 1 本だけがサポート対象）。
+        祝日判定は ``comken.core.dates`` の ``is_holiday`` / ``is_workday`` /
+        ``nth_workday`` を直接使う（既定の統一カレンダー 1 本だけが対象）。
 
-        ``FREQUENCY_DAILY`` / ``FREQUENCY_WEEKLY`` / ``FREQUENCY_MONTHLY`` /
-        ``FREQUENCY_BUSINESS_DAY`` で ``start_time is None`` のときは「時刻条件なし」
-        を意味し、日付条件が合えば常に ``True`` を返す（例: 前日以前の確定済みデータの
-        ように、いつ取っても同じ内容のレポート用）。
+        ``start_time is None`` のときは「時刻条件なし」で、日付条件が合えば常に ``True``
+        （前日以前の確定済みデータのように、いつ取っても同じレポート用）。
 
-        「毎営業日」は曜日フィルタ（土日を除く）のみで、祝日の除外は
-        ``holiday_policy`` の組み合わせで実現する（例: 「毎営業日」+「取得しない」で
-        土日祝日を除く真の営業日だけになる）。
+        「毎営業日」は曜日フィルタ（土日を除く）のみで、祝日の除外は ``holiday_policy`` との
+        組み合わせで実現する（「毎営業日」+「取得しない」で土日祝日を除く）。
         """
         if not self.enabled or not self._date_matches(now.date()):
             return False
@@ -317,18 +289,14 @@ class ScheduleRule(MasterRow):
         """祝日を考慮せず、``曜日`` / ``日付`` / ``月末`` / ``第N営業日`` の
         条件だけで ``date`` が生の対象日として一致するかを返す。
 
-        「1営業日前」「1営業日後」の判定で「対象日条件を満たす祝日」を探すときの
-        ヘルパーとして ``_date_matches()`` の内外から呼ばれる。既存の判定
-        ロジックは変えず、そのまま ``_date_matches()`` から移しただけ。
-        ``WorkdayNotFoundError`` が起きた「月の営業日数を超える」設定ミスは
-        ``_date_matches()`` と同じ方針で、この日は対象外として ``False`` を返す
-        （呼び出し元 ``download_scheduled`` 全体を止めるのを避けるため）。
+        「1営業日前」「1営業日後」の判定で「対象日条件を満たす祝日」を探すヘルパー。
+        「月の営業日数を超える」設定ミス（``WorkdayNotFoundError``）は、
+        ``download_scheduled`` 全体を止めないよう、この日は対象外として ``False``。
         """
         if self.weekday is not None and date.weekday() != self.weekday:
             return False
         if self.frequency == FREQUENCY_BUSINESS_DAY and date.weekday() >= 5:
-            # 土曜(5)・日曜(6) は対象外。祝日の除外は `holiday_policy` 側で
-            # 別途行うため、ここでは曜日フィルタのみ
+            # 土日は対象外。祝日の除外は `holiday_policy` 側
             return False
         if self.day_of_month is not None and date.day != self.day_of_month:
             return False
@@ -373,8 +341,7 @@ class ScheduleRule(MasterRow):
         if self._raw_date_matches(date):
             if self.holiday_policy == HOLIDAY_SKIP and is_holiday(date):
                 return False
-            # 対象日自体は BEFORE/AFTER のときは False（前後の営業日へ判定を委ねる）。
-            # SKIP/FETCH はここに来る時点で祝日判定は済んでいるため True
+            # BEFORE/AFTER は前後の営業日へ判定を委ねる。SKIP/FETCH は祝日判定済み
             return self.holiday_policy not in (HOLIDAY_BEFORE, HOLIDAY_AFTER)
         if self.holiday_policy not in (HOLIDAY_BEFORE, HOLIDAY_AFTER):
             return False
@@ -390,15 +357,11 @@ class ScheduleRule(MasterRow):
     ) -> bool:
         """``date`` が祝日に当たった対象日のちょうど 1 営業日ぶん前/後かを判定する。
 
-        ``direction="before"`` のときは「``date`` の翌日から次の営業日に達するまで」
-        の非営業日区間（``date`` 自身を含まない）を、``direction="after"`` のときは
-        「``date`` の前日から前の営業日に達するまで」の非営業日区間を見て、
-        **その区間に祝日である対象日が 1 つでも含まれていれば ``True``**。
-
-        非営業日の区間は ``comken.core.dates`` の ``non_workdays_after`` /
-        ``non_workdays_before`` が返す（探索の上限もカレンダー側が持つ）。
+        ``direction="before"`` のときは ``date`` の翌日から次の営業日に達するまで、
+        ``"after"`` のときは前日から前の営業日に達するまでの非営業日区間（``date`` 自身を含まない）
+        を見て、**その区間に祝日である対象日が 1 つでも含まれていれば ``True``**。
+        区間は ``comken.core.dates`` の ``non_workdays_after`` / ``non_workdays_before`` が返す。
         ``date`` 自身が非営業日の場合は呼び出し元（``_date_matches``）で先に弾く。
-        「対象日条件を満たすか」（曜日・日付・月末・第N営業日）だけがこのクラスの責務。
         """
         holidays_in_a_row = (
             non_workdays_after(date) if direction == "before" else non_workdays_before(date)
@@ -409,11 +372,9 @@ class ScheduleRule(MasterRow):
 def _parse_day_of_month(value: object) -> tuple[bool, int | None, int | None]:
     """「日付」列を ``(month_end, day_of_month, nth_business_day)`` に分解する。
 
-    空欄は「指定なし」、数字 1〜31 は ``day_of_month``、文字列「月末」は
-    ``month_end=True``、``"第N営業日"``（N は 1 以上の整数）は
-    ``nth_business_day=N`` として扱う。``_parse_int`` と同じ緩さで解釈し、
-    想定外の値（例: ``"来月"``）は ``int()`` 由来の ``ValueError`` をそのまま
-    投げる（専用のエラー型は用意しない）。
+    空欄は「指定なし」、数字 1〜31 は ``day_of_month``、「月末」は ``month_end=True``、
+    ``"第N営業日"`` は ``nth_business_day=N``。想定外の値（例: ``"来月"``）は
+    ``ValueError`` を投げる。
 
     Returns:
         3 要素のタプル。常にどれか 1 つだけが立ち、残りは「指定なし」になる。
@@ -435,18 +396,12 @@ def _parse_day_of_month(value: object) -> tuple[bool, int | None, int | None]:
 def load_schedule(path: str | Path) -> list[ScheduleRule]:
     """スケジュール管理シートを読んで、``ScheduleRule`` のリストを返す。
 
-    **シートが存在しない場合はエラーにせず空リストを返す。** この機能を
-    使っていない既存の管理表（「スケジュール」シートをまだ追加していないもの）が、
-    このシートの有無で読み込みごと壊れないようにするため。
+    **シートが存在しない場合はエラーにせず空リストを返す**（「スケジュール」シートを
+    まだ追加していない既存の管理表を壊さないため）。
 
-    ``ScheduleRule.load()`` が `unique=True` の列で重複を検出すると
-    ``MasterDuplicateValueError`` を上げ、必須列が空だと
-    ``MasterRowValueError`` を上げる。これらは `comken/exceptions/tables.py`
-    の例外で、メッセージに**行番号・列名・値**が入る（業務担当者が表の
-    どこを直せばいいか分かる形式）。
-
-    存在しない ``レポートキー`` を指している行はここではエラーにしない。
-    レポート管理表との突き合わせは呼び出し側 ``download_scheduled()`` の責務。
+    重複や必須列の空は ``MasterDuplicateValueError`` / ``MasterRowValueError``
+    （行番号・列名・値入り）になる。存在しない ``レポートキー`` を指す行はここではエラーに
+    しない（管理表との突き合わせは ``download_scheduled()`` の責務）。
 
     Args:
         path: 管理表（Excel）のパス。レポート管理表と同じブック内の
@@ -462,9 +417,7 @@ def load_schedule(path: str | Path) -> list[ScheduleRule]:
         ComkenFileNotFoundError: ``path`` が存在しない場合。
     """
     source = Path(path)
-    # **シートが無い場合は空リストを返す。** この機能をまだ使っていない管理表を
-    # 読み込み時に壊さないため。``ComkenFileNotFoundError`` などの「ファイル自体に
-    # 関するエラー」はそのまま上位へ伝える
+    # シートが無い場合だけ空リスト。ファイル自体のエラーはそのまま伝える
     try:
         return ScheduleRule.load(source)
     except SheetNotFoundError:

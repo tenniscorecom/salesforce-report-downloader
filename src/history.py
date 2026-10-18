@@ -4,9 +4,8 @@
 「管理表の行から履歴に書く値を組み立てる」部分だけを持ち、書き込み自体は
 ``comken.services.salesforce_downloader.history.append_history()`` に委譲する。
 
-境界を履歴にした理由: 履歴の形式が変わるたびに、書く側（ダウンローダー）と
-読む側（comken を import して履歴を読む別プロジェクト）が食い違う事故を防ぐため、
-両者が `comken.services.salesforce_downloader.history` の ``COLUMNS`` /
+履歴の形式が変わるたびに書く側と読む側（comken を import して履歴を読む別プロジェクト）が
+食い違わないよう、両者が `comken.services.salesforce_downloader.history` の ``COLUMNS`` /
 ``HistoryRow`` / ``append_history()`` / ``HistoryFileLock`` を共通で使う。
 """
 
@@ -43,13 +42,9 @@ def record(
 ) -> None:
     """履歴を1行追記する。ファイルが無ければ見出し行から作る。
 
-    履歴の本体（ロック・列検証・書き換え）は comken 側の ``append_history()`` に
-    委譲する。**「取得経路」列が最後に増えた**。他の列の値・順番・空欄の扱いは
-    comken 側に移す前の ``record()`` から変えない（管理番号・概要・レポートID・
-    URL・保存先・ファイル名・件数・秒数・原因区分・エラーコード・エラー内容の各列
-    とその順序）。取得経路の値は呼び出し側が ``row.route`` に明示していればそれを、
-    無ければ ``_route_of(entry)`` で ``entry``（管理表の1行）の「SOQL」「2000件超」
-    列から決める（``src.service._fetch()`` と同じ優先順位）。
+    履歴の本体（ロック・列検証・書き換え）は comken 側の ``append_history()`` に委譲する。
+    「取得経路」列は、呼び出し側が ``row.route`` に明示していればそれを、無ければ
+    ``_route_of(entry)`` で「SOQL」「2000件超」列から決める。
 
     Args:
         path: 履歴 CSV のパス。
@@ -57,16 +52,11 @@ def record(
         project: 呼び出したプロジェクト名。
         row: 履歴1行の本体（成否・各段階の結果・件数・エラー）。型は comken 側の
             ``HistoryRow``（``src.history.HistoryRow`` は同じ型を再エクスポート）。
-        executed_at: 「実行日時」列に書く値。**その実行の開始時刻**を 1 実行で
-            固定して渡すことで、23:59 に始まった実行が日付をまたいでも、判定・
-            ファイル名・履歴のすべてが開始日で揃う。
+        executed_at: 「実行日時」列に書く値。**その実行の開始時刻**を渡して、日付をまたぐ
+            実行でも判定・ファイル名・履歴を開始日で揃える。
         folder: 履歴の「保存先」列に書く値。**実際にファイルを置いたフォルダ**
-            （``ベース/概要``）を文字列で渡す。失敗の履歴など、ファイル未保存の
-            ケースでは呼び出し側が ``resolved_folder()`` で作った
-            ``(保存先を組み立てられません: ...)`` 文字列をそのまま渡す。
-            概要のフォルダは出力パス組み立て時に動的に決まるので、 ``save_report()`` から
-            実保存パス（``path.parent``）を渡してもらう形にすると「概要の決定
-            ロジック」が履歴側に漏れ出さない。
+            （``ベース/概要``）を渡す。ファイル未保存のケースでは ``resolved_folder()`` が
+            作った ``(保存先を組み立てられません: ...)`` 文字列を渡す。
     """
     path = Path(path)
     logger.debug(
@@ -94,16 +84,11 @@ def record(
         "エラーコード": row.error_code,
         "エラー内容": row.error.replace("\n", " "),
         # 「取得経路」列: ``row.route`` が空でなければそれを優先し、空なら
-        # ``_route_of(entry)`` で ``entry``（管理表の1行）の「SOQL」「2000件超」
-        # 列から決める（API / SOQL / ブラウザ / 自動切替2種のいずれも ``row.route``
-        # に明示されていればそれがそのまま書かれる。``HistoryRow.route`` の既定値は
-        # 空文字なので、古い呼び出しは ``_route_of(entry)`` の経路で書かれる）。
-        # 優先順位は ``src.service._fetch()`` と同じ（SOQL → 2000件超 → API）。
+        # ``_route_of(entry)``（SOQL → 2000件超 → API の優先順位）
         "取得経路": row.route or _route_of(entry),
     }
-    # ``append_history()`` が ``COLUMNS`` に無いキーを ``InvalidTableInputError``
-    # で止めるので、``COLUMNS`` 順の dict へ並べ直す（``実行日時`` は ``append_history``
-    # 側で ``executed_at`` から組み立てるため、ここでは含めない）
+    # ``append_history()`` は ``COLUMNS`` に無いキーを止めるので ``COLUMNS`` 順に並べ直す
+    # （``実行日時`` は ``append_history`` 側で組み立てる）
     values = {column: values.get(column, "") for column in COLUMNS if column != "実行日時"}
     append_history(path, values, executed_at=executed_at)
     logger.debug("履歴追記完了: path=%s", path)
@@ -113,9 +98,8 @@ def resolved_folder(entry: ReportEntry) -> str:
     """失敗履歴用に保存先フォルダ文字列を組み立てる。
 
     ``output_path()`` は管理表の「グループ」列が設定シートに無いと
-    ``GroupNotRegisteredError`` を送出する。**失敗の履歴記録中にこのエラーで
-    さらに失敗すると、本来の失敗原因（Salesforce側のエラー等）ごと履歴に残せず、
-    誰も追跡できなくなる**ため、ここでは握りつぶして理由を文字列として残す。
+    ``GroupNotRegisteredError`` を送出する。失敗の履歴記録中にこのエラーで
+    さらに失敗すると本来の失敗原因ごと残せなくなるため、握りつぶして理由を文字列で残す。
     成功時は ``output_path(entry).parent`` を文字列化して返す。
     """
     try:
@@ -140,10 +124,8 @@ def _route_of(entry: ReportEntry) -> str:
     2. ``entry.exceeds_row_limit`` が真 → ``ROUTE_BROWSER``
     3. どちらも偽 → ``ROUTE_API``
 
-    「Report API が 2000件超で失敗したら自動でブラウザに切り替える」処理は
-    ダウンローダー側に無いため、自動切替2種（``ROUTE_BROWSER_FALLBACK_*``）
-    はこの関数では返さない（``row.route`` に入れる呼び出し側が現れたときに
-    使う想定）。
+    自動切替2種（``ROUTE_BROWSER_FALLBACK_*``）はこの関数では返さず、呼び出し側が
+    ``row.route`` に入れる。
     """
     if entry.use_soql:
         return ROUTE_SOQL

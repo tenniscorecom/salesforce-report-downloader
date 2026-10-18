@@ -1,10 +1,7 @@
 """src/exceptions.py — Salesforce レポートダウンローダーの例外。
 
-ダウンローダーが送出する例外クラス（管理表・スケジュール・SOQL・フォルダまわりの
-業務例外）をこのモジュールに置く。``DownloaderError`` は comken 側の
-``comken.exceptions.DownloaderError`` をそのまま使うので、基底クラスとしてだけ
-import する（再エクスポートはしない。利用側で ``from comken.exceptions import
-DownloaderError`` を直接書いてください）。
+管理表・スケジュール・SOQL・フォルダまわりの業務例外を置く。基底の ``DownloaderError`` は
+comken 側のものを使うので再エクスポートしない（利用側は ``comken.exceptions`` から import する）。
 """
 
 from pathlib import Path
@@ -60,9 +57,8 @@ class ReportNotRegisteredError(DownloaderError):
 class GroupNotRegisteredError(DownloaderError):
     """管理表の「グループ」列に設定シートに登録されていない値が書かれている
 
-    出力先フォルダは「グループ→ベースパス」の対応を、設定シート（レポート管理表
-    と同じブック内の「設定」シート）で管理する。管理表にないグループ名が書かれて
-    いると、出力先を決められない。
+    出力先フォルダの「グループ→ベースパス」は設定シート（管理表と同じブック内）で管理する。
+    管理表にないグループ名が書かれていると、出力先を決められない。
 
     発生箇所: src.paths の report_folder()
 
@@ -85,8 +81,7 @@ class SoqlReportNotRegisteredError(DownloaderError):
     """管理表の「SOQL」列が「○」なのに、同じ管理番号の SoqlReport が登録されていない
 
     管理表と ``reports/`` 配下の ``SoqlReport`` 実装は別々に編集できるため、「SOQL」
-    列だけ「○」にして ``SoqlReport`` の追加（``reports/<ファイル>.py`` への
-    サブクラス定義）を忘れると、どの SOQL クエリを使えばいいか決められない。
+    列だけ「○」にして ``SoqlReport`` の追加を忘れると、どの SOQL を使えばいいか決められない。
 
     発生箇所: src.soql_reports の soql_report_for()
 
@@ -108,12 +103,9 @@ class SoqlReportNotRegisteredError(DownloaderError):
 class SoqlColumnNameConflictError(DownloaderError):
     """``COLUMN_NAMES`` の置き換えで、出力 CSV の見出しが 2 つ以上重なった
 
-    ``runner.apply_column_names()`` は ``SoqlReport.COLUMN_NAMES`` を見て
-    SOQL の結果列（API 名）を人が読む見出しへ変える。複数の列を同じ
-    見出しに割り当てると、出力 CSV に同じ列名が 2 回現れて何が何だかに
-    なる。**そのレポートは失敗扱い**（ファイルは書かない）。どの見出しに
-    どの元列が重なったかをメッセージに書き、 ``COLUMN_NAMES`` を直すときに
-    迷わないようにする。
+    ``runner.apply_column_names()`` は ``SoqlReport.COLUMN_NAMES`` で結果列（API 名）を
+    人が読む見出しへ変える。複数の列を同じ見出しに割り当てると同じ列名が 2 回現れるため、
+    **そのレポートは失敗扱い**（ファイルは書かない）。重なった見出しと元列をメッセージに書く。
 
     発生箇所: ``src.soql_reports.runner`` の ``apply_column_names()``
 
@@ -121,7 +113,6 @@ class SoqlColumnNameConflictError(DownloaderError):
         ``reports/<ファイル>.py`` の ``COLUMN_NAMES`` を見直す。重なった
         見出しに割り当てている列の片方を、別の見出しに分ける。 ``soql()``
         側の ``SELECT`` に無い列は ``COLUMN_NAMES`` に残っていても無視される
-        （誤って削っても問題ないので、見直しのときはまず消すところから始める）
     """
 
     def __init__(self, report_key: str, conflicts: dict[str, list[str]]) -> None:
@@ -136,16 +127,12 @@ class SoqlColumnNameConflictError(DownloaderError):
 class SoqlCountMismatchError(DownloaderError):
     """SOQL で取った件数が、 レポート API で取った件数と合わない
 
-    SOQL は人や AI が ``SoqlReport.soql()`` に書くもので、条件の書き間違いで
-    レポートと違う範囲を取得することがある（期間・条件・参照項目の取り違え）。
-    件数の比較は **取得のたびに** 毎回行われ、 **合わなければ保存しない**
-    （ファイルも一時ファイルも作らない）。 **件数一致は中身の一致を意味
-    しない** — 偶然件数が一致してもレコードの値が食い違うことはあり得る。
+    SOQL は人や AI が ``SoqlReport.soql()`` に書くため、条件の書き間違いでレポートと
+    違う範囲を取ることがある。件数は **取得のたびに** 比較し、**合わなければ保存しない**。
+    件数一致は中身の一致を意味しない。0 件同士は一致扱い（``ALLOW_EMPTY`` の判定はその後）。
 
-    0 件同士のときは一致扱いとする（``ALLOW_EMPTY`` の判定はその後で動く）。
-
-    発生箇所: ``src.service`` の ``fetch_via_soql()`` （``bulk_query()`` 直後、
-    同じ接続のうちにもう 1 度 ``Report API`` を叩いて総件数を取得する）
+    発生箇所: ``src.service`` の ``fetch_via_soql()``（``bulk_query()`` 直後に
+    ``Report API`` で総件数を取って比較する）
 
     対処:
         ``SoqlReport.soql()`` の条件がレポートの条件と一致しているか確認する。
@@ -172,14 +159,10 @@ class SoqlCountMismatchError(DownloaderError):
 class ColumnNamesCSVFormatError(DownloaderError):
     """``列名の対応.csv`` が読めない／必要な列が無い
 
-    ``soql-collector`` が出す ``列名の対応.csv`` （UTF-8 BOM 付き CRLF の CSV。
-    列は ``主オブジェクト, SOQL列名, 表示名, 備考, 更新日``）を
-    ``column_names.load_column_names_for()`` が読む。ファイルが読めない、
-    必要な列が無い、見出しだけで行が無い場合は **失敗として止める**（ファイル
-    が無い／該当主オブジェクトの行が無いケースは WARNING だけで続行するが、
-    フォーマット不正は止める。利用者が CSV 形式を間違って作ったことに
-    気づけるよう、 ``DownloaderError`` 系として ``_failure_row()`` で
-    「Salesforce」区分に入る）。
+    ``soql-collector`` が出す ``列名の対応.csv``（UTF-8 BOM 付き CRLF。列は
+    ``主オブジェクト, SOQL列名, 表示名, 備考, 更新日``）を
+    ``column_names.load_column_names_for()`` が読む。読めない・必要な列が無い・見出しだけ
+    の場合は **失敗として止める**（ファイルが無い／該当行が無いのは WARNING だけで続行）。
 
     発生箇所: ``src.soql_reports.column_names`` の ``_read_rows()``
 
@@ -196,35 +179,19 @@ class ColumnNamesCSVFormatError(DownloaderError):
 class SoqlTransformError(DownloaderError):
     """``SoqlReport.transform()`` の実行中に例外が起きた／戻り値が Table でない
 
-    ``transform()`` は ``SoqlReport`` のサブクラスで定義する「取得した Table
-    を加工して保存用の Table を返す」関数。 サマリーレポートを Python で
-    組み立てる用途に使う。 加工ロジックは人が書く Python コードなので、
-    ``KeyError`` / ``ValueError`` / ``ZeroDivisionError`` などの
-    ``ComkenError`` 系でない例外が出やすい。 既存の ``download_scheduled()``
-    は ``ComkenError`` 系だけを「想定した失敗」として次レポートへ続ける
-    設計のため、 そのままでは 1 本の加工のミスで他のレポートの取得が
-    止まってしまう。 そこで ``transform()`` の中で起きた例外は
-    ``DownloaderError`` 系（``ComkenError`` の subclass）に包み直して、
-    取得フローがまとめて拾えるようにする。 ``_failure_row()`` 側では
-    ``ComkenError`` 系として「Salesforce」区分に入る。
+    ``transform()`` は取得した Table を加工して保存用の Table を返す関数。人が書く Python
+    なので ``KeyError`` など ``ComkenError`` 系でない例外が出やすく、そのままでは 1 本の
+    ミスで他のレポートの取得が止まる。そこで中で起きた例外は ``DownloaderError`` 系に
+    包み直して、取得フローがまとめて拾えるようにする（``from exc`` で ``__cause__`` に残す）。
+    戻り値が ``Table`` でない場合も同じ例外にする。
 
-    戻り値が ``Table`` でない（``None`` を返した等）場合も同じ例外で
-    知らせる（保存に ``Table`` 以外を渡すと ``_write_csv`` が壊れるため、
-    手前で落とす）。
+    メッセージには **行の値は出さない**（元の例外クラス名と失敗した事実だけ）。
 
-    メッセージには **行の値は出さない**（``str(exc)`` の全文は載せない）。
-    元の例外クラス名と「加工に失敗した」事実だけを書き、 ``from exc``
-    で元の例外をつなぐ（``__cause__`` から辿れる）。
-
-    発生箇所: ``src.service.fetch_via_soql()`` （``bulk_query()`` の直後、
-    件数の比較（``CHECK_COUNT``）と同じ接続のうち、加工前の Table に対して
-    呼ばれる）。
+    発生箇所: ``src.service.fetch_via_soql()``（加工前の Table に対して呼ばれる）。
 
     対処:
         ``reports/<ファイル>.py`` の ``transform()`` を見直す。 ``SoqlReport``
-        のどの ``KEY`` で起きたかがメッセージに書かれている。 ``from exc``
-        で元の例外が ``__cause__`` に繋がっているので、 合わせて辿ると
-        どこで何が起きたかが分かる。
+        メッセージの ``KEY`` と ``__cause__`` を辿って、どこで何が起きたか確認する。
     """
 
     def __init__(
@@ -245,19 +212,12 @@ class SoqlTransformError(DownloaderError):
 class SoqlIncompleteError(DownloaderError):
     """soql-collector の下書きに未完成の印（``【未完成】``）が残っている
 
-    soql-collector は SOQL の下書きを出すときに、 補えなかった部分を
-    ``【未完成】`` で始まる行として残す。 その印のある SOQL はそのままでは
-    実行できない（=Salesforce に問い合わせる前に止める）。 印は 1 行目
-    （前後の空白を除く）に来る前提。 本文の途中（文字列値など）に
-    ``【未完成】`` が出てくるだけなら止めない。
+    soql-collector は補えなかった部分を ``【未完成】`` で始まる行として残す。その印が
+    1 行目（前後の空白を除く）にある SOQL は、Salesforce に問い合わせる前に止める。
+    本文の途中に出てくるだけなら止めない。
 
-    ``fetch_via_soql()`` が ``bulk_query()`` を呼ぶ前に ``soql()`` の
-    本文を ``lstrip()`` して ``startswith()`` で判定する。 Salesforce
-    には問い合わせない。
-
-    印の文字列は ``src.service.INCOMPLETE_SOQL_MARKER`` の定数で、
-    soql-collector 側の ``INCOMPLETE_MARKER`` と同じ。 変えるときは
-    両方を同時に変える。
+    印の文字列は ``src.service.INCOMPLETE_SOQL_MARKER`` で、soql-collector 側の
+    ``INCOMPLETE_MARKER`` と同じ。変えるときは両方を同時に変える。
 
     発生箇所: ``src.service.fetch_via_soql()`` （``bulk_query()`` を呼ぶ前）
 
@@ -351,19 +311,13 @@ class BrowserFallbackFailedError(DownloaderError):
     """Report API 経路の自動切替で、ブラウザの取り直し自体が失敗した
 
     ``SalesforceReportTruncatedError``（2000件超）または 0 行 + ``allow_empty=False``
-    でブラウザ経由に取り直そうとしたが、ブラウザ取得中（``fetch_via_browser()``）
-    に別の例外（ログイン失敗・CredentialNotFoundError・CredentialError・通信断など）
-    が出て失敗したときに送出する。**この例外は ``DownloaderError`` 系なので、
-    ``_failure_row()`` 側で「Salesforce」区分に分類される**（プログラム扱い
-    にしない）。
+    でブラウザ経由に取り直そうとしたが、``fetch_via_browser()`` 中に別の例外が出た
+    ときに送出する。``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分になる。
 
-    引数で受けるのは ``report_key`` / ``summary`` / ``reason`` / ``route``
-    （``"2000件超"`` または ``"0件"``、 ``route`` は ``ROUTE_BROWSER_FALLBACK_TRUNCATED``
-    / ``ROUTE_BROWSER_FALLBACK_EMPTY`` のいずれか。履歴の「取得経路」列に書くため）。
-    **ダウンローダー側で例外クラスを組み立てる都合上、
-    ``SalesforceReportTruncatedError.__init__(self, report_id, row_limit)``
-    のような「引数 2 つのシグネチャ」を経由しない**（文字列 1 つで ``raise``
-    すると ``TypeError`` になり、原因区分が「プログラム」化ける）。
+    ``route`` は ``ROUTE_BROWSER_FALLBACK_TRUNCATED`` / ``ROUTE_BROWSER_FALLBACK_EMPTY``
+    のいずれかで、履歴の「取得経路」列に書くために持つ。
+    ``SalesforceReportTruncatedError`` のような 2 引数シグネチャの例外は経由しない
+    （文字列 1 つで ``raise`` すると ``TypeError`` になるため）。
 
     発生箇所: ``src/service.py`` の ``fetch_with_auto_fallback()`` と
     ``_download()`` の 0 行取り直し経路
@@ -381,31 +335,21 @@ class BrowserFallbackFailedError(DownloaderError):
             "対処: Salesforce の画面から手動でダウンロードするか、"
             "管理表の「2000件超」/「0件あり」を「○」にして次回の実行を待ってください。"
         )
-        # ``_download()`` 側で ``record_failure()`` の ``route`` 引数に転写するための
-        # 属性。``ROUTE_BROWSER_FALLBACK_TRUNCATED`` / ``ROUTE_BROWSER_FALLBACK_EMPTY``
-        # のいずれか（自動切替を試みたが失敗した、という意味での値）
+        # ``_download()`` が ``record_failure()`` の ``route`` に転写する
         self.route = route
 
 
 class BrowserFallbackIncompleteError(BrowserFallbackFailedError):
     """Report API では2000件超だったのに、ブラウザで取り直した結果も2000行以下だった
 
-    Report API 経路（``2000件超`` × かつ ``SOQL`` ×）で ``SalesforceReportTruncatedError``
-    が出たため、自動でブラウザ経由に取り直したが、**ブラウザでも Report API の
-    上限（2000行）以下しか取れなかった**場合に送出する。2000件超のはずなので、
-    全件取れていない。**管理表の「0件あり」が ○ でも
-    空ファイルは作らずエラー扱いする**（空ファイルが保存されると、利用側は
-    「データが無い日」と「取得が失敗した日」を区別できなくなるため）。
+    ``SalesforceReportTruncatedError`` で自動的にブラウザ経由に取り直したが、
+    **ブラウザでも Report API の上限（2000行）以下しか取れなかった**場合に送出する。
+    管理表の「0件あり」が ○ でも空ファイルは作らずエラー扱いにする（「データが無い日」と
+    「取得が失敗した日」を区別できなくなるため）。
 
-    引数で受けるのは ``report_key`` / ``summary`` / ``row_count`` （ブラウザで取れた
-    行数 ``int``）。 ``self.route`` には ``ROUTE_BROWSER_FALLBACK_TRUNCATED``
-    （自動切替を試みたが取り切れなかった、という意味での値）を入れる。 **親
-    ``BrowserFallbackFailedError.__init__`` の文言（"Report API で...だったため
-    ブラウザで取り直したが**失敗**しました"）は「ブラウザ取得自体が失敗」用なので、
-    ここでは合わないため呼ばず、 ``DownloaderError.__init__`` に自前の文言を直接渡す**。
-    ``route`` の値は comken の ``history`` モジュールから取る（循環 import にならない
-    ことは ``src.exceptions`` を import するときに ``history`` 側の依存が無いことで
-    確認済み）。
+    ``self.route`` には ``ROUTE_BROWSER_FALLBACK_TRUNCATED`` を入れる。親の
+    ``__init__`` の文言は「ブラウザ取得自体が失敗」用で合わないため、呼ばずに
+    ``DownloaderError.__init__`` に自前の文言を渡す。
 
     発生箇所: ``src/service.py`` の ``fetch_with_auto_fallback()``
 
@@ -420,10 +364,7 @@ class BrowserFallbackIncompleteError(BrowserFallbackFailedError):
             f" {row_count} 行でした。全件取れていません: {report_key}（{summary}）\n"
             "対処: Salesforce の画面からレポートを手動でエクスポートしてください。",
         )
-        # 親 ``BrowserFallbackFailedError`` の ``__init__`` を呼ばないので ``self.route``
-        # はここで必ず自分で入れる（``_download()`` 側の ``record_failure(route=...)``
-        # への転写と、外側 ``except BrowserFallbackFailedError`` の ``exc.route`` 参照
-        # で使われる）
+        # 親の ``__init__`` を呼ばないので ``self.route`` はここで入れる
         self.route = ROUTE_BROWSER_FALLBACK_TRUNCATED
 
 
@@ -432,9 +373,8 @@ class SavedFileEmptyError(DownloaderError):
 
     保存先（ファイルサーバー）の書き込みは手元でバッファしてから送られるため、
     クォータ不足で中身が捨てられても Python 側ではエラーにならない。
-    空のファイルを成功扱いにしないための検査。**この例外は ``DownloaderError``
-    系なので、 ``_failure_row()`` 側で「Salesforce」区分に分類される**（
-    プログラム扱いにしない）。
+    空のファイルを成功扱いにしないための検査。``DownloaderError`` 系なので
+    ``_failure_row()`` で「Salesforce」区分になる。
 
     発生箇所: ``src/service.py`` の ``save_report()``
 
