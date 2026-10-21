@@ -110,11 +110,13 @@ class SoqlReport:
                 def transform(self, table):
                     return table.filter(lambda r: r["StageName"] == "Closed Won")
 
-            pandas（``to_dataframe()`` → 加工 → ``from_dataframe()``）を使う::
+            ``group_by`` で集計する::
 
                 def transform(self, table):
-                    df = table.to_dataframe()
-                    summary = df.groupby("StageName")["Amount"].sum().reset_index()
-                    return Table.from_dataframe(summary)
+                    rows = [
+                        {"StageName": name, "金額合計": sum(int(r["Amount"]) for r in sub)}
+                        for name, sub in table.group_by("StageName").items()
+                    ]
+                    return Table(["StageName", "金額合計"], rows)
         """
         return table

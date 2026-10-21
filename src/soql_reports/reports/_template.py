@@ -70,12 +70,14 @@ class NewReport(SoqlReport):
     #     def transform(self, table: Table) -> Table:
     #         return table.select("Id", "Name", "Amount")
     #
-    # 例 3: pandas で group_by する（pandas がインストールされている環境のみ）
+    # 例 3: Table の ``group_by`` で集計する
     #
     #     def transform(self, table: Table) -> Table:
-    #         df = table.to_dataframe()
-    #         summary = df.groupby("StageName", as_index=False)["Amount"].sum()
-    #         return Table.from_dataframe(summary)
+    #         rows = [
+    #             {"StageName": name, "金額合計": sum(int(r["Amount"]) for r in sub)}
+    #             for name, sub in table.group_by("StageName").items()
+    #         ]
+    #         return Table(["StageName", "金額合計"], rows)
     #
     # 加工中の例外は ``SoqlTransformError`` （``DownloaderError`` 系）に包まれ、
     # そのレポートだけの失敗として記録される（次レポートの取得は続く）。

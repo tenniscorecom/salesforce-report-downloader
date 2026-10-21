@@ -25,8 +25,7 @@ class OpportunityStageSummary(SoqlReport):
     """商談を ``StageName`` ごとに件数と金額合計にまとめるサマリー。
 
     SOQL 側で ``StageName`` ごとに group_by する代わりに、 Python の
-    ``Table.filter()`` / ``group_by()`` で同じ結果を作る例。 pandas に
-    依存しないため、 ダウンロード側に pandas が無くても動く。
+    ``Table.filter()`` / ``group_by()`` で同じ結果を作る例。
     """
 
     KEY = "9002"  # 社内で決める管理番号（Salesforce のレポートIDではない）
@@ -44,8 +43,7 @@ class OpportunityStageSummary(SoqlReport):
     def transform(self, table: Table) -> Table:
         """``StageName`` ごとに件数と ``Amount`` の合計を集計する。
 
-        pandas（ ``df.groupby(...)["Amount"].sum()`` ）でも同じことができるが、
-        ここでは ``Table`` の標準 API だけで書いて依存を増やさない例にしている。
+        ``Table`` の標準 API（``group_by``）だけで書く。
         """
         groups = table.group_by("StageName")
         rows: list[dict[str, object]] = []

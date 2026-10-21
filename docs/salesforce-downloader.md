@@ -1027,11 +1027,8 @@ Python で加工して代わりにする）に使う。 サブクラスで上書
 載せず、元の例外クラス名だけを伝える。`from exc` で `__cause__` に元の例外が
 繋がるので、合わせて辿れる）。
 
-pandas を使う例は次のとおり。`pandas` はこのダウンローダーの **必須依存では
-ない**（pandas が入っていない環境でも `Table` の標準 API
-（`filter` / `select` / `group_by`）だけで加工できる）ので、 pandas を
-使う `transform()` を書くときは pandas がその環境で使えるかを確認する
-こと。
+集計は `Table` の標準 API（`filter` / `select` / `group_by`）で書く。たとえば
+ステージごとの件数と金額合計は次のとおり。
 
 ```python
 class OpportunityStageSummary(SoqlReport):
@@ -1041,9 +1038,15 @@ class OpportunityStageSummary(SoqlReport):
         return "SELECT Id, StageName, Amount FROM Opportunity WHERE CloseDate >= 2024-01-01"
 
     def transform(self, table):
-        df = table.to_dataframe()
-        summary = df.groupby("StageName", as_index=False)["Amount"].sum()
-        return Table.from_dataframe(summary)
+        rows = [
+            {
+                "StageName": stage_name,
+                "件数": len(sub_table),
+                "金額合計": sum(int(row["Amount"]) for row in sub_table),
+            }
+            for stage_name, sub_table in table.group_by("StageName").items()
+        ]
+        return Table(["StageName", "件数", "金額合計"], rows)
 ```
 
 動く例は [examples/soql_report_migration](../examples/soql_report_migration)
