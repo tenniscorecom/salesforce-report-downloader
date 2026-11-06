@@ -865,7 +865,7 @@ soql-collector は SOQL を自動では作らない（2026-10-14 に撤去）。
 **置くだけで登録される**（`_` で始まるファイルは対象外。雛形は `reports/_template.py`）。
 `KEY` が空・重複していると、読み込み時に `DownloaderError` で止まる。
 
-`SoqlReport` に書くのは **`KEY` と `soql()` と（任意で）`COLUMN_NAMES` だけ**。
+`SoqlReport` に書くのは **`KEY` と `soql()` と（任意で）`COLUMN_NAMES` と（任意で）`USE_BULK` だけ**。
 URL・保存先・0件可否は **管理表の `ReportEntry`** が単一の正。
 管理表に新しい行を足し、「SOQL」列を「○」にしてから、`SoqlReport` に対応する
 `KEY` でサブクラスを置く。取得は `download_scheduled()` 経由で動き、
@@ -970,6 +970,43 @@ URL・保存先・0件可否はすべて管理表の `ReportEntry` から取り�
 `SUMMARY` / `MATRIX` 形式（グルーピング・集計）と複合レポートタイプは、SOQL の `GROUP BY`
 などで個別に作り直す。
 
+### 取り方（Bulk / REST の切り替え）
+
+SOQL の取り方は `SoqlReport.USE_BULK` で **レポートごとに** 選べる。
+
+- `USE_BULK = True`（**既定**）→ Bulk API 2.0（`SalesforceBase.bulk_query()`）。
+  サーバ側の非同期ジョブで処理するため、件数が多い取得で往復回数を抑えられる。
+  集計関数（`COUNT` / `SUM` など）・`GROUP BY`・`OFFSET`・SELECT 句の中の
+  子サブクエリは **受け付けない**（ジョブ作成時に 400 で失敗する）。
+- `USE_BULK = False` → REST（`SalesforceBase.query()`、ページ送り）。
+  集計関数・`GROUP BY` が使える。
+
+どちらの経路でも、件数の比較（`CHECK_COUNT`）と `transform()` の順番は同じ。
+INFO ログには `取得方法=Bulk` / `取得方法=REST` が出る。
+
+**`USE_BULK = False` のときの注意**（`bulk_query()` との差）:
+
+- 値が文字列にならず **数値・真偽値のまま** `transform()` に渡る
+  （`bulk_query()` は全フィールドが文字列）。
+- 結果が 0 件だと **列が空になる**（`bulk_query()` は CSV の見出しから列名を取る
+  ため 0 件でも列が残る）。
+- 全行で null の参照項目は **列が出ない**（`query()` は 1 件目から列を推測する）。
+
+集計する SOQL はレポートの総件数と件数が合わないので、 `USE_BULK = False` に
+すると同時に `CHECK_COUNT = False` にする（理由をコメントに書く）。
+
+```python
+class OpportunityStageSummary(SoqlReport):
+    KEY = "9002"
+    # 集計関数・GROUP BY を使うので REST 版にする
+    USE_BULK = False
+    # 集計結果はレポートの総件数と件数が合わないので比較しない
+    CHECK_COUNT = False
+
+    def soql(self) -> str:
+        return "SELECT StageName, COUNT(Id) 件数 FROM Opportunity GROUP BY StageName"
+```
+
 ### 件数の比較（SOQL 経路・2026-10 改定）
 
 SOQL は人や AI が `SoqlReport.soql()` に書くもので、条件の書き間違いで
@@ -1008,7 +1045,7 @@ Python で加工して代わりにする）に使う。 サブクラスで上書
 
 呼ばれる順番は次のとおり（`fetch_via_soql()` 内）:
 
-1. `bulk_query()` で **生の Table** を取得
+1. 取得（`bulk_query()` / `query()`）で **生の Table** を取得
 2. 件数の比較（`CHECK_COUNT=True` のとき） — **加工前**の生の結果に対して
    行う（レポートの総件数と比べられるのは加工前の件数のため）
 3. `transform()` を呼ぶ — **加工前の** Table を渡す
@@ -1057,10 +1094,10 @@ class OpportunityStageSummary(SoqlReport):
 
 soql-collector が下書きを出し直すとき、補えなかった部分がある SOQL には
 1 行目に **`【未完成】`** の印が付く（前後の空白は無視して判定）。
-そのままでは実行できないので、 `fetch_via_soql()` が `bulk_query()` を呼ぶ
-**前**に `SoqlIncompleteError` で止める（`DownloaderError` 系なので
+そのままでは実行できないので、 `fetch_via_soql()` が取得（`bulk_query()` /
+`query()`）を呼ぶ **前**に `SoqlIncompleteError` で止める（`DownloaderError` 系なので
 履歴に失敗 1 行が残り、次のレポートの取得は続く）。 Salesforce には
-問い合わせない（`bulk_query()` が呼ばれない）。
+問い合わせない（`bulk_query()` / `query()` が呼ばれない）。
 
 印の文字列は `src.service.soql.INCOMPLETE_SOQL_MARKER` の定数で、 soql-collector
 側の `INCOMPLETE_MARKER` と同じ。 変えるときは **両方同時に** 変えること。

@@ -20,6 +20,7 @@
 - [SOQL 加工 transform() の呼び出し位置](#soql-加工-transform-の呼び出し位置)（2026-10）
 - [`列名の対応.csv` の統合（全体で 1 ファイル）](#列名の対応csv-の統合全体で-1-ファイル)（2026-10）
 - [`schedule_key` 引数の既定値](#schedule_key-引数の既定値)（2026-10）
+- [SOQL 取り方の切り替え（`USE_BULK`）](#soql-取り方の切り替えuse_bulk)（2026-11）
 - [`schedule` シートが無い管理表の扱い](#schedule-シートが無い管理表の扱い)（機能導入時）
 - [`report_folder()` の組み立てルール = ベースパスのみ](#report_folder-の組み立てルール--ベースパスのみ)（2026-09）
 
@@ -192,3 +193,17 @@
 - `_save` は `save_report` にした。モジュール名が `save.py` で、openpyxl の `.save()` とも紛らわしく、
   `save` のままだと `save.save` になるため。
 - `tests/test_private_naming.py` が、別ファイルからの `_` 付きの使用を検出する。
+
+## SOQL 取り方の切り替え（`USE_BULK`）
+
+- 日付: 2026-11
+- 以前の考え: ``SoqlReport`` の SOQL は必ず ``bulk_query()``（Bulk API 2.0）で
+  取っていた。集計関数や ``GROUP BY`` を使う SOQL は作れなかった。
+- いまの考え: ``SoqlReport.USE_BULK``（既定 ``True`` = ``bulk_query()``）で
+  レポートごとに選べる。 ``False`` にすると REST の ``query()``（ページ送り）で
+  取り、 集計関数・``GROUP BY`` も使える。 INFO ログには ``取得方法=Bulk`` /
+  ``取得方法=REST`` が出る。
+- 理由: Bulk API 2.0 は件数が多い取得では速いが、 受け付けない SOQL 構文がある。
+  取り方を切り替えられるようにし、 集計レポートも SOQL 化できるようにする。
+  値の形（文字列か数値か）と 0 件時の列の有無は経路で変わるため、
+  ``USE_BULK=False`` のときの注意は ``SoqlReport`` の docstring に明記した。

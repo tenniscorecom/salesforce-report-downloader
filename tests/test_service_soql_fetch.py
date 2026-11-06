@@ -4,7 +4,8 @@
 ブラウザ経由でもなく、comken の ``soql_report_for()`` で引いた ``SoqlReport`` 経由で
 取得する（「2000件超」列より優先。tests/test_service_browser_fetch.py 側と対）。
 
-取得は ``SalesforceBase.bulk_query()`` 経由（同期の ``query()`` ではない）。
+取得は ``SalesforceBase.bulk_query()`` 経由（``SoqlReport.USE_BULK=False`` の
+レポートだけ REST の ``SalesforceBase.query()`` 経由）。
 
 ``save_report()`` 側では、SOQL 経由のときだけ ``SoqlReport.COLUMN_NAMES`` を保存直前に
 適用する（Report API / ブラウザ経由では適用しない）。管理表ルートに統一して
@@ -1663,3 +1664,121 @@ class TestTransformSanityCheck:
             assert len(result) == 3
         finally:
             service_module.fetch_via_soql = original
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ``SoqlReport.USE_BULK`` による取り方の切り替え（2026-11 追加）
+#
+# ``USE_BULK=True``（既定）は Bulk API 2.0（``bulk_query()``）、
+# ``USE_BULK=False`` は REST（``query()``）で取る。
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _patched_soql_client_with_query(table: Table) -> MagicMock:
+    """``query()`` も ``bulk_query()`` も ``table`` を返す偽クライアントを作る。
+
+    どちらが実際に呼ばれたか（``USE_BULK`` の切り替え）を確かめるため、
+    両方を用意しておく。 件数比較の ``request()`` は ``_soql_table_with_rows()``
+    の行数（3 件）を返す形にして、 件数不一致の WARNING を出さない。
+
+    返すのは **``site_for()`` の戻り値（= 偽の site）** 。 実際に SOQL を
+    叩くのはその中の ``site()`` → ``client.__enter__()`` の先なので、
+    呼び出しの検証は ``site.return_value.__enter__.return_value`` に対して
+    行う。
+    """
+    client = MagicMock()
+    client.__enter__.return_value.bulk_query.return_value = table
+    client.__enter__.return_value.query.return_value = table
+    client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+        f"/services/data/v67.0{suffix}"
+    )
+    client.__enter__.return_value.request.return_value = _payload_with_row_count(3)
+    return MagicMock(return_value=client)
+
+
+class TestFetchViaSoqlUseBulk:
+    """``SoqlReport.USE_BULK`` による取り方の切り替え。"""
+
+    def test_default_uses_bulk_query(self, monkeypatch):
+        """``USE_BULK`` を書かないレポート（既定 ``True``）は ``bulk_query()``
+        で取る（``query()`` は呼ばれない）。"""
+
+        class _DefaultReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id FROM Account"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _DefaultReport)
+        site = _patched_soql_client_with_query(table)
+        with patch("src.service.soql.site_for", return_value=site):
+            result = fetch_via_soql(SOQL_ENTRY)
+
+        salesforce = site.return_value.__enter__.return_value
+        salesforce.bulk_query.assert_called_once_with("SELECT Id FROM Account")
+        salesforce.query.assert_not_called()
+        assert result is table
+
+    def test_use_bulk_false_uses_query(self, monkeypatch):
+        """``USE_BULK=False`` のレポートは ``query()``（REST）で取り、
+        ``bulk_query()`` は呼ばれない。"""
+
+        class _RestReport(SoqlReport):
+            KEY = "9001"
+            USE_BULK: ClassVar[bool] = False
+
+            def soql(self) -> str:
+                return "SELECT Id FROM Account"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _RestReport)
+        site = _patched_soql_client_with_query(table)
+        with patch("src.service.soql.site_for", return_value=site):
+            result = fetch_via_soql(SOQL_ENTRY)
+
+        salesforce = site.return_value.__enter__.return_value
+        salesforce.query.assert_called_once_with("SELECT Id FROM Account")
+        salesforce.bulk_query.assert_not_called()
+        assert result is table
+
+    def test_log_shows_fetch_method_bulk(self, monkeypatch, caplog):
+        """既定（``USE_BULK=True``）のとき INFO ログに ``取得方法=Bulk`` が出る。"""
+
+        class _DefaultReport(SoqlReport):
+            KEY = "9001"
+
+            def soql(self) -> str:
+                return "SELECT Id FROM Account"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _DefaultReport)
+        with caplog.at_level(logging.INFO, logger="src.service"):
+            with patch(
+                "src.service.soql.site_for",
+                return_value=_patched_soql_client_with_query(table),
+            ):
+                fetch_via_soql(SOQL_ENTRY)
+
+        assert "取得方法=Bulk" in caplog.text
+
+    def test_log_shows_fetch_method_rest(self, monkeypatch, caplog):
+        """``USE_BULK=False`` のとき INFO ログに ``取得方法=REST`` が出る。"""
+
+        class _RestReport(SoqlReport):
+            KEY = "9001"
+            USE_BULK: ClassVar[bool] = False
+
+            def soql(self) -> str:
+                return "SELECT Id FROM Account"
+
+        table = _soql_table_with_rows()
+        _patch_soql_registry(monkeypatch, _RestReport)
+        with caplog.at_level(logging.INFO, logger="src.service"):
+            with patch(
+                "src.service.soql.site_for",
+                return_value=_patched_soql_client_with_query(table),
+            ):
+                fetch_via_soql(SOQL_ENTRY)
+
+        assert "取得方法=REST" in caplog.text

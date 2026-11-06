@@ -2,7 +2,8 @@ r"""src/service/soql.py — SOQL 経由の取得と件数検証。
 
 ``download_scheduled()`` の 1 件分で、管理表の「SOQL」列が「○」のときに呼ばれる。
 SOQL の本文は ``soql_report_for(entry.key)`` で引いた ``SoqlReport`` が出す —
-``fetch_via_soql()`` はそれを ``SalesforceBase.bulk_query()`` に渡す。
+``fetch_via_soql()`` はそれを ``SalesforceBase.bulk_query()`` に渡す
+（``SoqlReport.USE_BULK`` が ``False`` のときは ``SalesforceBase.query()``）。
 
     from src.service.soql import (
         fetch_via_soql,
@@ -57,27 +58,31 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
     接続情報を持たせず、管理表の ``ReportEntry`` を単一の正にしている
     （管理表を経由しない別ルートは廃止）。
 
-    取得は ``SalesforceBase.bulk_query()`` で行う。サーバ側で
+    取得は ``SoqlReport.USE_BULK`` で選ぶ。 **既定（``True``）** は
+    ``SalesforceBase.bulk_query()``（Bulk API 2.0）。サーバ側で
     データを処理する非同期ジョブのため、件数が多い SOQL レポートでの
     往復回数を抑えられる。集計関数・``GROUP BY`` 等 ``bulk_query()``
-    が受け付けない SOQL はこの経路では使えない。
+    が受け付けない SOQL はこの経路では使えない。 ``USE_BULK=False`` にすると
+    ``SalesforceBase.query()``（REST API・ページ送り）で取り、集計関数・
+    ``GROUP BY`` も使える。
 
     **未完成の SOQL の検知:** ``soql()`` が返した本文の
     先頭（前後の空白を除く）が ``INCOMPLETE_SOQL_MARKER`` で始まる SOQL は
-    そのままでは Salesforce に問い合わせられない。 ``bulk_query()`` を呼ぶ
-    **前**に ``SoqlIncompleteError`` で止める（Salesforce には問い合わせない）。
+    そのままでは Salesforce に問い合わせられない。 取得（``bulk_query()`` /
+    ``query()``）を呼ぶ **前**に ``SoqlIncompleteError`` で止める
+    （Salesforce には問い合わせない）。
     印の文字列は ``soql.INCOMPLETE_SOQL_MARKER`` の定数で soql-collector 側の
     ``INCOMPLETE_MARKER`` と同じ。
 
     **件数の比較:** ``SoqlReport.CHECK_COUNT`` が ``True`` のとき
-    （既定）、 ``bulk_query()`` の **直後** に **同じ接続のうち** にもう 1 度
+    （既定）、 取得の **直後** に **同じ接続のうち** にもう 1 度
     Report API を叩いて ``factMap["T!T"]["aggregates"]`` の ``RowCount`` を取り、
     ``len(table)`` と比べる。一致すれば INFO ログを 1 行出して返す。**一致
     しなければ** ``SoqlCountMismatchError`` で **保存させずに**例外を上げる
     （一時ファイルも作らない）。レポート ID が URL から取れない / ``RowCount``
     が無い / 401・403 以外の HTTP エラー / ``SalesforceError`` は WARNING を出して
     保存を続ける（401・403 は既存の失敗扱いに揃える）。 ``CHECK_COUNT=False`` のときは
-    Report API を 1 度も叩かずに ``bulk_query()`` の結果をそのまま返す
+    Report API を 1 度も叩かずに 取得した結果をそのまま返す
     （=レポートの GET が必要ないレポート向け）。**同じ接続のうち** に比較するため
     ``site_for()`` も 1 回しか呼ばれない（ログインは 1 回だけ）。
 
@@ -96,12 +101,14 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
     # SOQL 経由のとき、実際に使った ``SoqlReport`` のクラス名と所在モジュールを
     # INFO で 1 行出す（管理表の「SOQL」列 = ○ のレポートが、コードのどの
     # ``reports/<ファイル>.py`` で定義されているかを運用時に追えるようにするため）。
+    # 取得方法（Bulk / REST）も一緒に出す（``USE_BULK`` で選べるため）。
     # SOQL 本文は DEBUG（=既定では出ない。問い合わせの中身は障害調査で見たい想定）
     logger.info(
-        "SOQL レポートを使用します: クラス=%s, モジュール=%s, 管理番号=%s",
+        "SOQL レポートを使用します: クラス=%s, モジュール=%s, 管理番号=%s, 取得方法=%s",
         report_cls.__name__,
         report_cls.__module__,
         entry.key,
+        "Bulk" if report_cls.USE_BULK else "REST",
     )
     soql_text = instance.soql()
     logger.debug("SOQL: %s", soql_text)
@@ -111,7 +118,12 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
         raise SoqlIncompleteError(entry.key, entry.summary)
     site = site_for(entry.url)
     with site() as salesforce:
-        table = salesforce.bulk_query(soql_text)
+        # 取り方は ``SoqlReport.USE_BULK`` で選ぶ（既定は Bulk API 2.0）。
+        # False のときは REST の ``query()``（ページ送り）になる。
+        if report_cls.USE_BULK:
+            table = salesforce.bulk_query(soql_text)
+        else:
+            table = salesforce.query(soql_text)
         # 件数の比較。 ``CHECK_COUNT=False`` のときは Report API を 1 度も叩かない。
         # 同じ接続のうちに行うので、 1 レポートあたり ``site_for()`` が 2 回
         # （=ログイン 2 回）にならない。 比較は **加工前** の生の結果で行う。

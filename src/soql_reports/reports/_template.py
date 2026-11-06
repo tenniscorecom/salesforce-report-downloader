@@ -36,18 +36,24 @@ class NewReport(SoqlReport):
     COLUMN_NAMES: ClassVar[dict[str, str]] = {}
     # 任意: レポートと範囲が違う SOQL のときだけ ``False`` にする（理由をコメントに書く）
     CHECK_COUNT: ClassVar[bool] = True
+    # 任意: 取り方。``True``（既定）= Bulk API 2.0、``False`` = REST の
+    # ``query()``（集計関数・``GROUP BY`` が使える。値は文字列にならない）
+    USE_BULK: ClassVar[bool] = True
 
     def soql(self) -> str:
         """TODO: 実行する SOQL クエリ文字列を返す。
 
-        取得は Bulk API 2.0（``bulk_query()``）で行われるため、集計関数
-        (``COUNT`` / ``SUM`` など)・``GROUP BY``・``OFFSET``・SELECT 句の中の
-        子サブクエリ（例: ``SELECT Id, (SELECT Id FROM Contacts) FROM Account``）
-        はジョブ作成時に 400 で失敗する。
+        既定（``USE_BULK=True``）の Bulk API 2.0（``bulk_query()``）での取得では、
+        集計関数（``COUNT`` / ``SUM`` など）、``GROUP BY``、``OFFSET``、
+        SELECT 句の中の子サブクエリ（例: ``SELECT Id, (SELECT Id FROM Contacts)
+        FROM Account``）はジョブ作成時に 400 で失敗する。 集計を使う SOQL なら
+        ``USE_BULK=False``（REST の ``query()``）にする。
 
         戻り値の ``Table`` は **全フィールドが文字列**（真偽値は ``"true"`` /
         ``"false"``、null は空文字）。参照項目（``Account.Name`` など）は
         ``Account.Name`` の形の列名になり、平坦化されない。
+        ``USE_BULK=False`` のときは値が文字列にならず数値・真偽値のままで、
+        結果が 0 件だと列が空になる（列は 1 件目から推測するため）。
 
         URL・保存先・0件可否は管理表の ``ReportEntry`` が単一の正なので
         ここには書かない。

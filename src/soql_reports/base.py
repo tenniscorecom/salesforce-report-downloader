@@ -1,8 +1,9 @@
 r"""src/soql_reports/base.py — SOQLで取るレポートの基底クラス。
 
 Report API（2000行上限）で取れない大きなレポートは、SOQL
-（`SalesforceBase.bulk_query()`、上限なし）で取る。サブクラスは
-1レポート=1ファイルで ``reports/`` に書く。
+（``SalesforceBase.bulk_query()``、上限なし。``SoqlReport.USE_BULK`` を
+``False`` にすると ``SalesforceBase.query()``（REST API）で取る）で取る。
+サブクラスは 1レポート=1ファイルで ``reports/`` に書く。
 **登録は自動** — ファイルを置くと ``_registry.registered_reports()`` が
 ``pkgutil.iter_modules`` で走査して ``SoqlReport`` サブクラスを集める（明示的な
 タプル編集は不要）。ファイル名が ``_`` で始まるモジュールは走査対象外
@@ -74,11 +75,25 @@ class SoqlReport:
             **意図的にレポートと範囲が違う SOQL を書くときだけ** ``False`` に
             する（``False`` にする理由を ``#`` コメントに書く）。件数一致は
             中身の一致を意味しない点に注意。
+        USE_BULK: SOQL の取り方。**既定は ``True``**（= Bulk API 2.0 で
+            取る）。 ``True`` のときは ``SalesforceBase.bulk_query()`` を
+            使い、 サーバ側の非同期ジョブで処理するため 件数が多い取得で
+            往復回数を抑えられる。 集計関数（``COUNT`` / ``SUM`` 等）・
+            ``GROUP BY``・``OFFSET``・SELECT 句の中の子サブクエリは
+            ``bulk_query()`` が受け付けない（ジョブ作成時に 400 で失敗する）。
+            ``False`` にすると ``SalesforceBase.query()``（REST API・
+            ページ送り）で取るので、 集計関数・``GROUP BY`` も使える。
+            **注意**: ``False`` のときは値が文字列にならず **数値・真偽値の
+            まま** ``transform()`` に渡る（``bulk_query()`` は全部文字列）。
+            結果が 0 件だと列が空になる（``bulk_query()`` は CSV の見出しから
+            列名を取るため 0 件でも列が残る）。 全行で null の参照項目は
+            列が出ない（``query()`` は 1 件目から列を推測するため）。
     """
 
     KEY: ClassVar[str] = ""
     COLUMN_NAMES: ClassVar[dict[str, str]] = {}
     CHECK_COUNT: ClassVar[bool] = True
+    USE_BULK: ClassVar[bool] = True
 
     def soql(self) -> str:
         """実行する SOQL クエリ文字列を返す。サブクラスで実装する。"""
@@ -87,9 +102,10 @@ class SoqlReport:
     def transform(self, table: Table) -> Table:
         """SOQL で取った Table を保存用に加工して返す。
 
-        ``fetch_via_soql()`` の中で ``bulk_query()`` の直後、 件数の比較
-        （``CHECK_COUNT``）と同じ接続のうち、 **加工前の生の結果**に
-        対して呼ばれる（レポートの総件数と比べられるのは加工前の件数のため）。
+        ``fetch_via_soql()`` の中で 取得（``bulk_query()`` / ``query()``）の
+        直後、 件数の比較（``CHECK_COUNT``）と同じ接続のうち、 **加工前の生の
+        結果**に対して呼ばれる（レポートの総件数と比べられるのは加工前の
+        件数のため）。
         返した Table がそのまま CSV に書かれる。
 
         受け取る ``table`` の列名は SOQL の API 名（``Amount`` 、

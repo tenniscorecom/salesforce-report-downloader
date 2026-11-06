@@ -1,6 +1,8 @@
 """src/soql_reports/__init__.py — SOQLレポートの公開面。
 
-``SalesforceBase.bulk_query()`` で取るレポートを 1 レポート=1ファイルで定義する。
+``SalesforceBase.bulk_query()`` で取るレポートを 1 レポート=1ファイルで定義する
+（``SoqlReport.USE_BULK`` を ``False`` にすると ``SalesforceBase.query()`` で取る
+レポートも作れる）。
 **登録は自動** — ``reports/`` パッケージに ``SoqlReport`` サブクラスを置くと、
 ``_registry.registered_reports()`` が ``pkgutil.iter_modules`` で走査して
 自動で集める。明示的なタプル編集は不要。
