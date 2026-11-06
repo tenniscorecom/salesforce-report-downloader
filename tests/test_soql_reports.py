@@ -8,7 +8,9 @@ SOQL レポートの取得・保存は管理表ルート（``src.service.save_re
 from __future__ import annotations
 
 import importlib
+import os
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import ClassVar
 from unittest.mock import patch
@@ -43,14 +45,30 @@ class _OtherReport(SoqlReport):
         return "SELECT Id FROM Bogus"
 
 
+def _write_module(directory: Path, stem: str, body: str) -> None:
+    """``directory`` に ``<stem>.py`` を書き、import の検索キャッシュを破棄する。
+
+    ``importlib`` の ``FileFinder`` はディレクトリの一覧を mtime 単位で
+    キャッシュする。 同じディレクトリへ短時間に続けてファイルを書くと
+    ディレクトリの mtime が変わらないことがあり、キャッシュが古いままに
+    なって新しいファイルを ``ModuleNotFoundError`` で落とす。 書き込み直後に
+    ``importlib.invalidate_caches()`` を呼んで、必ず一覧を取り直すようにする。
+    """
+    (directory / f"{stem}.py").write_text(body, encoding="utf-8")
+    importlib.invalidate_caches()
+
+
 def _load_module(reports_module, stem: str) -> ModuleType:
     """``reports/__path__`` 内の ``<stem>.py`` を ``importlib.import_module`` で読み込む。
 
     既に ``sys.modules`` にあれば削除してから読み直す（テスト間のキー衝突を避ける）。
+    読み込み前に ``importlib.invalidate_caches()`` を呼び、ディレクトリ一覧の
+    キャッシュが古いと import できないようにする。
     """
     full_name = f"{reports_module.__name__}.{stem}"
     if full_name in sys.modules:
         del sys.modules[full_name]
+    importlib.invalidate_caches()
     return importlib.import_module(full_name)
 
 
@@ -114,13 +132,50 @@ class TestRegisteredReports:
             "    def soql(self):\n"
             "        return 'SELECT Id FROM Account'\n"
         )
-        (isolated_reports_dir / "real_pick.py").write_text(body, encoding="utf-8")
+        _write_module(isolated_reports_dir, "real_pick", body)
         _load_module(reports_module, "real_pick")
 
         classes = registry_module.registered_reports()
         assert len(classes) == 1
         assert classes[0].__name__ == "RealPickReport"
         assert classes[0].KEY == "8001"
+
+    def test_module_written_after_another_module_is_importable(self, isolated_reports_dir):
+        """先に import したあとに書いたファイルも import できる。
+
+        ``importlib`` の ``FileFinder`` はディレクトリの一覧を mtime 単位で
+        キャッシュする。 同じディレクトリへ短時間に続けてファイルを書くと
+        ディレクトリの mtime が変わらないことがあり、キャッシュが古いままに
+        なって新しいファイルを ``ModuleNotFoundError`` で落とす。 ここでは
+        mtime を固定してその状況を再現し、キャッシュが破棄されることを確かめる。
+        """
+        from src.soql_reports import reports as reports_module
+
+        body = (
+            "from src.soql_reports.base import SoqlReport\n"
+            "class FirstPick(SoqlReport):\n"
+            "    KEY = '8104'\n"
+            "    def soql(self):\n"
+            "        return 'SELECT Id FROM Account'\n"
+        )
+        _write_module(isolated_reports_dir, "first_pick", body)
+        _load_module(reports_module, "first_pick")
+
+        # ディレクトリの mtime を控えておき、2 つ目のファイルを書いても
+        # mtime が変わらないようにする（= 実際の mtime 粒度不足を再現する）
+        mtime = os.stat(isolated_reports_dir).st_mtime
+        body_second = (
+            "from src.soql_reports.base import SoqlReport\n"
+            "class SecondPick(SoqlReport):\n"
+            "    KEY = '8105'\n"
+            "    def soql(self):\n"
+            "        return 'SELECT Id FROM Account'\n"
+        )
+        _write_module(isolated_reports_dir, "second_pick", body_second)
+        os.utime(isolated_reports_dir, (mtime, mtime))
+
+        module = _load_module(reports_module, "second_pick")
+        assert module.SecondPick.KEY == "8105"
 
     def test_skips_underscored_module(self, isolated_reports_dir):
         """``_`` で始まるモジュール（``_template.py`` 等）は走査対象外。"""
@@ -133,7 +188,7 @@ class TestRegisteredReports:
             "    def soql(self):\n"
             "        return 'SELECT Id FROM Account'\n"
         )
-        (isolated_reports_dir / "_skipped.py").write_text(body, encoding="utf-8")
+        _write_module(isolated_reports_dir, "_skipped", body)
         # 走査対象外なので import すらされない（sys.modules に登録されないことを確認するため
         # ここで ``importlib.import_module`` は呼ばない）
 
@@ -153,13 +208,13 @@ class TestRegisteredReports:
             "    def soql(self):\n"
             "        return 'SELECT Id FROM Account'\n"
         )
-        (isolated_reports_dir / "definitions.py").write_text(definitions_body, encoding="utf-8")
+        _write_module(isolated_reports_dir, "definitions", definitions_body)
         _load_module(reports_module, "definitions")
 
         importer_body = (
             "from src.soql_reports.reports.definitions import (\n    ImportedReport,\n)\n"
         )
-        (isolated_reports_dir / "importer.py").write_text(importer_body, encoding="utf-8")
+        _write_module(isolated_reports_dir, "importer", importer_body)
         _load_module(reports_module, "importer")
 
         classes = registry_module.registered_reports()
@@ -182,7 +237,7 @@ class TestRegisteredReports:
                 "    def soql(self):\n"
                 "        return 'SELECT Id FROM Account'\n"
             )
-            (isolated_reports_dir / f"{name}.py").write_text(body, encoding="utf-8")
+            _write_module(isolated_reports_dir, name, body)
             _load_module(reports_module, name)
 
         keys = [cls.KEY for cls in registry_module.registered_reports()]
@@ -208,9 +263,9 @@ class TestRegisteredReports:
             "    def soql(self):\n"
             "        return 'SELECT Id FROM Account'\n"
         )
-        (isolated_reports_dir / "dup_a.py").write_text(body_a, encoding="utf-8")
+        _write_module(isolated_reports_dir, "dup_a", body_a)
         _load_module(reports_module, "dup_a")
-        (isolated_reports_dir / "dup_b.py").write_text(body_b, encoding="utf-8")
+        _write_module(isolated_reports_dir, "dup_b", body_b)
         _load_module(reports_module, "dup_b")
 
         with pytest.raises(DownloaderError) as caught:
@@ -234,7 +289,7 @@ class TestRegisteredReports:
             "    def soql(self):\n"
             "        return 'SELECT Id FROM Account'\n"
         )
-        (isolated_reports_dir / "empty_key.py").write_text(body, encoding="utf-8")
+        _write_module(isolated_reports_dir, "empty_key", body)
         _load_module(reports_module, "empty_key")
 
         with pytest.raises(DownloaderError) as caught:
