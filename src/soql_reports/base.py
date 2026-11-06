@@ -87,7 +87,7 @@ class SoqlReport:
             まま** ``transform()`` に渡る（``bulk_query()`` は全部文字列）。
             結果が 0 件だと列が空になる（``bulk_query()`` は CSV の見出しから
             列名を取るため 0 件でも列が残る）。 全行で null の参照項目は
-            列が出ない（``query()`` は 1 件目から列を推測するため）。
+            列が出ない（``query()`` は応答に現れたキーから列を作るため）。
     """
 
     KEY: ClassVar[str] = ""
