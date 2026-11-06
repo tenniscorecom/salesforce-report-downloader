@@ -48,7 +48,7 @@ def _load_module(reports_module, stem: str) -> ModuleType:
 
     既に ``sys.modules`` にあれば削除してから読み直す（テスト間のキー衝突を避ける）。
     読み込み前に ``importlib.invalidate_caches()`` を呼び、ディレクトリ一覧の
-    キャッシュが古いと import できないようにする。
+    キャッシュが古いせいで、書いたばかりのファイルを import できないことがあるため。
     """
     full_name = f"{reports_module.__name__}.{stem}"
     if full_name in sys.modules:
