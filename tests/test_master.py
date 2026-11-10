@@ -30,7 +30,7 @@ HEADERS = [
     "0件あり",
     "2000件超",
     "SOQL",
-    "備考",
+    "上書き",
 ]
 
 # 「2000件超」「SOQL」列を追加する前の古い管理表（後方互換の確認用）
@@ -54,7 +54,7 @@ def make_master(path: Path, headers: list[str], rows: list[list]) -> Path:
     return path
 
 
-def _row(*, exceeds: str, soql: str, has_personal_info: str = "○") -> list:
+def _row(*, exceeds: str, soql: str, has_personal_info: str = "○", allow_empty: str = "×") -> list:
     return [
         "1001",
         "営業本部",
@@ -63,7 +63,7 @@ def _row(*, exceeds: str, soql: str, has_personal_info: str = "○") -> list:
         has_personal_info,  # 個人情報
         URL,
         "○",
-        "×",
+        allow_empty,  # 0件あり
         exceeds,
         soql,
         "",
@@ -163,6 +163,39 @@ class TestHasPersonalInfo:
             load_master(master)
         assert "個人情報" in str(e.value)
         assert "「○」か「×」" in str(e.value)
+
+
+class TestUnknownMark:
+    """「0件あり」「2000件超」に書ける「不明」（= 空欄と同じ扱い・False）。
+
+    本番の件数が分からないレポートに「×」の代わりに書き残せるようにするため。
+    **受け皿はこの2列だけ**で、他の bool 列は「不明」を書くとエラー。
+    """
+
+    def test_unknown_reads_as_false_for_allow_empty(self, tmp_path):
+        master = make_master(
+            tmp_path / "管理表.xlsx", HEADERS, [_row(exceeds="×", soql="×", allow_empty="不明")]
+        )
+        entry = load_master(master)["1001"]
+        assert entry.allow_empty is False
+
+    def test_unknown_reads_as_false_for_exceeds_row_limit(self, tmp_path):
+        master = make_master(tmp_path / "管理表.xlsx", HEADERS, [_row(exceeds="不明", soql="×")])
+        entry = load_master(master)["1001"]
+        assert entry.exceeds_row_limit is False
+
+    @pytest.mark.parametrize(
+        ("header", "index"),
+        [("個人情報", 4), ("有効", 6), ("SOQL", 9), ("上書き", 10)],
+    )
+    def test_unknown_is_rejected_in_other_bool_columns(self, tmp_path, header, index):
+        """他の bool 列では「不明」はエラー（「不明」を許すのは2列だけ）。"""
+        row = _row(exceeds="×", soql="×")
+        row[index] = "不明"
+        master = make_master(tmp_path / "管理表.xlsx", HEADERS, [row])
+        with pytest.raises(MasterTableError) as e:
+            load_master(master)
+        assert header in str(e.value)
 
 
 class TestInvalidReportUrl:

@@ -53,6 +53,9 @@ Excel の見出しで、スペースを含む見出し（`Salesforce URL`）も�
 
 型は注釈から決まる（`int` / `str` / `bool` / `Path`）。**列の定義はここ1か所**なので、
 読み込む型と Excel の見出しがズレることがない。
+
+bool 列は `choices` で書ける値を絞る。**「不明」（`UNKNOWN_MARK`）は空欄と同じ扱い
+（False）で読む**——まだ判断できない値を書き残せるようにするため。
 """
 
 import dataclasses
@@ -115,6 +118,11 @@ _SPEC_KEY = "comken_master_column"
 
 # 見出し行を除いた1行目が Excel の何行目か（見出しが1行目のため）
 _FIRST_DATA_ROW = 2
+
+# 「分からない」を表す印。bool 列でこの値を書くと **空欄と同じ扱い**（False）で読む。
+# **comken の ``is_enabled_mark`` が False を返すことに任せず**、変換側で明示する
+# （いつか語集合が変わっても「不明」= False の意図が変わらないようにするため）
+UNKNOWN_MARK = "不明"
 
 # Excel が「文字列」として保存した時刻（``"9:00"`` のようにゼロパディングなし）を
 # 受け付けるためのフォールバック。範囲チェックは ``dt.time`` コンストラクタに任せる。
@@ -426,7 +434,14 @@ def _convert(value: Any, value_type: Any, spec: ColumnSpec, row: int, cls: type)
 
 
 def _convert_bool(value: Any, text: str, spec: ColumnSpec, row: int) -> bool:
-    """``_CONVERTERS`` の bool 変換。語集合は comken の ``is_enabled_mark`` に委譲。"""
+    """``_CONVERTERS`` の bool 変換。語集合は comken の ``is_enabled_mark`` に委譲。
+
+    **「不明」は空欄と同じ扱い（False）。** 「まだ分からない」を書き残せるように
+    False として読む。comken の語集合に無いことを理由に False になるのを待たず、
+    意図としてここで明示する。
+    """
+    if text == UNKNOWN_MARK:
+        return False
     return is_enabled_mark(value)
 
 

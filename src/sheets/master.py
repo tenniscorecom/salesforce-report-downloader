@@ -41,7 +41,7 @@ from comken.core.timer import measure
 from comken.exceptions import SalesforceReportIDNotFoundError
 from comken.toolbox.salesforce.report import report_id_from_url
 
-from src.report_master import MasterRow, column
+from src.report_master import UNKNOWN_MARK, MasterRow, column
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ class ReportEntry(MasterRow):
     # 既定値のある列は見出しごと無くても読める。
     # `choices` で `○` `×` 以外を弾く（既定の bool 変換は一覧に無い文字を黙って `False` に
     # する）。bool 列の `choices` は1つ目を True、2つ目を False の表記として雛形へ書く
+    # （3つ目がある列でも、雛形の初期行には1つ目か2つ目しか書かない）
     has_personal_info: bool = column(
         "個人情報",
         choices=("○", "×"),
@@ -101,23 +102,29 @@ class ReportEntry(MasterRow):
     )
     # 既定値 `×`: 書き忘れても厳しい側（エラー）に倒れるだけで、データは失われない。
     # `choices` の扱いは `has_personal_info` と同じ
+    # 「不明」は **空欄と同じ扱い**（False）。本番の件数が分からないレポートに
+    # 書き残せるようにするため。False なので 0 件は従来どおりエラーになる
     allow_empty: bool = column(
         "0件あり",
-        choices=("○", "×"),
+        choices=("○", "×", UNKNOWN_MARK),
         default=False,
         help="その日のデータが 0 件になることがあるレポートなら「○」。"
         "「×」のときに 0 件だとエラーになります"
-        "（指しているレポートが違う可能性に気づけるようにするため）",
+        "（指しているレポートが違う可能性に気づけるようにするため）。"
+        "分からないときは「不明」と書いてください（「×」と同じに動きます）",
     )
     # 既定値 `×`: 書き忘れても通常の Report API 経由のまま動く。「○」でブラウザ経由に
     # 切り替わる。SOQL 列が「○」の行では SOQL 経由が優先される
+    # 「不明」は **空欄と同じ扱い**（False）。上限超えかどうかが分からないレポートに
+    # 書き残せるようにするため。False なので Report API 経由のままになる
     exceeds_row_limit: bool = column(
         "2000件超",
-        choices=("○", "×"),
+        choices=("○", "×", UNKNOWN_MARK),
         default=False,
         help="Report API の2000行上限を超えることが分かっているレポートなら「○」。"
         "取得実行側がブラウザ経由（画面のエクスポート機能）に切り替えます。"
-        "「SOQL」列が「○」のときはこの列より優先されます",
+        "「SOQL」列が「○」のときはこの列より優先されます。"
+        "分からないときは「不明」と書いてください（「×」と同じに動きます）",
     )
     # 既定値 `×`。「○」にする場合は同じ管理番号の `SoqlReport.KEY` を
     # `src.soql_reports` へ登録しておく（無いと設定ミスとして例外で止まる）

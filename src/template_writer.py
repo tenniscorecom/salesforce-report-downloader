@@ -856,6 +856,8 @@ def _to_cell(value: Any, spec: ColumnSpec, value_type: Any) -> Any:
     """インスタンスの属性値をセルに書ける形に変換する。"""
     if isinstance(value, bool):
         if (value_type is bool or value_type == "bool") and spec.choices:
+            # bool 列の `choices` は1つ目が True、2つ目が False の表記。**3つ目以降
+            # （=「不明」）は初期行の値（True/False）に対応しないので使わない**
             return spec.choices[0] if value else spec.choices[1]
         # choices を宣言していない真偽列の既定表記。**案内文（「○」か「×」）と
         # そろえる。** ここだけ「有効/無効」を書くと、記入方法シートの案内と

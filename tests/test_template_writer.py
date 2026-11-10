@@ -164,6 +164,28 @@ class TestCreateTemplateReportEntry:
         assert "J2:J1003" in ranges  # SOQL
         assert "K2:K1003" in ranges  # 上書き
 
+    def test_unknown_mark_is_in_dropdown_of_two_columns(self, tmp_path):
+        """「0件あり」「2000件超」のドロップダウンに「不明」が入る。
+
+        「×」と同じ扱い（False）で動くので、**選べるようにしておく**必要がある。
+        """
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
+        ws = load_workbook(path)["PY_管理表"]
+        formulas = {str(v.sqref): v.formula1 for v in ws.data_validations.dataValidation}
+        assert formulas["H2:H1003"] == '"○,×,不明"'  # 0件あり
+        assert formulas["I2:I1003"] == '"○,×,不明"'  # 2000件超
+        # 他の bool 列は「○」「×」のまま（「不明」を許さない）
+        assert formulas["G2:G1003"] == '"○,×"'  # 有効
+        assert formulas["J2:J1003"] == '"○,×"'  # SOQL
+
+    def test_guide_sheet_explains_unknown_mark(self, tmp_path):
+        """「記入方法」シートに「不明」の意味（× と同じに動く）が出る。"""
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
+        wb = load_workbook(path)
+        text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
+        assert "不明" in text
+        assert "「×」と同じに動きます" in text
+
     def test_initial_rows_have_no_fill(self, tmp_path):
         """初期行は「本物の行」なので、記入例特有の薄い背景色は付かない。
 
@@ -669,6 +691,30 @@ class TestMigrateTemplate:
         assert sheet.cell(row=3, column=1).value == "1002"
         assert sheet.cell(row=2, column=2).value == "営業本部"
         assert sheet.cell(row=2, column=3).value == "山田"
+
+    def test_unknown_mark_survives_migration(self, tmp_path):
+        """既存管理表の「不明」は雛形再生成で消えない（False として読め続ける）。"""
+        path = tmp_path / "管理表.xlsx"
+        create_template(path, ReportEntry, _sample_report_entries())
+        # 「0件あり」「2000件超」を「不明」に書き換える（手で直した状態）
+        workbook = load_workbook(path)
+        sheet = workbook["PY_管理表"]
+        headers = [cell.value for cell in sheet[1]]
+        for header in ("0件あり", "2000件超"):
+            sheet.cell(row=2, column=headers.index(header) + 1, value="不明")
+        workbook.save(path)
+        workbook.close()
+
+        create_template(path, ReportEntry)  # マイグレーション
+
+        workbook = load_workbook(path)
+        sheet = workbook["PY_管理表"]
+        headers = [cell.value for cell in sheet[1]]
+        for header in ("0件あり", "2000件超"):
+            assert sheet.cell(row=2, column=headers.index(header) + 1).value == "不明"
+        entry = load_master(path)["1001"]
+        assert entry.allow_empty is False
+        assert entry.exceeds_row_limit is False
 
     def test_added_columns_are_blank(self, tmp_path):
         """新列は空欄で追加される。"""
