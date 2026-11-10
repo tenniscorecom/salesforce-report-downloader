@@ -208,7 +208,7 @@ class TestCreateTemplateReportEntry:
         wb = load_workbook(path)
         text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
         assert "RPA使用" in text
-        assert "RPA でも毎朝取得しているなら「○」" in text
+        assert "RPA でも使っているなら「○」" in text
         assert "集計形式" in text
         assert "「サマリー」「マトリックス」「無し」のいずれか" in text
 
