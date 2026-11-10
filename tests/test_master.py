@@ -2,8 +2,8 @@
 
 汎用の MasterRow / column() 機構は tests/test_master_table.py 側でカバーする。
 ここでは ReportEntry に追加した列（`exceeds_row_limit` / `use_soql` /
-`has_personal_info`）の読み取りと、列が無い既存管理表でも既定値で読めること
-（後方互換）だけを見る。
+`has_personal_info` / `uses_rpa` / `report_format`）の読み取りと、列が無い
+既存管理表でも既定値で読めること（後方互換）だけを見る。
 """
 
 from pathlib import Path
@@ -15,7 +15,13 @@ from comken.exceptions import SalesforceReportIDNotFoundError
 from comken.toolbox.excel import Excel
 
 from src.exceptions import MasterTableError
-from src.sheets.master import ReportEntry, load_master
+from src.sheets.master import (
+    REPORT_FORMAT_MATRIX,
+    REPORT_FORMAT_NONE,
+    REPORT_FORMAT_SUMMARY,
+    ReportEntry,
+    load_master,
+)
 
 URL = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 
@@ -30,6 +36,8 @@ HEADERS = [
     "0件あり",
     "2000件超",
     "SOQL",
+    "RPA使用",
+    "集計形式",
     "上書き",
 ]
 
@@ -54,7 +62,15 @@ def make_master(path: Path, headers: list[str], rows: list[list]) -> Path:
     return path
 
 
-def _row(*, exceeds: str, soql: str, has_personal_info: str = "○", allow_empty: str = "×") -> list:
+def _row(
+    *,
+    exceeds: str,
+    soql: str,
+    has_personal_info: str = "○",
+    allow_empty: str = "×",
+    uses_rpa: str = "×",
+    report_format: str = REPORT_FORMAT_NONE,
+) -> list:
     return [
         "1001",
         "営業本部",
@@ -66,6 +82,8 @@ def _row(*, exceeds: str, soql: str, has_personal_info: str = "○", allow_empty
         allow_empty,  # 0件あり
         exceeds,
         soql,
+        uses_rpa,  # RPA使用
+        report_format,  # 集計形式
         "",
     ]
 
@@ -186,7 +204,7 @@ class TestUnknownMark:
 
     @pytest.mark.parametrize(
         ("header", "index"),
-        [("個人情報", 4), ("有効", 6), ("SOQL", 9), ("上書き", 10)],
+        [("個人情報", 4), ("有効", 6), ("SOQL", 9), ("RPA使用", 10), ("上書き", 12)],
     )
     def test_unknown_is_rejected_in_other_bool_columns(self, tmp_path, header, index):
         """他の bool 列では「不明」はエラー（「不明」を許すのは2列だけ）。"""
@@ -196,6 +214,133 @@ class TestUnknownMark:
         with pytest.raises(MasterTableError) as e:
             load_master(master)
         assert header in str(e.value)
+
+
+class TestUsesRpa:
+    """「RPA使用」列の読み取り（記録用）。
+
+    RPA 側が同じ管理表を読むための列で、**このプロジェクトの動きは変わらない**
+    （取得経路・保存・履歴は「RPA使用」を見ない）。
+    """
+
+    def test_reads_maru_as_true(self, tmp_path):
+        master = make_master(
+            tmp_path / "管理表.xlsx", HEADERS, [_row(exceeds="×", soql="×", uses_rpa="○")]
+        )
+        entry = load_master(master)["1001"]
+        assert entry.uses_rpa is True
+
+    def test_reads_batsu_as_false(self, tmp_path):
+        master = make_master(
+            tmp_path / "管理表.xlsx", HEADERS, [_row(exceeds="×", soql="×", uses_rpa="×")]
+        )
+        entry = load_master(master)["1001"]
+        assert entry.uses_rpa is False
+
+    def test_blank_cell_defaults_to_false(self, tmp_path):
+        """空欄は既定値（`×` 相当の False）で埋まる。"""
+        row = _row(exceeds="×", soql="×")
+        row[10] = ""  # RPA使用 列を空欄に
+        master = make_master(tmp_path / "管理表.xlsx", HEADERS, [row])
+        entry = load_master(master)["1001"]
+        assert entry.uses_rpa is False
+
+    def test_missing_column_defaults_to_false(self, tmp_path):
+        """列が無い既存の管理表でも既定値 False で埋まる（後方互換）。"""
+        rows = [
+            [
+                "1001",
+                "営業本部",
+                "山田太郎",
+                "顧客一覧",
+                URL,
+                "○",
+                "×",
+                "",
+            ]
+        ]
+        master = make_master(tmp_path / "管理表.xlsx", LEGACY_HEADERS, rows)
+        entry = load_master(master)["1001"]
+        assert entry.uses_rpa is False
+
+    def test_unexpected_value_raises(self, tmp_path):
+        """「○」「×」以外の文字を入れるとエラー。表記が1つに絞られる。"""
+        row = _row(exceeds="×", soql="×", uses_rpa="あり")
+        master = make_master(tmp_path / "管理表.xlsx", HEADERS, [row])
+        with pytest.raises(MasterTableError) as e:
+            load_master(master)
+        assert "RPA使用" in str(e.value)
+        assert "「○」か「×」" in str(e.value)
+
+
+class TestReportFormat:
+    """「集計形式」列の読み取り（記録用）。
+
+    値は定数（`REPORT_FORMAT_SUMMARY` / `REPORT_FORMAT_MATRIX` /
+    `REPORT_FORMAT_NONE`）で持つ。**別のプロジェクト（soql-collector）も
+    同じ文字列を読む**ため、表記は変えない。
+    """
+
+    def test_values_are_fixed_for_other_projects(self):
+        """値の文字列は別のプロジェクト（soql-collector）と同じものを使う。
+
+        **表記を変えると向こうが読めなくなる**ので、ここに固定する。
+        """
+        assert REPORT_FORMAT_SUMMARY == "サマリー"
+        assert REPORT_FORMAT_MATRIX == "マトリックス"
+        assert REPORT_FORMAT_NONE == "無し"
+
+    @pytest.mark.parametrize(
+        ("written", "expected"),
+        [
+            (REPORT_FORMAT_SUMMARY, REPORT_FORMAT_SUMMARY),
+            (REPORT_FORMAT_MATRIX, REPORT_FORMAT_MATRIX),
+            (REPORT_FORMAT_NONE, REPORT_FORMAT_NONE),
+        ],
+    )
+    def test_reads_written_value(self, tmp_path, written, expected):
+        master = make_master(
+            tmp_path / "管理表.xlsx",
+            HEADERS,
+            [_row(exceeds="×", soql="×", report_format=written)],
+        )
+        entry = load_master(master)["1001"]
+        assert entry.report_format == expected
+
+    def test_blank_cell_defaults_to_none(self, tmp_path):
+        """空欄は既定値（`無し`）で埋まる。"""
+        row = _row(exceeds="×", soql="×")
+        row[11] = ""  # 集計形式 列を空欄に
+        master = make_master(tmp_path / "管理表.xlsx", HEADERS, [row])
+        entry = load_master(master)["1001"]
+        assert entry.report_format == REPORT_FORMAT_NONE
+
+    def test_missing_column_defaults_to_none(self, tmp_path):
+        """列が無い既存の管理表でも既定値（`無し`）で埋まる（後方互換）。"""
+        rows = [
+            [
+                "1001",
+                "営業本部",
+                "山田太郎",
+                "顧客一覧",
+                URL,
+                "○",
+                "×",
+                "",
+            ]
+        ]
+        master = make_master(tmp_path / "管理表.xlsx", LEGACY_HEADERS, rows)
+        entry = load_master(master)["1001"]
+        assert entry.report_format == REPORT_FORMAT_NONE
+
+    def test_unexpected_value_raises(self, tmp_path):
+        """選択肢に無い値を書くとエラー（「サマリー」「マトリックス」「無し」だけ）。"""
+        row = _row(exceeds="×", soql="×", report_format="明細")
+        master = make_master(tmp_path / "管理表.xlsx", HEADERS, [row])
+        with pytest.raises(MasterTableError) as e:
+            load_master(master)
+        assert "集計形式" in str(e.value)
+        assert "「サマリー」か「マトリックス」か「無し」" in str(e.value)
 
 
 class TestInvalidReportUrl:

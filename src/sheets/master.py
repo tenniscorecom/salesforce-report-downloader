@@ -20,6 +20,9 @@ r"""src/sheets/master.py — レポート管理表の列を決める。
 （`group_settings.py`）の組み合わせで Python 側で組み立てる（`src.paths.report_folder()`）。
 `担当者` / `概要` は記録用で、出力パスには使わない。
 
+**「RPA使用」「集計形式」も記録用。** 取得経路・保存・履歴の動きは変えず、他のプロジェクト
+（RPA や soql-collector）が同じ管理表から読むための列として足している。
+
 このファイルが持つもの:
 - 管理表にどんな列があるか
 - 各列の意味と書き方
@@ -44,6 +47,12 @@ from comken.toolbox.salesforce.report import report_id_from_url
 from src.report_master import UNKNOWN_MARK, MasterRow, column
 
 logger = logging.getLogger(__name__)
+
+# 「集計形式」列に書ける値（記録用）。**Excel に書く文字列そのもの**で、
+# 別のプロジェクト（soql-collector）も同じ文字列を読むため、表記を変えない
+REPORT_FORMAT_SUMMARY = "サマリー"
+REPORT_FORMAT_MATRIX = "マトリックス"
+REPORT_FORMAT_NONE = "無し"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -135,6 +144,24 @@ class ReportEntry(MasterRow):
         help="SOQL化済みで、同じ管理番号のSOQL定義が"
         "src.soql_reports に登録されているなら「○」。"
         "取得実行側はSOQL経由に切り替えます（「2000件超」列より優先）",
+    )
+    # 記録用。RPA 側でも同じレポートを毎日取得しているなら「○」。
+    # **取得経路・保存・履歴の動きは変えない**（RPA 側が管理表を読むだけ）
+    uses_rpa: bool = column(
+        "RPA使用",
+        choices=("○", "×"),
+        default=False,
+        help="そのレポートを RPA でも毎朝取得しているなら「○」。"
+        "記録用で、取得・保存・履歴の動きは変えません",
+    )
+    # 記録用。レポートの形式（サマリー / マトリックス / 無し）。
+    # **取得経路・保存・履歴の動きは変えない**（列の値は定数で持つ）
+    report_format: str = column(
+        "集計形式",
+        choices=(REPORT_FORMAT_SUMMARY, REPORT_FORMAT_MATRIX, REPORT_FORMAT_NONE),
+        default=REPORT_FORMAT_NONE,
+        help="そのレポートの形式。「サマリー」「マトリックス」「無し」のいずれか。"
+        "記録用で、取得・保存・履歴の動きは変えません",
     )
     # 既定値 `×`（毎回新しいファイル）: ``{管理番号}_{YYYYmmdd_HHMM}.csv`` + 連番で保存する。
     # 「○」だと ``{管理番号}_{HHMM}.csv`` に置き換える（日付は入らず、翌日の同時刻に上書き）。

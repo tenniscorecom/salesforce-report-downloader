@@ -111,7 +111,8 @@ class TestCreateTemplateReportEntry:
         # 使わないので宣言順はこのまま。「個人情報」は「概要」の直後に置く
         # （=人が見て分かりやすい位置）。「上書き」は「0件あり」「2000件超」
         # 「SOQL」と同じ書き方で最後尾に追加（既定 `×`、見出しごと無い既存管理表も
-        # `×` として読める列）
+        # `×` として読める列）。「RPA使用」「集計形式」は「SOQL」の直後に置く
+        # （=取得経路に関わる列の近く。記録用で、挙動は変わらない）
         assert headers == [
             "ID",
             "グループ",
@@ -123,6 +124,8 @@ class TestCreateTemplateReportEntry:
             "0件あり",
             "2000件超",
             "SOQL",
+            "RPA使用",
+            "集計形式",
             "上書き",
         ]
 
@@ -152,17 +155,30 @@ class TestCreateTemplateReportEntry:
         ws = load_workbook(path)["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in ws.data_validations.dataValidation)
         # ReportEntry の `choices` 列は「個人情報」「有効」「0件あり」「2000件超」
-        # 「SOQL」「上書き」の 6 つ。宣言順は ID/グループ/担当者/概要/個人情報/
-        # Salesforce URL/有効/0件あり/2000件超/SOQL/上書き の 11 列で、`choices`
-        # 付きは 5, 7〜11 列目なのでドロップダウンは E, G〜K 列に付く（Salesforce
-        # URL=6 列目には付かない）。 最下行は
-        # _FIRST_DATA_ROW(2) + 例(2) - 1 + _DATA_VALIDATION_ROWS(1000) = 1003
+        # 「SOQL」「RPA使用」「集計形式」「上書き」の 8 つ。宣言順は ID/グループ/
+        # 担当者/概要/個人情報/Salesforce URL/有効/0件あり/2000件超/SOQL/
+        # RPA使用/集計形式/上書き の 13 列で、`choices` 付きは 5, 7〜13 列目なので
+        # ドロップダウンは E, G〜M 列に付く（Salesforce URL=6 列目には付かない）。
+        # 最下行は _FIRST_DATA_ROW(2) + 例(2) - 1 + _DATA_VALIDATION_ROWS(1000) = 1003
         assert "E2:E1003" in ranges  # 個人情報
         assert "G2:G1003" in ranges  # 有効
         assert "H2:H1003" in ranges  # 0件あり
         assert "I2:I1003" in ranges  # 2000件超
         assert "J2:J1003" in ranges  # SOQL
-        assert "K2:K1003" in ranges  # 上書き
+        assert "K2:K1003" in ranges  # RPA使用
+        assert "L2:L1003" in ranges  # 集計形式
+        assert "M2:M1003" in ranges  # 上書き
+
+    def test_new_record_columns_get_dropdown(self, tmp_path):
+        """「RPA使用」「集計形式」のドロップダウンの中身。
+
+        「RPA使用」は「○」「×」、「集計形式」は「サマリー」「マトリックス」「無し」。
+        """
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
+        ws = load_workbook(path)["PY_管理表"]
+        formulas = {str(v.sqref): v.formula1 for v in ws.data_validations.dataValidation}
+        assert formulas["K2:K1003"] == '"○,×"'  # RPA使用
+        assert formulas["L2:L1003"] == '"サマリー,マトリックス,無し"'  # 集計形式
 
     def test_unknown_mark_is_in_dropdown_of_two_columns(self, tmp_path):
         """「0件あり」「2000件超」のドロップダウンに「不明」が入る。
@@ -185,6 +201,16 @@ class TestCreateTemplateReportEntry:
         text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
         assert "不明" in text
         assert "「×」と同じに動きます" in text
+
+    def test_guide_sheet_explains_new_record_columns(self, tmp_path):
+        """「記入方法」シートに「RPA使用」「集計形式」の書き方が載る。"""
+        path = create_template(tmp_path / "管理表.xlsx", ReportEntry, _sample_report_entries())
+        wb = load_workbook(path)
+        text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
+        assert "RPA使用" in text
+        assert "RPA でも毎朝取得しているなら「○」" in text
+        assert "集計形式" in text
+        assert "「サマリー」「マトリックス」「無し」のいずれか" in text
 
     def test_initial_rows_have_no_fill(self, tmp_path):
         """初期行は「本物の行」なので、記入例特有の薄い背景色は付かない。
@@ -486,16 +512,19 @@ class TestCreateCombinedWorkbook:
         wb = load_workbook(path)
         report_ws = wb[f"PY_{ReportEntry.SHEET_NAME}"]
         report_ranges = sorted(str(v.sqref) for v in report_ws.data_validations.dataValidation)
-        # `choices` 列は「個人情報」「有効」「0件あり」「2000件超」「SOQL」「上書き」
-        # の 6 つ。 列宣言順は ID/グループ/担当者/概要/個人情報/Salesforce URL/
-        # 有効/0件あり/2000件超/SOQL/上書き なのでドロップダウンは E, G〜K 列に付く
-        # （Salesforce URL=6 列目には付かない）。最終行は 2 + 2 - 1 + 1000 = 1003
+        # `choices` 列は「個人情報」「有効」「0件あり」「2000件超」「SOQL」「RPA使用」
+        # 「集計形式」「上書き」の 8 つ。 列宣言順は ID/グループ/担当者/概要/個人情報/
+        # Salesforce URL/有効/0件あり/2000件超/SOQL/RPA使用/集計形式/上書き なので
+        # ドロップダウンは E, G〜M 列に付く（Salesforce URL=6 列目には付かない）。
+        # 最終行は 2 + 2 - 1 + 1000 = 1003
         assert "E2:E1003" in report_ranges  # 個人情報
         assert "G2:G1003" in report_ranges  # 有効
         assert "H2:H1003" in report_ranges  # 0件あり
         assert "I2:I1003" in report_ranges  # 2000件超
         assert "J2:J1003" in report_ranges  # SOQL
-        assert "K2:K1003" in report_ranges  # 上書き
+        assert "K2:K1003" in report_ranges  # RPA使用
+        assert "L2:L1003" in report_ranges  # 集計形式
+        assert "M2:M1003" in report_ranges  # 上書き
         schedule_ws = wb[f"PY_{ScheduleRule.SHEET_NAME}"]
         schedule_ranges = sorted(str(v.sqref) for v in schedule_ws.data_validations.dataValidation)
         # スケジュール: 列宣言順は スケジュールキー/レポートキー/取得頻度/取得開始時刻/
@@ -736,11 +765,12 @@ class TestMigrateTemplate:
         create_template(path, ReportEntry)
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
-        # 新列 (allow_empty, exceeds_row_limit, use_soql) はヘッダーはあるが行は空欄
+        # 新列 (allow_empty, exceeds_row_limit, use_soql, uses_rpa, report_format) は
+        # ヘッダーはあるが行は空欄
         headers = ReportEntry.headers()
-        for header in ("0件あり", "2000件超", "SOQL"):
+        for header in ("0件あり", "2000件超", "SOQL", "RPA使用", "集計形式"):
             assert header in headers
-        for header in ("0件あり", "2000件超", "SOQL"):
+        for header in ("0件あり", "2000件超", "SOQL", "RPA使用", "集計形式"):
             col_idx = headers.index(header) + 1
             assert sheet.cell(row=2, column=col_idx).value in (None, ""), (
                 f"新列 {header} が空欄になっていない: {sheet.cell(row=2, column=col_idx).value!r}"
@@ -753,11 +783,11 @@ class TestMigrateTemplate:
         # 余分な列を追加して保存（手で列を足した想定）
         wb = load_workbook(path)
         sheet = wb["PY_管理表"]
-        # 10列目・11列目にヘッダーと値を入れる
-        sheet.cell(row=1, column=10, value="旧カラムA")
-        sheet.cell(row=2, column=10, value="捨てられる値")
-        sheet.cell(row=1, column=11, value="旧カラムB")
-        sheet.cell(row=2, column=11, value="これも捨てる")
+        # 宣言された列（13 列）の後ろの 14 列目・15 列目にヘッダーと値を入れる
+        sheet.cell(row=1, column=14, value="旧カラムA")
+        sheet.cell(row=2, column=14, value="捨てられる値")
+        sheet.cell(row=1, column=15, value="旧カラムB")
+        sheet.cell(row=2, column=15, value="これも捨てる")
         wb.save(path)
         wb.close()
 
@@ -772,8 +802,8 @@ class TestMigrateTemplate:
         # 既存行のキー列はそのまま
         assert sheet.cell(row=2, column=1).value == "1001"
         # 捨てられた列のセル位置は空欄
-        assert sheet.cell(row=2, column=10).value in (None, "")
-        assert sheet.cell(row=2, column=11).value in (None, "")
+        assert sheet.cell(row=2, column=14).value in (None, "")
+        assert sheet.cell(row=2, column=15).value in (None, "")
 
     def test_columns_in_declaration_order_after_migration(self, tmp_path):
         """マイグレーション後の列順は新しい宣言順になる（既存ファイルでの列順は問わない）。"""
@@ -838,23 +868,27 @@ class TestMigrateTemplate:
         sheet = wb["PY_管理表"]
         ranges = sorted(str(v.sqref) for v in sheet.data_validations.dataValidation)
         # 新しい宣言順（E列=個人情報, G列=有効, H列=0件あり, I列=2000件超, J列=SOQL,
-        # K列=上書き）にドロップダウン。マイグレーション行=2 なので最終行は
-        # 2 + 2 - 1 + 1000 = 1003
+        # K列=RPA使用, L列=集計形式, M列=上書き）にドロップダウン。マイグレーション行=2 なので
+        # 最終行は 2 + 2 - 1 + 1000 = 1003
         assert "E2:E1003" in ranges  # 個人情報
         assert "G2:G1003" in ranges  # 有効
         assert "H2:H1003" in ranges  # 0件あり
         assert "I2:I1003" in ranges  # 2000件超
         assert "J2:J1003" in ranges  # SOQL
-        assert "K2:K1003" in ranges  # 上書き
+        assert "K2:K1003" in ranges  # RPA使用
+        assert "L2:L1003" in ranges  # 集計形式
+        assert "M2:M1003" in ranges  # 上書き
         # 「記入方法」シートは新列構成で作り直されている
         assert "記入方法" in wb.sheetnames
         guide_text = "\n".join(str(c.value) for row in wb["記入方法"].iter_rows() for c in row)
-        # 新列（allow_empty, exceeds_row_limit, use_soql, has_personal_info, overwrite の
-        # 見出し）も記入方法シートに載る
+        # 新列（allow_empty, exceeds_row_limit, use_soql, has_personal_info, overwrite,
+        # uses_rpa, report_format の見出し）も記入方法シートに載る
         assert "0件あり" in guide_text
         assert "個人情報" in guide_text
         assert "2000件超" in guide_text
         assert "SOQL" in guide_text
+        assert "RPA使用" in guide_text
+        assert "集計形式" in guide_text
         assert "上書き" in guide_text
 
     def test_idempotent_when_columns_unchanged(self, tmp_path):

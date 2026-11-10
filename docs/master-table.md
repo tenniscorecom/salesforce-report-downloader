@@ -185,5 +185,5 @@ ReportEntry.headers()  # → ["ID", "概要", "Salesforce URL", ...]（宣言順
 ## 使っているところ
 
 - [Salesforce レポートの集約取得](salesforce-downloader.md) — `ReportEntry` が
-  管理表（ID / グループ名 / 担当者 / 概要 / 個人情報 / Salesforce URL / 保存先 / 有効 / 0件あり / 2000件超 / SOQL / 上書き）を宣言している
+  管理表（ID / グループ名 / 担当者 / 概要 / 個人情報 / Salesforce URL / 保存先 / 有効 / 0件あり / 2000件超 / SOQL / RPA使用 / 集計形式 / 上書き）を宣言している
 
