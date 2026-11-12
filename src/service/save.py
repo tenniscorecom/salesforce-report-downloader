@@ -2,7 +2,7 @@ r"""src/service/save.py — 保存とフォルダ検査。
 
 `download_scheduled()` の 1 件単位で「フォルダ検査 → 取得 → 保存」を担当する
 `save_report()` / `_write_csv()` / `require_folder()` を置く。下位モジュール
-（`api.py` / `browser.py` / `soql.py`）には依存しない（`src.paths`
+（`api.py` / `soql.py`）には依存しない（`src.paths`
 と `src.exceptions` だけ）。
 
     from src.service.save import save_report, _write_csv, require_folder

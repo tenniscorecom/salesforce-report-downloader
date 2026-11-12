@@ -1,8 +1,8 @@
-"""_fetch() の SOQL経由フォールバックと、save_report() の COLUMN_NAMES 適用テスト。
+"""fetch_report() の SOQL経由フォールバックと、save_report() の COLUMN_NAMES 適用テスト。
 
-管理表の「SOQL」列（``ReportEntry.use_soql``）が真だと、_fetch() がレポートAPIでも
+管理表の「SOQL」列（``ReportEntry.use_soql``）が真だと、fetch_report() がレポートAPIでも
 ブラウザ経由でもなく、comken の ``soql_report_for()`` で引いた ``SoqlReport`` 経由で
-取得する（「2000件超」列より優先。tests/test_service_browser_fetch.py 側と対）。
+取得する（「2000件超」列より優先）。
 
 取得は ``SalesforceBase.bulk_query()`` 経由（``SoqlReport.USE_BULK=False`` の
 レポートだけ REST の ``SalesforceBase.query()`` 経由）。
@@ -49,7 +49,7 @@ from src.exceptions import (
     SoqlReportNotRegisteredError,
     SoqlTransformError,
 )
-from src.service.routes import _fetch
+from src.service.routes import fetch_report
 from src.service.save import save_report
 from src.service.soql import (
     INCOMPLETE_SOQL_MARKER,
@@ -93,7 +93,7 @@ def _registered_soql_reports(monkeypatch):
 
 
 class TestFetchRoutesToSoql:
-    """_fetch() — 「SOQL」列が真の管理番号はSOQL経由になる（「2000件超」より優先）。"""
+    """fetch_report() — 「SOQL」列が真の管理番号はSOQL経由になる（「2000件超」より優先）。"""
 
     def test_uses_soql_when_use_soql_is_true(self):
         table = MagicMock()
@@ -101,34 +101,38 @@ class TestFetchRoutesToSoql:
             "src.service.routes.fetch_via_soql",
             return_value=table,
         ) as fetch_via_soql:
-            result = _fetch(SOQL_ENTRY)
+            route, result = fetch_report(SOQL_ENTRY)
 
         fetch_via_soql.assert_called_once_with(SOQL_ENTRY)
+        assert route == "SOQL"
         assert result is table
 
     def test_soql_takes_priority_over_exceeds_row_limit(self):
+        """「SOQL」も「2000件超」も ○ の行は SOQL 経由（ブラウザの行ではない）。"""
         with (
             patch("src.service.routes.fetch_via_soql") as fetch_via_soql,
-            patch("src.service.routes.fetch_via_browser") as fetch_via_browser,
+            patch("src.service.routes.fetch_via_api") as fetch_via_api,
         ):
-            _fetch(SOQL_AND_EXCEEDS_ENTRY)
+            route, _result = fetch_report(SOQL_AND_EXCEEDS_ENTRY)
 
         fetch_via_soql.assert_called_once_with(SOQL_AND_EXCEEDS_ENTRY)
-        fetch_via_browser.assert_not_called()
+        fetch_via_api.assert_not_called()
+        assert route == "SOQL"
 
     def test_uses_api_when_use_soql_is_false(self):
         with (
             patch("src.service.api.site_for") as site_for,
             patch("src.service.routes.fetch_via_soql") as fetch_via_soql,
         ):
-            _fetch(ENTRY)
+            route, _result = fetch_report(ENTRY)
 
         site_for.assert_called_once_with(ENTRY.url)
         fetch_via_soql.assert_not_called()
+        assert route == "API"
 
     def test_raises_when_filters_given_for_soql_report(self):
         with pytest.raises(ValueError, match=SOQL_ENTRY.key):
-            _fetch(SOQL_ENTRY, filters=[{"column": "x", "operator": "equals", "value": "1"}])
+            fetch_report(SOQL_ENTRY, filters=[{"column": "x", "operator": "equals", "value": "1"}])
 
 
 class TestFetchViaSoql:

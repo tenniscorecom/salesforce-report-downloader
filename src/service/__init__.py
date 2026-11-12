@@ -12,6 +12,13 @@ r"""src/service/ — 取得の本体（パッケージ）。
 戻り値は `list[Path]` で、定期取得の呼び出し側が中身を読まず「取らせる」
 のが目的なので、`Table` を返さない（役割の違いが戻り値の型に出ている）。
 
+**ブラウザ経由の行は本体では取らない。** 管理表の「2000件超」が `○` の行は
+別リポジトリ `salesforce-report-browser` の担当で、そのリポジトリが
+`download_scheduled(fetch_browser=...)` の引数で「1 件取りに行く関数」を
+渡すと、**対象選定で選ばれた、当日まだ取れていない行を全部** ブラウザで取る
+（経路は問わない。**本体の後に実行する前提** ── ブラウザ側は本体の取り残しを
+全部拾う役）。
+
 **境界は履歴（ダウンロード履歴.csv）。** 履歴の形式・読み取り・ロック・置き場所は
 ``comken.services.salesforce_downloader.history`` / ``history_file_lock`` /
 ``paths`` 側に集約され、ダウンローダーは自分で持たない。``record()``
@@ -29,12 +36,14 @@ r"""src/service/ — 取得の本体（パッケージ）。
 このパッケージが持つもの:
 - 1件を取得して保存し履歴に残す流れ（``attempt.py`` の ``download_scheduled`` と
   ``_download_scheduled_locked`` / ``_download`` / ``_Attempt``）
-- Salesforce への問い合わせ経路の選択（``routes.py`` の ``_fetch`` / ``fetch_with_auto_fallback``）
-- Report API / ブラウザ / SOQL の各取得（``api.py`` / ``browser.py`` / ``soql.py``）
+- Salesforce への問い合わせ経路の選択（``routes.py`` の ``fetch_report``）
+- Report API / SOQL の各取得（``api.py`` / ``soql.py``）
 - 保存とフォルダ検査（``save.py`` の ``save_report`` / ``_write_csv`` / ``require_folder``）
 - スケジュールによる対象選定（``scheduler.py`` の ``select_targets`` / ``_matched_schedule_key``）
 
 ここに書かないもの:
+- ブラウザの起動・ログイン・エクスポート → 別リポジトリ ``salesforce-report-browser``
+  （本体は ``fetch_browser`` という引数で「1 件取りに行く関数」を外から受け取るだけ）
 - 「このプロジェクトのときは」という分岐 → main.py / src/run.py
 - 管理表にどんな列があるか → src.sheets.master
 - 履歴の形式・読み取り関数 → comken.services.salesforce_downloader.history

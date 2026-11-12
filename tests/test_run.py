@@ -108,7 +108,7 @@ def test_run_calls_download_scheduled_with_project_name(
     """``src.run.run()`` が ``download_scheduled(PROJECT_NAME)`` を呼び、
     件数ログが出ること。
 
-    API・ブラウザ経由・SOQLのどれで取るかは管理表の列で決まるため
+    API・SOQLのどれで取るかは管理表の列で決まるため
     （``src/run.py`` モジュール docstring参照）、``run()`` 自体は管理表を
     読まずに ``download_scheduled()`` を呼ぶだけでよい。
     """

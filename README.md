@@ -31,9 +31,8 @@ src/service/
   __init__.py           ← download_scheduled だけ公開する薄いパッケージ
   _utils.py             ← 履歴パスを返すだけの内部ヘルパー
   attempt.py            ← download_scheduled 本体・_Attempt・失敗履歴の組み立て
-  routes.py             ← 取得経路の選択（_fetch / fetch_with_auto_fallback）
+  routes.py             ← 取得経路の選択（fetch_report）
   api.py                ← Report API 経由の取得
-  browser.py            ← ブラウザ経由の取得（ブラウザの使い回しを含む）
   soql.py               ← SOQL 経由の取得・件数検証・列名の置き換え、未完成印
   save.py               ← 保存とフォルダ検査（save_report / _write_csv / require_folder）
   scheduler.py          ← スケジュールによる対象選定と共有レポート警告
@@ -63,28 +62,39 @@ WinActor からの呼び出しが前回実行と重なった場合（前回の�
 開始日で揃う（翌日 00:01 に「成功済み」履歴が残ると、翌日の同じ
 スケジュールキーが「昨日成功済み」として誤判定されるのを防ぐ）。
 
-**API・ブラウザ経由・SOQLのどれで取るかは、管理表の列（「2000件超」「SOQL」）で決まる。**
-呼び出し側のコード（`src/run.py`）は意識しない。優先順位は「SOQL」列 →「2000件超」列 →
-通常のReport API。ブラウザ経由は **ID/パスワードを DPAPI から自動入力し、MFA はスマホで
-承認する**（無人で承認されなければ、そのレポートは失敗として記録される。
-認証情報が未登録ならブラウザ経由のレポートは失敗になる。認証情報の登録は
-`python -m comken cred gui`（=`認証情報の登録.bat`）で行い、サイト名（組織クラスの
-`CREDENTIAL_PREFIX`。例: Solution 組織）は `comken/toolbox/salesforce/sites/solution.py`
-の `CREDENTIAL_PREFIX` を使う）。
-SOQL経由は同じ管理番号の `SoqlReport` が `src.soql_reports` に登録されている必要がある
-（詳しくは `fetch_via_soql()` を参照）。
+**API・SOQLのどれで取るかは、管理表の列（「2000件超」「SOQL」）で決まる。**
+呼び出し側のコード（`src/run.py`）は意識しない。優先順位は「SOQL」列 →
+「2000件超」列 → 通常のReport API。SOQL経由は同じ管理番号の `SoqlReport` が
+`src.soql_reports` に登録されている必要がある（詳しくは `fetch_via_soql()` を参照）。
 
-**自動切替でも全件取れなければエラーで止める。** `SalesforceReportTruncatedError`
-（2000件超）→ ブラウザに切り替えても 2000 行以下しか取れなければ、
-`BrowserFallbackIncompleteError` で失敗する（「0件あり」が ○ でも空ファイルは保存しない）。
-対処は Salesforce の画面からレポートを手動でエクスポートする。
+**ブラウザ経由はこのリポジトリでは取らない。** 管理表の「2000件超」が `○` の行は
+別リポジトリ **`salesforce-report-browser`** の担当で、そのリポジトリが
+`download_scheduled(fetch_browser=...)` の引数で「1 件取りに行く関数」を渡すと、
+**対象選定で選ばれた、当日まだ取れていない行を全部** ブラウザで取る
+（経路は SOQL でも通常でも問わない。**本体の後に実行する前提**）。
+このリポジトリの通常の実行（引数無し）では、
+「2000件超」が `○` の行は **取らない**（1 実行につき 1 行の INFO ログを出して外す。履歴にも
+書かない）。ブラウザの起動・ログイン・MFA 承認・使い回しは
+`salesforce-report-browser` 側の責任で、ここには残っていない。
+保存先・履歴・ロック・スケジュール判定は **1 つ**（このリポジトリの
+`save_report()` / `history` / `HistoryFileLock` / `select_targets()` をそのまま使う）。
+
+**Report API が 2000 件で打ち切られたら、そのままで失敗にする**（取り直さない）。
+`SalesforceReportTruncatedError` として履歴に残るので、対処は管理表の
+**「SOQL」か「2000件超」を `○` にすること**。0 件で「0件あり」が `×` のときも
+`EmptyReportError` のまま失敗になる（取り直さない）。
 
 ## 使い方
 
 ```bat
-認証情報の登録.bat      :: 初回だけ。API の client_id / client_secret と、ブラウザ経由の組織の username / password を登録する
+認証情報の登録.bat      :: 初回だけ。API の client_id / client_secret を登録する
 実行.bat                :: 定期取得。WinActor（社内RPA基盤）から高頻度（例: 1 時間おき）で呼ぶ
 ```
+
+ブラウザ経由のレポート（管理表の「2000件超」が `○`）を使う場合は、
+`salesforce-report-browser` 側で **ID/パスワード**も登録する
+（`python -m comken cred gui`）。ブラウザ経由は ID/パスワードを DPAPI から
+自動入力し、MFA はスマホで承認する。
 
 `実行.bat` は、**WinActor（社内RPA基盤）等から高頻度（例: 1 時間おき）で繰り返し呼ぶ**
 運用です。`download_scheduled()` が「取るべき時刻」と「本日の成功済み」を内部で判定する

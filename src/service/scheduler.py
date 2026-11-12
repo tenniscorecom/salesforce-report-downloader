@@ -123,12 +123,13 @@ def select_targets(
     関数本体が複雑にならないように分離している（``download_scheduled`` 自体は
     既に10近くの分岐があり、複雑度の上限に近い）。
 
-    **自動切替で再問い合わせする設計。** Report API が 2000件超で打ち止められたら
-    自動でブラウザ経由に取り直すので、当日中に ``SalesforceReportTruncatedError``
-    で失敗したレポートも再問い合わせする。同じ日の 2 回目の実行でも
-    Report API → ブラウザ自動切替が動くので、毎回 Salesforce への問い合わせ
-    を行う。
-    戻り値の ``already_failed`` は常に空リスト。
+    **失敗したレポートも再問い合わせする。** 当日中の取り直しを止める仕組みは
+    無い（``already_failed`` は常に空リスト）。判定材料になるのは
+    「成功した履歴」だけなので、取得に失敗した行には成功履歴が残らず、
+    同じ日の 2 回目の実行でもその行は再び対象になる。
+    2000 件超で打ち切られたレポート（``SalesforceReportTruncatedError``）も
+    取り直しはしないので、次の実行でまた Report API へ問い合わせることになる
+    （管理表の「SOQL」か「2000件超」を `○` にして対処する運用）。
 
     **「スケジュール」シートに行が無いレポートは取得しない。**
     ``_matched_schedule_key()`` が ``(False, "", ...)`` を返し、ここでは対象外になる。
@@ -151,9 +152,10 @@ def select_targets(
     Returns:
         ``(targets, already_failed, skipped_by_reason)``。``targets`` は実際に
         取得を試みる ``(ReportEntry, schedule_key, ScheduleRule | None)`` のリスト。
-        ``already_failed`` は空（``_download_scheduled_locked()`` の呼び出し
-        シグネチャを保つために残してある）。``skipped_by_reason`` は対象外理由を
-        管理番号で引ける ``dict``。
+        ``already_failed`` は空（失敗した行も再問い合わせするため、当日の失敗を
+        理由に対象から外すことはしない。``_download_scheduled_locked()`` の
+        呼び出しシグネチャを保つために残してある）。
+        ``skipped_by_reason`` は対象外理由を管理番号で引ける ``dict``。
     """
     targets: list[tuple[ReportEntry, str, ScheduleRule | None]] = []
     unscheduled_enabled: list[str] = []

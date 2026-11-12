@@ -122,8 +122,9 @@ class ReportEntry(MasterRow):
         "（指しているレポートが違う可能性に気づけるようにするため）。"
         "分からないときは「不明」と書いてください（「×」と同じに動きます）",
     )
-    # 既定値 `×`: 書き忘れても通常の Report API 経由のまま動く。「○」でブラウザ経由に
-    # 切り替わる。SOQL 列が「○」の行では SOQL 経由が優先される
+    # 既定値 `×`: 書き忘れても通常の Report API 経由のまま動く。「○」にすると
+    # ブラウザ経由の行になる（取得は別リポジトリ salesforce-report-browser が
+    # 行う）。SOQL 列が「○」の行では SOQL 経由が優先される
     # 「不明」は **空欄と同じ扱い**（False）。上限超えかどうかが分からないレポートに
     # 書き残せるようにするため。False なので Report API 経由のままになる
     exceeds_row_limit: bool = column(
@@ -131,7 +132,8 @@ class ReportEntry(MasterRow):
         choices=("○", "×", UNKNOWN_MARK),
         default=False,
         help="Report API の2000行上限を超えることが分かっているレポートなら「○」。"
-        "取得実行側がブラウザ経由（画面のエクスポート機能）に切り替えます。"
+        "この行はブラウザ経由での取得になり、取得は別リポジトリ"
+        "salesforce-report-browser が行います。"
         "「SOQL」列が「○」のときはこの列より優先されます。"
         "分からないときは「不明」と書いてください（「×」と同じに動きます）",
     )

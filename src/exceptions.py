@@ -7,9 +7,6 @@ comken 側のものを使うので再エクスポートしない（利用側は 
 from pathlib import Path
 
 from comken.exceptions import ComkenError, DownloaderError
-from comken.services.salesforce_downloader.history import (
-    ROUTE_BROWSER_FALLBACK_TRUNCATED,
-)
 
 __all__ = [
     "ReportNotRegisteredError",
@@ -23,8 +20,6 @@ __all__ = [
     "EmptyReportError",
     "ReportFolderNotFoundError",
     "ScheduledDownloadFailedError",
-    "BrowserFallbackFailedError",
-    "BrowserFallbackIncompleteError",
     "SavedFileEmptyError",
     "MasterTableError",
     "MasterRowValueError",
@@ -305,67 +300,6 @@ class ScheduledDownloadFailedError(DownloaderError):
             f"定期取得で {len(failed_keys)} 件が失敗しました: {keys}\n"
             f"失敗した理由は履歴を確認してください: {history_path}"
         )
-
-
-class BrowserFallbackFailedError(DownloaderError):
-    """Report API 経路の自動切替で、ブラウザの取り直し自体が失敗した
-
-    ``SalesforceReportTruncatedError``（2000件超）または 0 行 + ``allow_empty=False``
-    でブラウザ経由に取り直そうとしたが、``fetch_via_browser()`` 中に別の例外が出た
-    ときに送出する。``DownloaderError`` 系なので ``_failure_row()`` で「Salesforce」区分になる。
-
-    ``route`` は ``ROUTE_BROWSER_FALLBACK_TRUNCATED`` / ``ROUTE_BROWSER_FALLBACK_EMPTY``
-    のいずれかで、履歴の「取得経路」列に書くために持つ。
-    ``SalesforceReportTruncatedError`` のような 2 引数シグネチャの例外は経由しない
-    （文字列 1 つで ``raise`` すると ``TypeError`` になるため）。
-
-    発生箇所: ``src/service.py`` の ``fetch_with_auto_fallback()`` と
-    ``_download()`` の 0 行取り直し経路
-
-    対処:
-        Salesforce の画面から手動でダウンロードするか、管理表の「2000件超」/
-        「0件あり」を「○」にして次回の実行を待ってください。
-        認証情報が未登録なら ``CredentialNotFoundError`` の案内に従う
-    """
-
-    def __init__(self, report_key: str, summary: str, reason: str, route: str) -> None:
-        super().__init__(
-            f"Report API で{reason}だったためブラウザで取り直したが失敗しました: "
-            f"{report_key}（{summary}）\n"
-            "対処: Salesforce の画面から手動でダウンロードするか、"
-            "管理表の「2000件超」/「0件あり」を「○」にして次回の実行を待ってください。"
-        )
-        # ``_download()`` が ``record_failure()`` の ``route`` に転写する
-        self.route = route
-
-
-class BrowserFallbackIncompleteError(BrowserFallbackFailedError):
-    """Report API では2000件超だったのに、ブラウザで取り直した結果も2000行以下だった
-
-    ``SalesforceReportTruncatedError`` で自動的にブラウザ経由に取り直したが、
-    **ブラウザでも Report API の上限（2000行）以下しか取れなかった**場合に送出する。
-    管理表の「0件あり」が ○ でも空ファイルは作らずエラー扱いにする（「データが無い日」と
-    「取得が失敗した日」を区別できなくなるため）。
-
-    ``self.route`` には ``ROUTE_BROWSER_FALLBACK_TRUNCATED`` を入れる。親の
-    ``__init__`` の文言は「ブラウザ取得自体が失敗」用で合わないため、呼ばずに
-    ``DownloaderError.__init__`` に自前の文言を渡す。
-
-    発生箇所: ``src/service.py`` の ``fetch_with_auto_fallback()``
-
-    対処:
-        Salesforce の画面からレポートを手動でエクスポートしてください。
-    """
-
-    def __init__(self, report_key: str, summary: str, row_count: int) -> None:
-        DownloaderError.__init__(
-            self,
-            "Report API では 2000 件超だったのに、ブラウザで取り直した結果が"
-            f" {row_count} 行でした。全件取れていません: {report_key}（{summary}）\n"
-            "対処: Salesforce の画面からレポートを手動でエクスポートしてください。",
-        )
-        # 親の ``__init__`` を呼ばないので ``self.route`` はここで入れる
-        self.route = ROUTE_BROWSER_FALLBACK_TRUNCATED
 
 
 class SavedFileEmptyError(DownloaderError):

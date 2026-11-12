@@ -10,7 +10,6 @@ MASTER_PATH / HISTORY_PATH は `monkeypatch.setattr` で一時ディレクトリ
 import csv
 import datetime as dt
 import logging
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +19,7 @@ from comken.exceptions import (
     HistoryLockTimeoutError,
     HistoryWriteError,
     SalesforceReportIDNotFoundError,
+    SalesforceReportTruncatedError,
 )
 from comken.services.salesforce_downloader import history
 from comken.toolbox.csv import CSV
@@ -316,28 +316,6 @@ def fake_salesforce(rows: list[dict] | None = None) -> MagicMock:
     return site
 
 
-def fake_browser_site(rows: list[dict] | None = None) -> MagicMock:
-    """export_reports() が CSV を書き出すブラウザ版サイトクラス（「2000件超」列用）。"""
-    values = ROWS if rows is None else rows
-    if values:
-        lines = "\n".join(f"{r['名前']},{r['金額']}" for r in values)
-        csv_bytes = f"名前,金額\n{lines}\n".encode()
-    else:
-        # 0 行: 見出しだけの CSV（``csv.reader`` が空行を 0 列として拾って
-        # 「列数が一致しません」エラーを出すのを避けるため、データ行を足さない）
-        csv_bytes = "名前,金額\n".encode("utf-8-sig")
-
-    def _export_reports(reports, **kwargs):
-        for _url, destination in reports.items():
-            Path(destination).write_bytes(csv_bytes)
-            yield "dummy", Path(destination)
-
-    instance = MagicMock()
-    instance.export_reports.side_effect = _export_reports
-    instance.__enter__.return_value = instance
-    return MagicMock(return_value=instance)
-
-
 class TestLoadMaster:
     """管理表の読み取りと検証。"""
 
@@ -489,25 +467,6 @@ class TestDownloadScheduledRecord:
 
         with pytest.raises(ReportNotRegisteredError):
             download_scheduled(filters_by_report={"9999": filters})
-
-    def test_uses_browser_fetch_for_report_marked_exceeds_row_limit(self, paths):
-        """管理表の「2000件超」列が○の管理番号は、Report API ではなくブラウザ経由になる。
-
-        どのレポートをブラウザ経由にするかは管理表の列で決まる（呼び出し側の
-        コードでは指定しない設計）。ここではテスト用に、実体は `paths` fixture の
-        本物の管理表から読んだ行を `exceeds_row_limit=True` に差し替えて使う。
-        """
-        entry = replace(load_master(paths["master_path"])["1001"], exceeds_row_limit=True)
-        browser_site = fake_browser_site()
-        with (
-            patch("src.service.attempt.load_master", return_value={"1001": entry}),
-            patch("src.service.api.site_for") as api_site_for,
-            patch("comken.toolbox.browser.sites.salesforce.site_for", return_value=browser_site),
-        ):
-            download_scheduled()
-
-        api_site_for.assert_not_called()
-        browser_site.return_value.login_with_credentials.assert_called_once()
 
     def test_saves_file_with_csv_extension(self, paths, monkeypatch):
         """レポートは `.csv` で保存される。
@@ -1008,18 +967,11 @@ class TestHistory:
         assert row["エラーコード"] == ""
 
     def test_failure_is_recorded(self, paths):
-        # Report API が 0 行 → ブラウザで取り直し → ブラウザも 0 行 →
-        # ``EmptyReportError`` で失敗、という新仕様の流れ。
-        # ブラウザ経路もモックして「ブラウザも 0 行」のケースを再現する
-        browser_site = fake_browser_site([])
+        # Report API が 0 行 → 取り直さない → ``EmptyReportError`` で失敗
         with (
             patch(
                 "src.service.api.site_for",
                 return_value=fake_salesforce([]),
-            ),
-            patch(
-                "comken.toolbox.browser.sites.salesforce.site_for",
-                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -1140,18 +1092,13 @@ class TestHistory:
         """取得できたが 0 行だった → 成否=失敗 / Salesforce取得結果=成功 /
         保存結果=空 / エラーコード=EmptyReportError（通信は成功していて中身が空、という区別）。
 
-        Report API が 0 行 + ブラウザでも 0 行 → EmptyReportError で失敗、
-        という新仕様の流れをモックして再現する。
+        0 行は取り直さない（ブラウザ経由で取り直す処理は無い）ので、
+        ``EmptyReportError`` でそのまま失敗になる。
         """
-        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.api.site_for",
                 return_value=fake_salesforce([]),
-            ),
-            patch(
-                "comken.toolbox.browser.sites.salesforce.site_for",
-                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -1808,19 +1755,13 @@ class TestHistory:
         段階は「取得成功 → 保存に進まず 0 行で失敗」になるため、4 区分だった頃の
         `Salesforce` から、新仕様の `データなし` に変わった。
 
-        新仕様では Report API が 0 行のときブラウザで取り直し、ブラウザも 0 行なら
-        初めて ``EmptyReportError`` で失敗する。ブラウザ経路もモックして
-        「ブラウザも 0 行」のケースを再現する。
+        0 行は取り直さないので、 Report API が 0 行を返した時点で
+        ``EmptyReportError`` になる。
         """
-        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.api.site_for",
                 return_value=fake_salesforce([]),
-            ),
-            patch(
-                "comken.toolbox.browser.sites.salesforce.site_for",
-                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -3164,18 +3105,13 @@ class TestRequiredHistory:
         """`EmptyReportError` が起きて履歴も書けなかった場合、エラーは
         `ScheduledDownloadFailedError` で伝搬し、メッセージに元の失敗が含まれる。
 
-        新仕様では Report API が 0 行のときブラウザで取り直すので、
-        ブラウザも 0 行 → ``EmptyReportError`` の流れをモックして再現する。
+        0 行は取り直さないので、 Report API が 0 行を返した時点で
+        ``EmptyReportError`` になる。
         """
-        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.api.site_for",
                 return_value=fake_salesforce([]),
-            ),
-            patch(
-                "comken.toolbox.browser.sites.salesforce.site_for",
-                return_value=browser_site,
             ),
             patch.object(history, "_append", side_effect=OSError("履歴書込み失敗")),
             pytest.raises(ScheduledDownloadFailedError) as caught,
@@ -3199,9 +3135,8 @@ class TestAllowEmpty:
         """1. `0件あり` が `×` で 0 行 → `EmptyReportError`、ファイルができない、
         履歴の `原因区分` が `データなし`。
 
-        新仕様では Report API が 0 行 → ブラウザで取り直し → ブラウザも 0 行 →
-        ``EmptyReportError`` で失敗。ブラウザ経路もモックして「ブラウザも 0 行」
-        のケースを再現する。
+        0 行は取り直さないので、 Report API が 0 行を返した時点で
+        ``EmptyReportError`` になる。
         """
         base_path = tmp_path / "ベース"
         base_path.mkdir()
@@ -3223,15 +3158,10 @@ class TestAllowEmpty:
         history_path = tmp_path / "履歴.csv"
         _patch_master_path(monkeypatch, master, history_path)
 
-        browser_site = fake_browser_site([])
         with (
             patch(
                 "src.service.api.site_for",
                 return_value=fake_salesforce([]),
-            ),
-            patch(
-                "comken.toolbox.browser.sites.salesforce.site_for",
-                return_value=browser_site,
             ),
             pytest.raises(ScheduledDownloadFailedError),
         ):
@@ -3470,22 +3400,19 @@ class TestAllowEmpty:
             assert by_key["1002"]["取得件数"] == "2"
 
 
-# ── 2000件超で失敗したレポートの当日スキップ ─────────────────────────
+# ── 2000件超で打ち切られたレポートの失敗扱い ─────────────────────────
 class TestTruncatedSkip:
     """``SalesforceReportTruncatedError`` で失敗したレポートの挙動。
 
-    2026-10 に Report API 経路での自動切替（``SalesforceReportTruncatedError`` を
-    受けてブラウザ経由に自動で切り替え）を入れた結果、**「当日中の再実行で
-    Salesforce へ問い合わせない」スキップは廃止された**。同じ日の 2 回目でも
-    Report API → ブラウザ自動切替が動くので、毎回 Salesforce への問い合わせが
-    発生する。``select_targets`` の ``already_failed`` は常に空リストになる。
-    2026-10-05 に ``comken`` 側 ``history.truncated_today()`` も削除された
-    （自動切替で取り直す用途が無くなったため）。
+    2000 件超で打ち切られたときの **取り直しはしない**（ブラウザ経由で取り直す
+    処理は無い）。``SalesforceReportTruncatedError`` がそのまま失敗になり、
+    履歴に失敗 1 行が残る。対処は管理表の「SOQL」か「2000件超」を `○` にすること。
 
-    ここでは「truncated が来ても自動切替で成功する」「自動切替に失敗したら
-    失敗として残る」「2回目の ``download_scheduled()`` でも Report API が呼ばれる」
-    の 3 点を新しい挙動の代表として確認する（個別のテストは
-    ``tests/test_service_browser_fallback.py`` に集約）。
+    **「当日中の再実行で Salesforce へ問い合わせない」スキップも無い。**
+    当日中に truncated で失敗した記録があっても、同じ日の 2 回目の
+    ``download_scheduled()`` でまた Report API へ問い合わせる（失敗した行には
+    成功履歴が残らないため）。``select_targets`` の ``already_failed`` は常に
+    空リストになる。
     """
 
     @staticmethod
@@ -3521,31 +3448,50 @@ class TestTruncatedSkip:
             error_code="SalesforceReportTruncatedError",
         )
 
+    def test_truncated_fails_without_retry(self, paths):
+        """Report API が 2000 件超で打ち切られたら、**取り直さずに失敗**になる。
+
+        ブラウザ経由で取り直す処理が無いので、Report API の呼び出しは 1 回だけで
+        止まる。履歴には失敗が 1 行残り、取得経路は ``API`` のまま。
+        """
+        site = MagicMock()
+        client = MagicMock()
+        client.__enter__.return_value.report.get.side_effect = SalesforceReportTruncatedError(
+            "00O5g00000ABCDE", 2000
+        )
+        site.return_value = client
+
+        with (
+            patch("src.service.api.site_for", return_value=site),
+            pytest.raises(ScheduledDownloadFailedError),
+        ):
+            download_scheduled()
+
+        # Report API は 1 回だけ（取り直しで再度呼ばない）
+        assert client.__enter__.return_value.report.get.call_count == 1
+        # 履歴に失敗が残る
+        row = _history_rows(paths)[-1]
+        assert row["成否"] == "失敗"
+        assert row["エラーコード"] == "SalesforceReportTruncatedError"
+        assert row["取得経路"] == "API"
+        # ファイルは作られない
+        assert list(paths["base_path"].glob("**/*.csv")) == []
+
     def test_second_call_in_same_day_still_calls_salesforce(self, paths, monkeypatch):
         """当日中に ``SalesforceReportTruncatedError`` で失敗した記録があっても、
         同じ日の 2 回目の ``download_scheduled()`` で **Salesforce への問い合わせは
-           止めない**（=自動切替で取りに行く）。旧実装の「スキップ」挙動は廃止された。
-
-        ブラウザ経路もモックして「Report API が Truncated → ブラウザが成功」を
-        確認する（=``SalesforceReportTruncatedError`` が来ても、自動切替が走れば
-        成功扱いになる）。
+        止めない**（失敗した行は当日でも再問い合わせする）。
         """
         now = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001
         monkeypatch.setattr(attempt_module, "clock_now", lambda: now)
         # 同じ「今日」の truncated 失敗履歴を直接書く（=昨晩 RPA が失敗した想定）
         self._seed_truncated_failure(paths["history_path"], when=now)
 
-        site = fake_browser_site()
-        with (
-            patch("src.service.api.site_for", return_value=fake_salesforce()),
-            patch(
-                "comken.toolbox.browser.sites.salesforce.site_for",
-                return_value=site,
-            ),
-        ):
+        site = fake_salesforce()
+        with patch("src.service.api.site_for", return_value=site):
             saved = download_scheduled()
         # 2 回目でも Salesforce へ問い合わせが走る（旧挙動: スキップで 0 回）
-        # Report API → Truncated → ブラウザで成功、という流れになる
+        assert site.return_value.__enter__.return_value.report.get.call_count == 1
         assert [path.name.split("_")[0] for path in saved] == ["1001"]
 
 
@@ -3846,7 +3792,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
 
     取得中に固まったときに「どのレポートで止まったか」をログで分かるように
     することが目的なので、ログは ``require_folder()`` の前、
-    =Salesforce へ問い合わせる前に出ていなければならない。``fetch_with_auto_fallback()``
+    =Salesforce へ問い合わせる前に出ていなければならない。``fetch_report()``
     が呼ばれた時点の ``caplog`` を ``side_effect`` で捕捉し、呼ばれた時点で
     既に「取得開始」ログが出ていることを確認する。壊れた版（=ログを取得の
     後ろに出す）に戻すと、このテストは落ちる。
@@ -3926,13 +3872,13 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         return base_path, history_path
 
     def test_soql_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
-        """``use_soql=True`` のエントリは、``fetch_with_auto_fallback()`` が
+        """``use_soql=True`` のエントリは、``fetch_report()`` が
         呼ばれた時点で予定経路 ``SOQL`` の「取得開始」ログが既に出ている。
         """
         entry = self._make_entry("9001", use_soql=True)
         _, history_path = self._setup(tmp_path, monkeypatch, entry)
 
-        # ``fetch_with_auto_fallback()`` が呼ばれた時点の ``caplog`` を捕捉する。
+        # ``fetch_report()`` が呼ばれた時点の ``caplog`` を捕捉する。
         # この ``side_effect`` の中で ``caplog.records`` をコピーすれば、
         # 「Salesforce へ問い合わせる前」に出たログだけが手に入る
         captured: list[logging.LogRecord] = []
@@ -3945,7 +3891,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
                 attempt_module,
-                "fetch_with_auto_fallback",
+                "fetch_report",
                 side_effect=_explode,
             ),
         ):
@@ -3969,7 +3915,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
 
     def test_api_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
         """``use_soql=False`` / ``exceeds_row_limit=False`` の通常 API 経路でも
-        同じ順序で「取得開始」ログが ``fetch_with_auto_fallback()`` の前に出る。
+        同じ順序で「取得開始」ログが ``fetch_report()`` の前に出る。
         """
         entry = self._make_entry("9002", use_soql=False, exceeds_row_limit=False)
         _, history_path = self._setup(tmp_path, monkeypatch, entry)
@@ -3984,7 +3930,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
                 attempt_module,
-                "fetch_with_auto_fallback",
+                "fetch_report",
                 side_effect=_explode,
             ),
         ):
@@ -3999,7 +3945,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         assert "9002" in start_records[0].message
 
     def test_browser_route_log_emitted_before_fetch(self, tmp_path, monkeypatch, caplog):
-        """``exceeds_row_limit=True`` のエントリも、``fetch_with_auto_fallback()``
+        """``exceeds_row_limit=True`` のエントリも、``fetch_report()``
         が呼ばれる前に予定経路「ブラウザ」の「取得開始」ログが出ている。
         """
         entry = self._make_entry("9003", exceeds_row_limit=True)
@@ -4015,7 +3961,7 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
             caplog.at_level(logging.INFO, logger="src.service"),
             patch.object(
                 attempt_module,
-                "fetch_with_auto_fallback",
+                "fetch_report",
                 side_effect=_explode,
             ),
         ):
