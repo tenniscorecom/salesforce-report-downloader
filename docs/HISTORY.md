@@ -27,6 +27,7 @@
 - [管理表に「RPA使用」「集計形式」を足す](#管理表にrpa使用集計形式を足す)（2026-11）
 - [列名の置き換えを `transform()` より前にする](#列名の置き換えを-transform-より前にする)（2026-11-12）
 - [ブラウザ経由を別リポジトリに分ける](#ブラウザ経由を別リポジトリに分ける)（2026-11-12）
+- [SOQL レポートを置く場所を `src/reports/` に移す](#soql-レポートを置く場所を-srcreports-に移す)（2026-11-12）
 
 ## 保存方式（予約ファイル方式 → 一時ファイル + os.rename）
 
@@ -301,3 +302,22 @@
   原因に気づけるからで、SOQL 化か「2000件超」を ○ にして直す運用に変えた。
   ブラウザ側は本体の取り残しを全部拾う役。自動の取り直しを本体から外しても、
   取れなかったレポートを同じ日のうちに取れる。
+
+## SOQL レポートを置く場所を `src/reports/` に移す
+
+- 日付: 2026-11-12
+- 以前の考え: SOQL レポート（2000件超のレポートを SOQL で取るもの）の置き場所は
+  ``src/soql_reports/`` 配下の ``reports/`` ディレクトリ、 基底クラス
+  ``SoqlReport`` は ``src/soql_reports/`` 配下の ``base.py`` に置いていた。
+  レポートの import は ``src.soql_reports`` 配下の ``base.py`` から
+  ``SoqlReport`` を取る形だった。
+- いまの考え: レポートの置き場所を **``src/reports/``** に移す。 基底クラス
+  ``SoqlReport`` も **``src/reports/base.py``** に移し、 レポートの import は
+  ``from src.reports.base import SoqlReport`` になる。 ``src/soql_reports/`` には
+  ``_registry.py`` / ``__init__.py`` / ``column_names.py`` / ``runner.py`` を残す
+  （登録の走査は ``src/reports/`` を見る）。 移行の互換（古い import 先を残す
+  別名・shim）は作らない。 soql-collector（別リポジトリ）が生成する .py の
+  import も ``from src.reports.base import SoqlReport`` に直す。
+- 理由: レポートを置く場所を浅くして分かりやすくするため（ユーザー判断）。
+  基底クラスもレポートと同じ場所に置き、 生成した .py の import 先と
+  置き場所を一致させた。

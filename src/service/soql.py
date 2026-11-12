@@ -39,9 +39,9 @@ from src.exceptions import (
     SoqlIncompleteError,
     SoqlTransformError,
 )
+from src.reports.base import SoqlReport
 from src.sheets.master import ReportEntry
 from src.soql_reports import soql_report_for
-from src.soql_reports.base import SoqlReport
 from src.soql_reports.column_names import extract_main_object, load_column_names_for
 from src.soql_reports.runner import apply_column_names
 
@@ -115,7 +115,7 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
     instance = report_cls()
     # SOQL 経由のとき、実際に使った ``SoqlReport`` のクラス名と所在モジュールを
     # INFO で 1 行出す（管理表の「SOQL」列 = ○ のレポートが、コードのどの
-    # ``reports/<ファイル>.py`` で定義されているかを運用時に追えるようにするため）。
+    # ``src/reports/<ファイル>.py`` で定義されているかを運用時に追えるようにするため）。
     # 取得方法（Bulk / REST）も一緒に出す（``USE_BULK`` で選べるため）。
     # SOQL 本文は DEBUG（=既定では出ない。問い合わせの中身は障害調査で見たい想定）
     logger.info(
@@ -405,7 +405,7 @@ def _apply_soql_columns(
 ) -> Table:
     """列名の置き換えを適用した ``Table`` を返す。
 
-    **管理表の「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
+    **管理表の「SOQL」列が「○」の行は ``src/reports/`` 配下の ``SoqlReport`` 経由で
     取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への対応表を
     持っている。 ``soql-collector`` が出力する ``列名の対応.csv``
     からも自動で拾う（手書きが無い列や新しいレポートでも、 soql-collector を

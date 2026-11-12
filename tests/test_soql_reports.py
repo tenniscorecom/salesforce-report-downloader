@@ -18,8 +18,8 @@ from comken.core.table import Table
 from comken.exceptions import DownloaderError
 
 from src.exceptions import SoqlReportNotRegisteredError
+from src.reports.base import SoqlReport
 from src.soql_reports import _registry, soql_report_for
-from src.soql_reports.base import SoqlReport
 from src.soql_reports.runner import apply_column_names
 
 ROWS = [{"Id": "001", "Name": "山田"}, {"Id": "002", "Name": "鈴木"}]
@@ -44,7 +44,7 @@ class _OtherReport(SoqlReport):
 
 
 def _load_module(reports_module, stem: str) -> ModuleType:
-    """``reports/__path__`` 内の ``<stem>.py`` を ``importlib.import_module`` で読み込む。
+    """``src/reports/__path__`` 内の ``<stem>.py`` を ``importlib.import_module`` で読み込む。
 
     既に ``sys.modules`` にあれば削除してから読み直す（テスト間のキー衝突を避ける）。
     読み込み前に ``importlib.invalidate_caches()`` を呼び、ディレクトリ一覧の
@@ -59,14 +59,14 @@ def _load_module(reports_module, stem: str) -> ModuleType:
 
 @pytest.fixture
 def isolated_reports_dir(tmp_path, monkeypatch):
-    """``reports/`` の ``__path__`` を ``tmp_path`` に差し替えるフィクスチャ。
+    """``src/reports/`` の ``__path__`` を ``tmp_path`` に差し替えるフィクスチャ。
 
     ``registered_reports()`` は ``pkgutil.iter_modules(reports.__path__)`` で
     走査するので、``reports`` モジュールの ``__path__`` を一時ディレクトリに
     差し替えれば、その中へ ``.py`` を書くだけでテスト用レポートを追加できる。
     monkeypatch が終了時に ``__path__`` と ``sys.modules`` を元に戻す。
     """
-    from src.soql_reports import reports as reports_module
+    from src import reports as reports_module
 
     monkeypatch.setattr(reports_module, "__path__", [str(tmp_path)])
     yield tmp_path
@@ -94,10 +94,13 @@ class TestSoqlReportBase:
 
 
 class TestRegisteredReports:
-    """``registered_reports()`` の自動登録挙動（``reports/`` を ``tmp_path`` に差し替えて検証）。"""
+    """``registered_reports()`` の自動登録挙動。
+
+    ``src/reports/`` を ``tmp_path`` に差し替えて検証する。
+    """
 
     def test_returns_empty_tuple_when_no_reports(self, isolated_reports_dir):
-        """``reports/`` に実レポートが無い状態では空タプル。"""
+        """``src/reports/`` に実レポートが無い状態では空タプル。"""
         from src.soql_reports import _registry as registry_module
 
         # フィクスチャで ``reports/__path__`` は ``isolated_reports_dir`` に差し替え済み。
@@ -105,13 +108,13 @@ class TestRegisteredReports:
         assert registry_module.registered_reports() == ()
 
     def test_picks_up_real_module_under_reports(self, isolated_reports_dir):
-        """``reports/`` に置いたファイルのクラスが拾われる。"""
+        """``src/reports/`` に置いたファイルのクラスが拾われる。"""
+        from src import reports as reports_module
         from src.soql_reports import _registry as registry_module
-        from src.soql_reports import reports as reports_module
 
         # 一意な KEY にして他のテストとぶつけない
         body = (
-            "from src.soql_reports.base import SoqlReport\n"
+            "from src.reports.base import SoqlReport\n"
             "class RealPickReport(SoqlReport):\n"
             "    KEY = '8001'\n"
             "    def soql(self):\n"
@@ -130,7 +133,7 @@ class TestRegisteredReports:
         from src.soql_reports import _registry as registry_module
 
         body = (
-            "from src.soql_reports.base import SoqlReport\n"
+            "from src.reports.base import SoqlReport\n"
             "class SkipMe(SoqlReport):\n"
             "    KEY = '8002'\n"
             "    def soql(self):\n"
@@ -144,13 +147,13 @@ class TestRegisteredReports:
 
     def test_does_not_pick_up_imported_only_class(self, isolated_reports_dir):
         """他モジュールから ``from ... import`` しただけのクラスは拾わない。"""
+        from src import reports as reports_module
         from src.soql_reports import _registry as registry_module
-        from src.soql_reports import reports as reports_module
 
         # ``definitions.py`` で ``SoqlReport`` サブクラスを定義し、
         # ``importer.py`` はそれを再 import するだけにする
         definitions_body = (
-            "from src.soql_reports.base import SoqlReport\n"
+            "from src.reports.base import SoqlReport\n"
             "class ImportedReport(SoqlReport):\n"
             "    KEY = '8003'\n"
             "    def soql(self):\n"
@@ -159,9 +162,7 @@ class TestRegisteredReports:
         (isolated_reports_dir / "definitions.py").write_text(definitions_body, encoding="utf-8")
         _load_module(reports_module, "definitions")
 
-        importer_body = (
-            "from src.soql_reports.reports.definitions import (\n    ImportedReport,\n)\n"
-        )
+        importer_body = "from src.reports.definitions import (\n    ImportedReport,\n)\n"
         (isolated_reports_dir / "importer.py").write_text(importer_body, encoding="utf-8")
         _load_module(reports_module, "importer")
 
@@ -174,12 +175,12 @@ class TestRegisteredReports:
 
     def test_returns_reports_sorted_by_key(self, isolated_reports_dir):
         """複数レポートを ``KEY`` 昇順で返す。"""
+        from src import reports as reports_module
         from src.soql_reports import _registry as registry_module
-        from src.soql_reports import reports as reports_module
 
         for key, name in [("8103", "c_report"), ("8101", "a_report"), ("8102", "b_report")]:
             body = (
-                "from src.soql_reports.base import SoqlReport\n"
+                "from src.reports.base import SoqlReport\n"
                 f"class {name.capitalize()}(SoqlReport):\n"
                 f"    KEY = '{key}'\n"
                 "    def soql(self):\n"
@@ -193,19 +194,19 @@ class TestRegisteredReports:
 
     def test_duplicate_keys_raise_downloader_error_with_filenames(self, isolated_reports_dir):
         """``KEY`` 重複は、どのファイルのどのクラスかをメッセージに出して ``DownloaderError``。"""
+        from src import reports as reports_module
         from src.soql_reports import _registry as registry_module
-        from src.soql_reports import reports as reports_module
 
         # 同じ KEY="9001" を2つのモジュールで定義
         body_a = (
-            "from src.soql_reports.base import SoqlReport\n"
+            "from src.reports.base import SoqlReport\n"
             "class DupA(SoqlReport):\n"
             "    KEY = '9001'\n"
             "    def soql(self):\n"
             "        return 'SELECT Id FROM Account'\n"
         )
         body_b = (
-            "from src.soql_reports.base import SoqlReport\n"
+            "from src.reports.base import SoqlReport\n"
             "class DupB(SoqlReport):\n"
             "    KEY = '9001'\n"
             "    def soql(self):\n"
@@ -227,11 +228,11 @@ class TestRegisteredReports:
 
     def test_empty_key_raises_downloader_error_with_filename(self, isolated_reports_dir):
         """``KEY`` 空のレポートはファイル名付きで ``DownloaderError``。"""
+        from src import reports as reports_module
         from src.soql_reports import _registry as registry_module
-        from src.soql_reports import reports as reports_module
 
         body = (
-            "from src.soql_reports.base import SoqlReport\n"
+            "from src.reports.base import SoqlReport\n"
             "class EmptyKey(SoqlReport):\n"
             "    KEY = ''\n"
             "    def soql(self):\n"
@@ -245,6 +246,42 @@ class TestRegisteredReports:
         message = str(caught.value)
         assert "EmptyKey" in message and "empty_key.py" in message
         assert "対処" in message
+
+
+class TestBaseClassNotRegistered:
+    """``src/reports/base.py`` の基底クラス ``SoqlReport`` がレポートとして
+    登録されないことの確認。
+
+    基底クラスは ``KEY`` が空なので、登録されると「KEY が空です」で止まる。
+    そうな的发生させないように、 ``find_subclasses()`` が ``cls is base`` を
+    除外していることを確かめる（除外は ``comken/core/discovery.py`` 側にあり、
+    このリポジトリ側に書き足す必要はない）。
+    """
+
+    def test_base_class_is_not_collected(self):
+        """``src/reports/`` を走査しても ``SoqlReport`` 本体は集まらない。"""
+        from comken.core.discovery import find_subclasses
+
+        from src import reports as reports_module
+        from src.reports.base import SoqlReport as base_class
+
+        # 前提: 基底クラスは ``KEY`` が空（= 登録されると「KEY が空です」で止まる）
+        assert base_class.KEY == ""
+
+        classes = find_subclasses(reports_module, base_class)
+        # 基底クラス本体は集まらない（``cls is base`` の除外が効く）
+        assert base_class not in classes
+        # ``src/reports/base.py`` で定義されたクラスも 1 件もない
+        assert all(cls.__module__ != base_class.__module__ for cls in classes)
+
+    def test_registered_reports_excludes_base_class(self):
+        """``registered_reports()`` の結果に基底クラスは含まれない。"""
+        from src.reports.base import SoqlReport as base_class
+        from src.soql_reports import _registry as registry_module
+
+        classes = registry_module.registered_reports()
+        assert base_class not in classes
+        assert all(cls.__module__ != base_class.__module__ for cls in classes)
 
 
 class TestSoqlReportFor:

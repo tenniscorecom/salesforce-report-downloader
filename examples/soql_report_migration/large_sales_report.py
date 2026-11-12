@@ -8,14 +8,14 @@ docs/salesforce-downloader.md「SOQLレポート（2000件超のレポートを�
 0件可否は管理表の ``ReportEntry`` 側が決める。管理表の「SOQL」列を「○」にして
 同じ管理番号の行を足せば、``download_scheduled()`` 経由で取得される。
 
-``src/soql_reports/reports/`` 配下へコピーして使う（ファイル名を ``_`` で
+``src/reports/`` 配下へコピーして使う（ファイル名を ``_`` で
 始めない。``_`` で始まるファイルは ``registered_reports()`` の走査対象外）。
 置いただけで自動登録される（明示的なタプル編集は不要）。
 """
 
 from typing import ClassVar
 
-from src.soql_reports.base import SoqlReport
+from src.reports.base import SoqlReport
 
 
 class LargeSalesReport(SoqlReport):

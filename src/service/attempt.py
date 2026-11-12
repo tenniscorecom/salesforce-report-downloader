@@ -89,7 +89,7 @@ def download_scheduled(
 
     **API・SOQLのどれで取るかは、管理表の「2000件超」「SOQL」列で決まる**
     （呼び出し側は管理番号を意識しない）。SOQL経由のレポートは同じ管理番号の `SoqlReport` が
-    `src.soql_reports` に登録されている必要がある（`fetch_via_soql()` 参照）。
+    `src.reports` に登録されている必要がある（`fetch_via_soql()` 参照）。
 
     **ブラウザ経由はこの本体では取らない。** 管理表の「2000件超」が `○` の行は
     別リポジトリ ``salesforce-report-browser`` の担当で、このリポジトリの

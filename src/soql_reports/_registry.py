@@ -10,28 +10,32 @@ from __future__ import annotations
 from comken.core.discovery import find_subclasses
 from comken.exceptions import DownloaderError
 
-from src.soql_reports import reports
-from src.soql_reports.base import SoqlReport
+from src import reports
+from src.reports.base import SoqlReport
 
 
 def registered_reports() -> tuple[type[SoqlReport], ...]:
-    """``reports/`` パッケージに置かれた ``SoqlReport`` サブクラスを集めて返す。
+    """``src/reports/`` パッケージに置かれた ``SoqlReport`` サブクラスを集めて返す。
 
     走査は ``comken.core.discovery.find_subclasses()`` に任せる
-    （``pkgutil.walk_packages`` で ``reports/`` 直下の ``.py`` を1つずつ
+    （``pkgutil.walk_packages`` で ``src/reports/`` 直下の ``.py`` を1つずつ
     ``importlib.import_module`` し、そのモジュール自身で定義された
     ``SoqlReport`` のサブクラスを拾う）。**ファイル名が ``_`` で始まる
     モジュールは走査対象外**（``_template.py`` のような雛形を登録せずに済む）。
 
+    基底クラス ``SoqlReport`` 本体（``src/reports/base.py``）は登録されない。
+    ``find_subclasses()`` 自身が ``cls is base`` を除外している
+    （``comken/core/discovery.py``）ので、 ここでの除外は不要。
+
     ``KEY`` の昇順で返す。**キャッシュはしない** — ``importlib.import_module``
     は既に import 済みなら再 load しない（``sys.modules`` 経由で軽い）ので、
-    呼ぶたびに ``reports/`` を全走査し直してもコストは無視できる。
+    呼ぶたびに ``src/reports/`` を全走査し直してもコストは無視できる。
     ファイル追加のたびに再起動は不要。
 
     Raises:
         DownloaderError: ``KEY`` が空のレポートが含まれているか、複数の
             レポートが同じ ``KEY`` を持っている。メッセージには
-            ``reports/<ファイル>.py`` のパスとクラス名を含め、
+            ``src/reports/<ファイル>.py`` のパスとクラス名を含め、
             対処（``KEY`` を埋める／重複を直す）を併記する。
     """
     classes = find_subclasses(reports, SoqlReport)
@@ -71,12 +75,13 @@ def _validate_keys(classes: tuple[type[SoqlReport], ...]) -> None:
         joined = "\n".join(lines)
         raise DownloaderError(
             f"SOQLレポートの KEY が重複しています:\n{joined}\n"
-            f"対処: 同じ KEY を別の管理番号に直すか、片方のレポートを reports/ から"
+            f"対処: 同じ KEY を別の管理番号に直すか、片方のレポートを src/reports/ から"
             f"取り除いてください。1つの管理番号には1つの SoqlReport だけ紐付けてください。"
         )
 
 
 def _report_path(module_name: str) -> str:
-    """``reports.<name>`` 形式のモジュール名から ``reports/<name>.py`` 相当のパス表記を返す。"""
+    """``src.reports.<name>`` 形式のモジュール名から
+    ``src/reports/<name>.py`` 相当のパス表記を返す。"""
     short = module_name.removeprefix(f"{reports.__name__}.")
-    return f"reports/{short}.py"
+    return f"src/reports/{short}.py"

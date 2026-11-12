@@ -138,13 +138,13 @@ class ReportEntry(MasterRow):
         "分からないときは「不明」と書いてください（「×」と同じに動きます）",
     )
     # 既定値 `×`。「○」にする場合は同じ管理番号の `SoqlReport.KEY` を
-    # `src.soql_reports` へ登録しておく（無いと設定ミスとして例外で止まる）
+    # `src.reports` へ登録しておく（無いと設定ミスとして例外で止まる）
     use_soql: bool = column(
         "SOQL",
         choices=("○", "×"),
         default=False,
         help="SOQL化済みで、同じ管理番号のSOQL定義が"
-        "src.soql_reports に登録されているなら「○」。"
+        "src.reports に登録されているなら「○」。"
         "取得実行側はSOQL経由に切り替えます（「2000件超」列より優先）",
     )
     # 記録用。RPA でも同じレポートを使っているなら「○」。

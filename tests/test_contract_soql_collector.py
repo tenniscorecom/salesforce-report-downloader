@@ -32,12 +32,12 @@ from comken.toolbox.csv import CSV
 
 from src import paths as paths_module
 from src.exceptions import SoqlIncompleteError
+from src.reports.base import SoqlReport
 from src.service.save import save_report
 from src.service.soql import fetch_via_soql
 from src.sheets.master import ReportEntry
 from src.soql_reports import _registry
 from src.soql_reports import column_names as column_names_module
-from src.soql_reports.base import SoqlReport
 
 # サンプル CSV の絶対パス（このファイル自体）。 テストは ``csv_path=CONTRACT_CSV_PATH``
 # を ``load_column_names_for()`` に渡して、 モジュール既定の

@@ -155,7 +155,7 @@ flowchart TD
 
 | 管理表 | 経路 | 履歴の「取得経路」 |
 |---|---|---|
-| 「SOQL」が `○` | SOQL（`src/soql_reports/` に登録した `SoqlReport` を使う） | `SOQL` |
+| 「SOQL」が `○` | SOQL（`src/reports/` に登録した `SoqlReport` を使う） | `SOQL` |
 | 「2000件超」が `○` | ブラウザ経由（**別リポジトリ** `salesforce-report-browser` が取る） | `ブラウザ` |
 | どちらも空 | 通常の Report API | `API` |
 
@@ -895,8 +895,8 @@ soql-collector は SOQL を自動では作らない（2026-10-14 に撤去）。
 
 ### 書き方
 
-`src/soql_reports/reports/` に **1レポート=1ファイル**で置く。
-**置くだけで登録される**（`_` で始まるファイルは対象外。雛形は `reports/_template.py`）。
+`src/reports/` に **1レポート=1ファイル**で置く。
+**置くだけで登録される**（`_` で始まるファイルは対象外。雛形は `src/reports/_template.py`）。
 `KEY` が空・重複していると、読み込み時に `DownloaderError` で止まる。
 
 `SoqlReport` に書くのは **`KEY` と `soql()` と（任意で）`COLUMN_NAMES` と（任意で）`USE_BULK` だけ**。
@@ -906,8 +906,8 @@ URL・保存先・0件可否は **管理表の `ReportEntry`** が単一の正�
 スケジュール判定・履歴記録・空フォルダ検査も既存の管理表ルートと同じ。
 
 ```python
-# src/soql_reports/reports/large_sales_report.py
-from src.soql_reports.base import SoqlReport
+# src/reports/large_sales_report.py
+from src.reports.base import SoqlReport
 
 
 class LargeSalesReport(SoqlReport):
@@ -923,7 +923,7 @@ class LargeSalesReport(SoqlReport):
 
 動かす手順は次のとおり:
 
-1. `src/soql_reports/reports/_template.py` を雛形に `src/soql_reports/reports/`
+1. `src/reports/_template.py` を雛形に `src/reports/`
    配下へコピーし、ファイル名とクラス名を変える（ファイル名を `_` で
    始めないこと）
 2. `KEY` を社内で決める管理番号に書き換える
@@ -1243,7 +1243,7 @@ comken 側のドキュメントを参照。
 | 履歴の置き場所を変える | `comken/services/salesforce_downloader/paths.py` の `HISTORY_PATH` |
 | Salesforce の認証・API の叩き方を変える | `comken/toolbox/salesforce/`（Downloader ではない） |
 | 接続先の組織を足す | `comken/toolbox/salesforce/sites/` |
-| 2000件超のレポートをSOQLで取る | `soql_reports/reports/`（1レポート=1ファイルを置くだけ）＋管理表の「SOQL」列を`○` |
+| 2000件超のレポートをSOQLで取る | `src/reports/`（1レポート=1ファイルを置くだけ）＋管理表の「SOQL」列を`○` |
 | API／ブラウザ／SOQLのどれで取るか変える | 管理表の「2000件超」「SOQL」列（コードは触らない。ブラウザ経由の行は `salesforce-report-browser` が取る） |
 | ブラウザで取る行の範囲を変える | `download_scheduled(fetch_browser=...)` を渡す側（`salesforce-report-browser`）。本体は対象選定で選ばれた行を全部渡す |
 

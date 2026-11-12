@@ -17,7 +17,8 @@ src/
   paths.py              ← 管理表の置き場所 + 出力パスの組み立て（output_path）
   history.py            ← 履歴への書き込み（record(): 管理表の行から組み立てて comken へ委譲）
   sheets/               ← 管理表・スケジュール・設定の各シート定義
-  soql_reports/         ← 2000件超を SOQL で取るレポート
+  reports/              ← 2000件超を SOQL で取るレポート（base.py ＋ 1レポート=1ファイル）
+  soql_reports/         ← SOQLレポートの登録と列名の置き換え（_registry / runner / column_names）
   report_master.py      ← Excel の表を型付きの行として読む仕組み
   template_writer.py    ← 管理表・スケジュール・設定シートの雛形生成
   cli.py                ← 管理表の検査コマンド（python -m src.cli check）
@@ -65,7 +66,7 @@ WinActor からの呼び出しが前回実行と重なった場合（前回の�
 **API・SOQLのどれで取るかは、管理表の列（「2000件超」「SOQL」）で決まる。**
 呼び出し側のコード（`src/run.py`）は意識しない。優先順位は「SOQL」列 →
 「2000件超」列 → 通常のReport API。SOQL経由は同じ管理番号の `SoqlReport` が
-`src.soql_reports` に登録されている必要がある（詳しくは `fetch_via_soql()` を参照）。
+`src.reports` に登録されている必要がある（詳しくは `fetch_via_soql()` を参照）。
 
 **ブラウザ経由はこのリポジトリでは取らない。** 管理表の「2000件超」が `○` の行は
 別リポジトリ **`salesforce-report-browser`** の担当で、そのリポジトリが

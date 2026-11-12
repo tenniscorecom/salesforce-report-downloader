@@ -1,6 +1,6 @@
-"""src/soql_reports/reports/_template.py — 雛形（未使用）。
+"""src/reports/_template.py — 雛形（未使用）。
 
-**このファイルはプレースホルダー。** コピーして ``reports/`` に実際のレポート名で
+**このファイルはプレースホルダー。** コピーして ``src/reports/`` に実際のレポート名で
 リネームして使う。ファイル名が ``_`` で始まるので ``registered_reports()`` の
 走査対象にならず、登録されない（リネームすると自動で登録される）。
 ``KEY`` が空のまま残すと登録時にエラーになるので、**必ず管理番号を埋めてから**
@@ -26,7 +26,7 @@ from typing import ClassVar
 
 from comken.core.table.model import Table
 
-from src.soql_reports.base import SoqlReport
+from src.reports.base import SoqlReport
 
 
 class NewReport(SoqlReport):

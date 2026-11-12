@@ -75,13 +75,13 @@ class GroupNotRegisteredError(DownloaderError):
 class SoqlReportNotRegisteredError(DownloaderError):
     """管理表の「SOQL」列が「○」なのに、同じ管理番号の SoqlReport が登録されていない
 
-    管理表と ``reports/`` 配下の ``SoqlReport`` 実装は別々に編集できるため、「SOQL」
+    管理表と ``src/reports/`` 配下の ``SoqlReport`` 実装は別々に編集できるため、「SOQL」
     列だけ「○」にして ``SoqlReport`` の追加を忘れると、どの SOQL を使えばいいか決められない。
 
     発生箇所: src.soql_reports の soql_report_for()
 
     対処:
-        管理番号に対応する ``SoqlReport`` サブクラスを ``reports/`` 配下に追加し、
+        管理番号に対応する ``SoqlReport`` サブクラスを ``src/reports/`` 配下に追加し、
         ``KEY`` を管理表と同じ値にする（ファイル名を ``_`` で始めると
         走査対象外になるので、必ず実レポート名にする）。まだ SOQL 化していないなら、
         管理表の「SOQL」列を「×」に戻す
@@ -105,7 +105,7 @@ class SoqlColumnNameConflictError(DownloaderError):
     発生箇所: ``src.soql_reports.runner`` の ``apply_column_names()``
 
     対処:
-        ``reports/<ファイル>.py`` の ``COLUMN_NAMES`` を見直す。重なった
+        ``src/reports/<ファイル>.py`` の ``COLUMN_NAMES`` を見直す。重なった
         見出しに割り当てている列の片方を、別の見出しに分ける。 ``soql()``
         側の ``SELECT`` に無い列は ``COLUMN_NAMES`` に残っていても無視される
     """
@@ -185,7 +185,7 @@ class SoqlTransformError(DownloaderError):
     発生箇所: ``src.service.fetch_via_soql()``（列名を置き換えた Table に対して呼ばれる）。
 
     対処:
-        ``reports/<ファイル>.py`` の ``transform()`` を見直す。 ``SoqlReport``
+        ``src/reports/<ファイル>.py`` の ``transform()`` を見直す。 ``SoqlReport``
         メッセージの ``KEY`` と ``__cause__`` を辿って、どこで何が起きたか確認する。
     """
 

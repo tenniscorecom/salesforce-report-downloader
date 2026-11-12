@@ -19,7 +19,7 @@ from __future__ import annotations
 from comken.core.table.model import Table
 
 from src.exceptions import SoqlColumnNameConflictError
-from src.soql_reports.base import SoqlReport
+from src.reports.base import SoqlReport
 
 
 def apply_column_names(

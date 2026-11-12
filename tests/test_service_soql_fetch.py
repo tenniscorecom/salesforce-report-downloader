@@ -49,6 +49,7 @@ from src.exceptions import (
     SoqlReportNotRegisteredError,
     SoqlTransformError,
 )
+from src.reports.base import SoqlReport
 from src.service.routes import fetch_report
 from src.service.save import save_report
 from src.service.soql import (
@@ -59,7 +60,6 @@ from src.service.soql import (
 from src.sheets.master import ReportEntry
 from src.soql_reports import _registry
 from src.soql_reports import column_names as column_names_module
-from src.soql_reports.base import SoqlReport
 
 URL = "https://example.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 

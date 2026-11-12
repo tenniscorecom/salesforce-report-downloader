@@ -1,13 +1,13 @@
-r"""src/soql_reports/base.py — SOQLで取るレポートの基底クラス。
+r"""src/reports/base.py — SOQLで取るレポートの基底クラス。
 
 Report API（2000行上限）で取れない大きなレポートは、SOQL
 （``SalesforceBase.bulk_query()``、上限なし。``SoqlReport.USE_BULK`` を
 ``False`` にすると ``SalesforceBase.query()``（REST API）で取る）で取る。
-サブクラスは 1レポート=1ファイルで ``reports/`` に書く。
+サブクラスは 1レポート=1ファイルで ``src/reports/`` に書く。
 **登録は自動** — ファイルを置くと ``_registry.registered_reports()`` が
 ``pkgutil.iter_modules`` で走査して ``SoqlReport`` サブクラスを集める（明示的な
 タプル編集は不要）。ファイル名が ``_`` で始まるモジュールは走査対象外
-（``reports/_template.py`` のような雛形を登録せずに済む）。
+（``src/reports/_template.py`` のような雛形を登録せずに済む）。
 
     class LargeSalesReport(SoqlReport):
         KEY = "9001"
@@ -30,7 +30,7 @@ class SoqlReport:
     """Report API（2000行上限）で取れない大きなレポートを SOQL で取る基底クラス。
 
     サブクラスは ``KEY`` を上書きし、``soql()`` を実装する。1レポート=1ファイル
-    で ``reports/`` に置くと ``_registry.registered_reports()`` が自動で登録する
+    で ``src/reports/`` に置くと ``_registry.registered_reports()`` が自動で登録する
     （ファイル名が ``_`` で始まるモジュールは対象外）。
 
     取得の入口は **管理表ルートだけ** に統一した。URL・保存先・0件可否は

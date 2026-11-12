@@ -25,10 +25,10 @@ from comken.toolbox.csv import CSV
 from comken.toolbox.excel import Excel
 
 from src.exceptions import ScheduledDownloadFailedError, SoqlIncompleteError, SoqlTransformError
+from src.reports.base import SoqlReport
 from src.service import attempt as attempt_module
 from src.sheets.master import load_master
 from src.soql_reports import _registry
-from src.soql_reports.base import SoqlReport
 from tests.test_service import fake_salesforce
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"

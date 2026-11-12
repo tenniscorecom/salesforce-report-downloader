@@ -22,8 +22,8 @@ from comken.toolbox.csv.file import Value
 
 from src import paths as paths_module
 from src.exceptions import ColumnNamesCSVFormatError
+from src.reports.base import SoqlReport
 from src.soql_reports import column_names as column_names_module
-from src.soql_reports.base import SoqlReport
 from src.soql_reports.column_names import extract_main_object, load_column_names_for
 from src.soql_reports.runner import apply_column_names
 
