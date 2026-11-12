@@ -34,7 +34,7 @@ src/service/
   routes.py             ← 取得経路の選択（_fetch / fetch_with_auto_fallback）
   api.py                ← Report API 経由の取得
   browser.py            ← ブラウザ経由の取得（ブラウザの使い回しを含む）
-  soql.py               ← SOQL 経由の取得と件数検証、未完成印
+  soql.py               ← SOQL 経由の取得・件数検証・列名の置き換え、未完成印
   save.py               ← 保存とフォルダ検査（save_report / _write_csv / require_folder）
   scheduler.py          ← スケジュールによる対象選定と共有レポート警告
 ```

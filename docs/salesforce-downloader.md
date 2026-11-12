@@ -912,8 +912,9 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 レポートの元々の見出し（`金額`、`取引先名`）で出したい場合は、
 `SoqlReport.COLUMN_NAMES` に **API名→表示名** の対応を書く。
 **貼り付け元は soql-collector の対応表**。
-`service.save_report()` が SOQL 経由のときだけ保存の直前にこの表を `Table.select()` に
-通して列名を差し替える（Report API 経由・ブラウザ経由では適用しない）。
+`service.fetch_via_soql()` が取得直後（`transform()` の前）にこの表を
+`Table.select()` に通して列名を差し替える。Report API 経由・ブラウザ経由では
+適用しない（`save_report()` は列名の置き換えをしない）。
 列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
 （`SELECT` を後から変えても対応表を貼り直さずに済む）。
 
@@ -928,7 +929,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 オブジェクト API 名が入る）。 同じ列はどのレポートでも同じ表示名になるので、
 **レポートをまたいで管理表を作る必要が無い**。
 
-`service.save_report()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
+`service.fetch_via_soql()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
 を主オブジェクトとして取り出し、 `column_names.load_column_names_for(main_object)`
 で `{SOQL列名: 表示名}` を引いて手書きの `COLUMN_NAMES` とマージする
 （手書き優先）。主オブジェクト名の比較は大文字小文字を区別しない
@@ -987,7 +988,8 @@ SOQL の取り方は `SoqlReport.USE_BULK` で **レポートごとに** 選べ�
 - `USE_BULK = False` → REST（`SalesforceBase.query()`、ページ送り）。
   集計関数・`GROUP BY` が使える。
 
-どちらの経路でも、件数の比較（`CHECK_COUNT`）と `transform()` の順番は同じ。
+どちらの経路でも、件数の比較（`CHECK_COUNT`）→ 列名の置き換え → `transform()`
+の順番は同じ。
 INFO ログには `取得方法=Bulk` / `取得方法=REST` が出る。
 
 **`USE_BULK = False` のときの注意**（`bulk_query()` との差）:
@@ -1054,9 +1056,10 @@ Python で加工して代わりにする）に使う。 サブクラスで上書
 1. 取得（`bulk_query()` / `query()`）で **生の Table** を取得
 2. 件数の比較（`CHECK_COUNT=True` のとき） — **加工前**の生の結果に対して
    行う（レポートの総件数と比べられるのは加工前の件数のため）
-3. `transform()` を呼ぶ — **加工前の** Table を渡す
-4. 返ってきた Table を `save_report()` で保存（このあと `COLUMN_NAMES` /
-   `列名の対応.csv` での見出しの差し替えが走る）
+3. 列名の置き換え（`COLUMN_NAMES` / `列名の対応.csv`）— 見出しを表示名に替える
+4. `transform()` を呼ぶ — **列名を置き換えたあとの** Table を渡す
+   （`transform()` は表示名の列で書ける）
+5. 返ってきた Table を `save_report()` で保存（列名の置き換えは済んでいる）
 
 **加工のミスは当該レポートだけの失敗になる。** `transform()` の中で起きた
 例外（`ComkenError` 系以外も含む）は `SoqlTransformError`
@@ -1076,20 +1079,22 @@ Python で加工して代わりにする）に使う。 サブクラスで上書
 ```python
 class OpportunityStageSummary(SoqlReport):
     KEY = "9002"
+    COLUMN_NAMES = {"StageName": "ステージ", "Amount": "金額"}
 
     def soql(self) -> str:
         return "SELECT Id, StageName, Amount FROM Opportunity WHERE CloseDate >= 2024-01-01"
 
     def transform(self, table):
+        # 受け取る ``table`` の列名は表示名（``COLUMN_NAMES`` で置き換えたもの）
         rows = [
             {
-                "StageName": stage_name,
+                "ステージ": stage_name,
                 "件数": len(sub_table),
-                "金額合計": sum(int(row["Amount"]) for row in sub_table),
+                "金額合計": sum(int(row["金額"]) for row in sub_table),
             }
-            for stage_name, sub_table in table.group_by("StageName").items()
+            for stage_name, sub_table in table.group_by("ステージ").items()
         ]
-        return Table(["StageName", "件数", "金額合計"], rows)
+        return Table(["ステージ", "件数", "金額合計"], rows)
 ```
 
 動く例は [examples/soql_report_migration](../examples/soql_report_migration)
@@ -1134,7 +1139,8 @@ soql-collector が下書きを出し直すとき、補えなかった部分が�
 ファイル書き出し後に 0 バイトだったとき（保存先の同期・セキュリティ
 ソフト等の影響が疑われる）に送出される。
 `SoqlColumnNameConflictError` は [`COLUMN_NAMES`](#出力-csv-の見出しを人が読む列名に置き換えるcolumn_names)
-で置き換え後の見出しが 2 つ以上重なったとき。`SoqlTransformError` は
+で置き換え後の見出しが 2 つ以上重なったとき（取得側で起き、 CSV は書かれない）。
+`SoqlTransformError` は
 [`transform()`](#加工-transform2026-10-改定) の中で例外が起きた／戻り値が
 `Table` でないとき（メッセージに行の値は出さない）。`SoqlIncompleteError` は
 [`未完成の SOQL を止める`](#未完成の-soql-を止める2026-10-改定) で 1 行目に

@@ -1,9 +1,13 @@
-r"""src/service/soql.py — SOQL 経由の取得と件数検証。
+r"""src/service/soql.py — SOQL 経由の取得と件数検証・列名の置き換え。
 
 ``download_scheduled()`` の 1 件分で、管理表の「SOQL」列が「○」のときに呼ばれる。
 SOQL の本文は ``soql_report_for(entry.key)`` で引いた ``SoqlReport`` が出す —
 ``fetch_via_soql()`` はそれを ``SalesforceBase.bulk_query()`` に渡す
 （``SoqlReport.USE_BULK`` が ``False`` のときは ``SalesforceBase.query()``）。
+
+**取得後の流れは「取得 → 件数の比較 → 列名の置き換え → ``transform()``」** の順。
+列名の置き換え（``COLUMN_NAMES`` / ``列名の対応.csv``）は ``transform()`` の
+**前** に行うので、 ``transform()`` は **表示名の列** を受け取る。
 
     from src.service.soql import (
         fetch_via_soql,
@@ -37,6 +41,9 @@ from src.exceptions import (
 )
 from src.sheets.master import ReportEntry
 from src.soql_reports import soql_report_for
+from src.soql_reports.base import SoqlReport
+from src.soql_reports.column_names import extract_main_object, load_column_names_for
+from src.soql_reports.runner import apply_column_names
 
 logger = logging.getLogger("src.service")
 
@@ -86,8 +93,10 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
     （=レポートの GET が必要ないレポート向け）。**同じ接続のうち** に比較するため
     ``site_for()`` も 1 回しか呼ばれない（ログインは 1 回だけ）。
 
-    **加工 transform():** 件数の比較の **あと**に
-    ``SoqlReport.transform()`` を加工前の生の結果に対して呼ぶ。 件数の比較は
+    **加工 transform():** 件数の比較と列名の置き換えの **あと**に
+    ``SoqlReport.transform()`` を呼ぶ。 受け取る ``Table`` は
+    **列名を置き換えたあとのもの**（見出しは表示名に置き換わっている）
+    なので、 ``transform()`` は表示名の列で書ける。 件数の比較は
     加工前の件数で行われる（レポートの総件数と比べられるのは加工前の件数
     のため）。 加工後が 0 行のときは既存の ``ALLOW_EMPTY`` 判定がそのまま動く。
     ``transform()`` の中で起きた例外（``ComkenError`` 系以外も含む）は
@@ -95,6 +104,12 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
     ``Table`` でない（``None`` を返した等）場合も ``SoqlTransformError``
     で止める。 どちらも ``from exc`` で元の例外を繋ぐ。 メッセージには
     **行の値や SOQL 本文を含めない** （``str(exc)`` をそのまま載せない）。
+
+    **列名の置き換え:** 件数の比較の **あと**・``transform()`` の **前** に
+    ``SoqlReport.COLUMN_NAMES``（手書き）と ``列名の対応.csv``（soql-collector
+    の出力）で SOQL の API 名の列を表示名に置き換える。 見出しが衝突すると
+    ``SoqlColumnNameConflictError`` で止まる（取得側の例外なので、
+    そのレポートだけの失敗になり、 CSV は書かれない）。
     """
     report_cls = soql_report_for(entry.key)
     instance = report_cls()
@@ -129,6 +144,9 @@ def fetch_via_soql(entry: ReportEntry) -> Table:
         # （=ログイン 2 回）にならない。 比較は **加工前** の生の結果で行う。
         if report_cls.CHECK_COUNT:
             _verify_soql_count(entry, table, salesforce)
+        # 列名の置き換え（``COLUMN_NAMES`` / ``列名の対応.csv``）。 ``transform()``
+        # が表示名の列で書けるよう、 加工の **前** に行う。
+        table = _apply_soql_columns(entry, report_cls, table, soql_text)
         # 加工（transform()）。 例外／非 Table 戻り値は ``SoqlTransformError``
         # に包み直して、 当該レポートだけの失敗として記録させる（次レポートへ続く）。
         # 元の例外クラス名だけをメッセージに含め、 ``str(exc)`` の全文は載せない
@@ -377,3 +395,93 @@ def _coerce_dict_value(value: dict) -> int | None:
     if isinstance(inner, int):
         return inner
     return None
+
+
+def _apply_soql_columns(
+    entry: ReportEntry,
+    report_cls: type[SoqlReport],
+    table: Table,
+    soql_text: str,
+) -> Table:
+    """列名の置き換えを適用した ``Table`` を返す。
+
+    **管理表の「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
+    取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への対応表を
+    持っている。 ``soql-collector`` が出力する ``列名の対応.csv``
+    からも自動で拾う（手書きが無い列や新しいレポートでも、 soql-collector を
+    一度走らせれば反映される）。 ``COLUMN_NAMES`` の **手書きは優先**
+    （同じキーは手書きが勝つ） — 「直したい列だけ書けばよい」を崩さないため。
+    経緯は ``docs/HISTORY.md`` 参照。
+
+    見出しが衝突すると ``SoqlColumnNameConflictError`` が送出される。 ここは
+    取得側なので、 CSV は書かれない（当該レポートだけの失敗になる）。
+
+    引数は ``fetch_via_soql()`` が既に持っているもの（``report_cls`` /
+    ``soql_text``）をそのまま使う（``soql_report_for()`` で引き直さない）。
+    """
+    # ``table.columns`` は ``Table`` が所有する ``list`` で、 後続の
+    # ``apply_column_names()`` は新しい Table を返すので元の list は
+    # 書き変わらない。 コピーは不要
+    original_columns = table.columns
+    extra = _load_soql_extra_column_names(entry, report_cls, soql_text)
+    updated = apply_column_names(report_cls, table, extra=extra)
+    _log_column_name_replacements(entry, original_columns, report_cls, extra)
+    return updated
+
+
+def _load_soql_extra_column_names(
+    entry: ReportEntry,
+    report_cls: type[SoqlReport],
+    soql_text: str,
+) -> dict[str, str]:
+    """``列名の対応.csv`` からこのレポートの主オブジェクトに該当する行を引く。
+
+    主オブジェクトが取れない（SOQL に ``FROM`` が無い等）ときは空 ``dict`` を
+    返し、 API 名のまま保存させる（取得は失敗させない）。 WARNING には SOQL 本文
+    （WHERE の値等）を出さず、 DEBUG にだけ本文を出す（既存の
+    ``logger.debug("SOQL: %s", ...)`` と同ルール）。
+    """
+    main_object = extract_main_object(soql_text)
+    if main_object is None:
+        logger.warning(
+            "SOQL から主オブジェクトを取り出せませんでした。"
+            "API 名のまま保存します: 管理番号=%s, クラス=%s",
+            entry.key,
+            report_cls.__name__,
+        )
+        logger.debug("SOQL: %s", soql_text)
+        return {}
+    return load_column_names_for(main_object)
+
+
+def _log_column_name_replacements(
+    entry: ReportEntry,
+    original_columns: list[str],
+    report_cls: type[SoqlReport],
+    extra: dict[str, str],
+) -> None:
+    """``COLUMN_NAMES`` で置き換わった列数を出所別に数えて INFO を出す。
+
+    手書きが ``column_names`` に勝ち、かつ wins が元と変わった列だけが
+    「手書きで置換」扱い。 0 件 = 全部元の見出しのままなら出さない（ログを
+    常に汚さないように）。 列名そのものは見出しに過ぎず、認証情報にもレポート
+    の値にも触れないので INFO で出してよい。
+    """
+    file_replaced = 0
+    manual_replaced = 0
+    for col in original_columns:
+        if col in report_cls.COLUMN_NAMES:
+            if report_cls.COLUMN_NAMES[col] != col:
+                manual_replaced += 1
+        elif col in extra:
+            if extra[col] != col:
+                file_replaced += 1
+    replaced_count = file_replaced + manual_replaced
+    if replaced_count > 0:
+        logger.info(
+            "COLUMN_NAMES で %d 列を置き換えました（ファイル=%d, 手書き=%d）: 管理番号=%s",
+            replaced_count,
+            file_replaced,
+            manual_replaced,
+            entry.key,
+        )

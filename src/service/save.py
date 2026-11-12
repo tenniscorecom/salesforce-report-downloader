@@ -10,6 +10,10 @@ r"""src/service/save.py — 保存とフォルダ検査。
 `save_report()` は ``~`` 一時ファイルに書いてから ``os.rename`` / ``os.replace``
 で最終パスへ移す（``paths.move_into_place()`` が上書きしない保存ヘルパー）。
 ``_write_csv()`` は ``atomic_write()`` を使った一時ファイル書き込み。
+
+**列名の置き換えはここでは行わない。** SOQL 経由のレポートの列名
+（``COLUMN_NAMES`` / ``列名の対応.csv``）は ``src.service.soql`` の
+``fetch_via_soql()`` が取得時に置き換える（``transform()`` の前）。
 """
 
 from __future__ import annotations
@@ -31,9 +35,6 @@ from src.exceptions import (
     SavedFileEmptyError,
 )
 from src.sheets.master import ReportEntry
-from src.soql_reports import soql_report_for
-from src.soql_reports.column_names import extract_main_object, load_column_names_for
-from src.soql_reports.runner import apply_column_names
 
 logger = logging.getLogger("src.service")
 
@@ -129,10 +130,14 @@ def save_report(
     検査で落とすケース）は ``unlink(missing_ok=True)`` で後始末する。
 
     **複雑度を下げる:** 本体は「``base`` を決める → 一時ファイルを
-    用意 → ``EmptyReportError`` / dry-run を判定 → SOQL 用の列名適用 → CSV を書く
+    用意 → ``EmptyReportError`` / dry-run を判定 → CSV を書く
     → 最終パスへ移す → 0 バイト検査」の手順に絞り、 各手順を ``_prepare_*`` /
     ``_finalize_*`` / ``_verify_*`` / ``_cleanup_*`` 系のヘルパーに委譲して
     本体の複雑度を下げる。
+
+    **列名の置き換えはここでは行わない。** SOQL 経由のレポートの列名は
+    ``src.service.soql`` の ``fetch_via_soql()`` が取得時に置き換える
+    （``transform()`` の前）。 ここは受け取った ``Table`` をそのまま CSV に書く。
     """
     base = paths.output_path(entry, schedule_run_time, now=current)
     # 保存先を決定した時点で DEBUG を 1 行出す（上書きモードかどうかも一緒に出す）。
@@ -153,7 +158,6 @@ def save_report(
         # （連番探索は行わない。dry-run は競合判定まで含めて副作用を出さない運用）
         if is_dry_run():
             return base
-        table = _apply_soql_columns_if_needed(entry, table)
         _write_csv(tmp_path, table)
         final_path = _finalize_save(tmp_path, base, entry)
         _verify_saved_file_not_empty(final_path, table, entry)
@@ -178,93 +182,6 @@ def _prepare_output_directory(base: Path) -> None:
     """
     if not is_dry_run():
         base.parent.mkdir(exist_ok=True)
-
-
-def _apply_soql_columns_if_needed(entry: ReportEntry, table: Table) -> Table:
-    """SOQL 経由のときだけ ``COLUMN_NAMES`` を適用した ``Table`` を返す。
-
-    **管理表の「SOQL」列が「○」の行は ``reports/`` 配下の ``SoqlReport`` 経由で
-    取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への対応表を
-    持っている。 ``soql-collector`` が出力する ``列名の対応.csv``
-    からも自動で拾う（手書きが無い列や新しいレポートでも、 soql-collector を
-    一度走らせれば反映される）。 ``COLUMN_NAMES`` の **手書きは優先**
-    （同じキーは手書きが勝つ） — 「直したい列だけ書けばよい」を崩さないため。
-    経緯は ``docs/HISTORY.md`` 参照。
-
-    見出しが衝突すると ``SoqlColumnNameConflictError`` が送出されるが、
-    その場合は ``save_report()`` の ``except`` へ流れるので CSV は書かれない。
-    Report API / ブラウザ経由は ``SoqlReport`` を見ないので、 そのまま
-    ``table`` を返す。
-    """
-    if not entry.use_soql:
-        return table
-
-    report_cls = soql_report_for(entry.key)
-    # ``table.columns`` は ``Table`` が所有する ``list`` で、 後続の
-    # ``apply_column_names()`` は新しい Table を返すので元の list は
-    # 書き変わらない。 コピーは不要
-    original_columns = table.columns
-    soql_text = report_cls().soql()
-    extra = _load_soql_extra_column_names(entry, report_cls, soql_text)
-    updated = apply_column_names(report_cls, table, extra=extra)
-    _log_column_name_replacements(entry, original_columns, report_cls, extra)
-    return updated
-
-
-def _load_soql_extra_column_names(
-    entry: ReportEntry, report_cls: type, soql_text: str
-) -> dict[str, str]:
-    """``列名の対応.csv`` からこのレポートの主オブジェクトに該当する行を引く。
-
-    主オブジェクトが取れない（SOQL に ``FROM`` が無い等）ときは空 ``dict`` を
-    返し、 API 名のまま保存させる（取得は失敗させない）。 WARNING には SOQL 本文
-    （WHERE の値等）を出さず、 DEBUG にだけ本文を出す（既存の
-    ``logger.debug("SOQL: %s", ...)`` と同ルール）。
-    """
-    main_object = extract_main_object(soql_text)
-    if main_object is None:
-        logger.warning(
-            "SOQL から主オブジェクトを取り出せませんでした。"
-            "API 名のまま保存します: 管理番号=%s, クラス=%s",
-            entry.key,
-            report_cls.__name__,
-        )
-        logger.debug("SOQL: %s", soql_text)
-        return {}
-    return load_column_names_for(main_object)
-
-
-def _log_column_name_replacements(
-    entry: ReportEntry,
-    original_columns: list[str],
-    report_cls: type,
-    extra: dict[str, str],
-) -> None:
-    """``COLUMN_NAMES`` で置き換わった列数を出所別に数えて INFO を出す。
-
-    手書きが ``column_names`` に勝ち、かつ wins が元と変わった列だけが
-    「手書きで置換」扱い。 0 件 = 全部元の見出しのままなら出さない（ログを
-    常に汚さないように）。 列名そのものは見出しに過ぎず、認証情報にもレポート
-    の値にも触れないので INFO で出してよい。
-    """
-    file_replaced = 0
-    manual_replaced = 0
-    for col in original_columns:
-        if col in report_cls.COLUMN_NAMES:
-            if report_cls.COLUMN_NAMES[col] != col:
-                manual_replaced += 1
-        elif col in extra:
-            if extra[col] != col:
-                file_replaced += 1
-    replaced_count = file_replaced + manual_replaced
-    if replaced_count > 0:
-        logger.info(
-            "COLUMN_NAMES で %d 列を置き換えました（ファイル=%d, 手書き=%d）: 管理番号=%s",
-            replaced_count,
-            file_replaced,
-            manual_replaced,
-            entry.key,
-        )
 
 
 def _finalize_save(tmp_path: Path, base: Path, entry: ReportEntry) -> Path:

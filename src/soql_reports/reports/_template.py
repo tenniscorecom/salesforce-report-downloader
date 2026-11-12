@@ -17,7 +17,9 @@
 
 ``transform()`` を上書きすると、SOQL の生データを Python で加工して保存できる
 （サマリーレポートを Python で組み立てる用途）。 既定のままで動くなら
-上書きしなくてよい。 詳細は ``SoqlReport.transform()`` / ``docs`` 参照。
+上書きしなくてよい。 受け取る ``table`` の列名は **表示名**（``COLUMN_NAMES`` /
+``列名の対応.csv`` で置き換えたもの。 対応が無い列は SOQL の API 名のまま）。
+詳細は ``SoqlReport.transform()`` / ``docs`` 参照。
 """
 
 from typing import ClassVar
@@ -64,27 +66,28 @@ class NewReport(SoqlReport):
     # 任意: 取得した ``Table`` を Python で加工して保存する。 既定は何もしない。
     # サマリーレポートを Python で組み立てる用途（今までサマリーレポートで
     # やっていたものを Python で加工して代わりにする）以外は上書きしなくてよい。
-    # 列名の置き換え（``COLUMN_NAMES`` / ``列名の対応.csv``）はこのあとに
-    # ``save_report()`` が保存直前に適用するため、 加工後の列名がそのまま CSV に出る。
+    # 列名の置き換え（``COLUMN_NAMES`` / ``列名の対応.csv``）は **この前** に
+    # ``fetch_via_soql()`` が適用する。 受け取る ``table`` の列名は **表示名**
+    # （対応が無い列は SOQL の API 名のまま）なので、 加工のコードは表示名で書く。
     #
     # 例 1: Table の ``filter`` で行を絞る
     #
     #     def transform(self, table: Table) -> Table:
-    #         return table.filter(lambda row: row["StageName"] == "Closed Won")
+    #         return table.filter(lambda row: row["ステージ"] == "成約済み")
     #
     # 例 2: Table の ``select`` で列を絞る
     #
     #     def transform(self, table: Table) -> Table:
-    #         return table.select("Id", "Name", "Amount")
+    #         return table.select("Id", "商談名", "金額")
     #
     # 例 3: Table の ``group_by`` で集計する
     #
     #     def transform(self, table: Table) -> Table:
     #         rows = [
-    #             {"StageName": name, "金額合計": sum(int(r["Amount"]) for r in sub)}
-    #             for name, sub in table.group_by("StageName").items()
+    #             {"ステージ": name, "金額合計": sum(int(r["金額"]) for r in sub)}
+    #             for name, sub in table.group_by("ステージ").items()
     #         ]
-    #         return Table(["StageName", "金額合計"], rows)
+    #         return Table(["ステージ", "金額合計"], rows)
     #
     # 加工中の例外は ``SoqlTransformError`` （``DownloaderError`` 系）に包まれ、
     # そのレポートだけの失敗として記録される（次レポートの取得は続く）。

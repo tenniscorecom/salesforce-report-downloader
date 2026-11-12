@@ -7,12 +7,12 @@
 取得は ``SalesforceBase.bulk_query()`` 経由（``SoqlReport.USE_BULK=False`` の
 レポートだけ REST の ``SalesforceBase.query()`` 経由）。
 
-``save_report()`` 側では、SOQL 経由のときだけ ``SoqlReport.COLUMN_NAMES`` を保存直前に
-適用する（Report API / ブラウザ経由では適用しない）。管理表ルートに統一して
-いるので、``SoqlReport`` 経由で取得した Table もここで同じ動きを保証する。
+**列名の置き換えは ``fetch_via_soql()`` が行う**（``transform()`` の前）。
+``save_report()`` は受け取った ``Table`` をそのまま CSV に書くだけで、 列名の
+置き換えはしない。Report API / ブラウザ経由の Table もそのまま保存される。
 
 2026-10 に ``soql-collector`` の ``列名の対応.csv`` からの自動取り込みを
-``主オブジェクト × SOQL列名`` に切り替えた。 ``save_report()`` は ``soql()``
+``主オブジェクト × SOQL列名`` に切り替えた。 ``fetch_via_soql()`` は ``soql()``
 の ``FROM <名前>`` から主オブジェクトを取り、 ``COLUMN_NAMES`` の手書きに
 加えてこの CSV からも自動で見出しを差し替える。 手書きが優先される。
 ファイルが無い / 該当主オブジェクトの行が無い / 取れない SOQL ケースは
@@ -195,7 +195,8 @@ class TestFetchViaSoql:
 
 
 # ---------------------------------------------------------------
-# 以下、save_report() の COLUMN_NAMES 適用テスト（管理表ルートで動く新規仕様）
+# 以下、fetch_via_soql() の COLUMN_NAMES 適用テスト
+# （列名の置き換えは取得側で行う。 transform() より前）
 # ---------------------------------------------------------------
 
 
@@ -278,6 +279,19 @@ def _registered_for_save(monkeypatch, *classes: type[SoqlReport]) -> None:
     _patched_registry(monkeypatch, *classes)
 
 
+def _fetch_soql_table(monkeypatch, report_cls: type[SoqlReport], table: Table) -> Table:
+    """``fetch_via_soql()`` を偽の Salesforce 経由で呼び、 列名の置き換えまで
+    済んだ ``Table`` を返す。
+
+    取得は ``bulk_query()`` の戻り値（= ``table``）をそのまま使う。 件数比較は
+    ``RowCount`` が無い形にして WARNING で握りつぶされる（保存は止まらない）。
+    """
+    _registered_for_save(monkeypatch, report_cls)
+    entry = replace(SOQL_ENTRY, key=report_cls.KEY)
+    with patch("src.service.soql.site_for", return_value=_patched_soql_client(table)):
+        return fetch_via_soql(entry)
+
+
 @pytest.fixture
 def output_folder(monkeypatch, tmp_path) -> Path:
     """``save_report()`` の出力先（``paths.output_path`` の戻り値）を ``tmp_path`` 配下に向ける。"""
@@ -287,25 +301,24 @@ def output_folder(monkeypatch, tmp_path) -> Path:
     return folder
 
 
-class TestSaveAppliesColumnNames:
-    """管理表ルート（``save_report()``）で ``COLUMN_NAMES`` が保存 CSV の見出しへ反映される。"""
+class TestFetchAppliesColumnNames:
+    """``fetch_via_soql()`` で ``COLUMN_NAMES`` が保存 CSV の見出しへ反映される。"""
 
     def test_column_names_applied_to_csv_headers(
         self,
         monkeypatch,
         output_folder,
     ):
-        """SOQL 経由（``use_soql=True``）のとき、保存 CSV の見出しが ``COLUMN_NAMES`` で
-        置き換わる。"""
-        _registered_for_save(monkeypatch, _ColumnNamesReport)
-        # 管理表の KEY と ``_ColumnNamesReport.KEY`` を合わせる
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesReport.KEY)
+        """SOQL 経由（``use_soql=True``）のとき、 列名の置き換え後の見出しが
+        保存 CSV に残る。"""
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
+        fetched = _fetch_soql_table(monkeypatch, _ColumnNamesReport, table)
+        entry = replace(SOQL_ENTRY, key=_ColumnNamesReport.KEY)
 
-        saved = save_report(entry, table)
+        saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -321,9 +334,9 @@ class TestSaveAppliesColumnNames:
     ):
         """Report API 経由（``use_soql=False``）のときは見出しが変わらない。
 
-        ``SoqlReport.COLUMN_NAMES`` を持つレポートが登録されていても、
-        API 経路では適用しない（``SoqlReport`` 経由でしか取らないので
-        そもそも ``apply_column_names()`` は呼ばれない、というのが正）。
+        ``save_report()`` は列名の置き換えを行わない（取得側の
+        ``fetch_via_soql()`` が担当する）ので、 API 経路の Table はそのまま
+        保存される。
         """
         # ``_ColumnNamesReport`` を登録しておく（API 経路では使われない）
         _registered_for_save(monkeypatch, _ColumnNamesReport)
@@ -346,12 +359,13 @@ class TestSaveAppliesColumnNames:
         monkeypatch,
         output_folder,
     ):
-        """管理表ルートで見出しが衝突すると ``SoqlColumnNameConflictError`` で
-        失敗し、 CSV が一切残らない（一時ファイルも本番ファイルも）。"""
+        """見出しが衝突すると ``fetch_via_soql()`` が ``SoqlColumnNameConflictError``
+        で失敗し、 CSV が一切残らない（一時ファイルも本番ファイルも）。
+
+        衝突は取得側で起きる（列名の置き換えが ``transform()`` の前にあるため）。
+        """
         from src import paths as paths_module_inner
 
-        _registered_for_save(monkeypatch, _ColumnNamesOverlapReport)
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesOverlapReport.KEY)
         table = Table(
             ["Id", "Name", "Account.Name"],
             [{"Id": "001", "Name": "x", "Account.Name": "y"}],
@@ -364,7 +378,7 @@ class TestSaveAppliesColumnNames:
         tmp_csv = paths_module_inner.make_temp_csv_path(final_csv)
 
         with pytest.raises(SoqlColumnNameConflictError) as caught:
-            save_report(entry, table)
+            _fetch_soql_table(monkeypatch, _ColumnNamesOverlapReport, table)
 
         # 衝突した見出し・元列名・KEY がメッセージに出る
         message = str(caught.value)
@@ -378,7 +392,7 @@ class TestSaveAppliesColumnNames:
 
 
 # ---------------------------------------------------------------
-# 以下、save_report() の ``列名の対応.csv`` 経由の COLUMN_NAMES 適用テスト
+# 以下、fetch_via_soql() の ``列名の対応.csv`` 経由の COLUMN_NAMES 適用テスト
 # 2026-10 から (主オブジェクト, SOQL列名) で引く形になっている
 # ---------------------------------------------------------------
 
@@ -407,8 +421,8 @@ def column_csv_path(tmp_path, monkeypatch):
     yield path
 
 
-class TestSaveAppliesFileColumnNames:
-    """``save_report()`` が ``列名の対応.csv`` から自動で ``COLUMN_NAMES`` を組み立てる検証。"""
+class TestFetchAppliesFileColumnNames:
+    """``fetch_via_soql()`` が ``列名の対応.csv`` から自動で ``COLUMN_NAMES`` を組み立てる検証。"""
 
     def test_save_applies_file_column_names_to_csv(
         self,
@@ -421,7 +435,6 @@ class TestSaveAppliesFileColumnNames:
 
         ``Opportunity`` が主オブジェクトなので、 ``Opportunity`` 行だけが残る形になっている。
         """
-        _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
         _write_csv(
             column_csv_path,
             [
@@ -429,13 +442,14 @@ class TestSaveAppliesFileColumnNames:
                 ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
+        fetched = _fetch_soql_table(monkeypatch, _ColumnNamesFromFileOnlyReport, table)
+        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
 
-        saved = save_report(entry, table)
+        saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -450,7 +464,6 @@ class TestSaveAppliesFileColumnNames:
     ):
         """``列名の対応.csv`` に他主オブジェクトの行があっても、 このレポートの
         SOQL の主オブジェクトの行だけ使われる。"""
-        _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
         _write_csv(
             column_csv_path,
             [
@@ -461,13 +474,14 @@ class TestSaveAppliesFileColumnNames:
                 ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
+        fetched = _fetch_soql_table(monkeypatch, _ColumnNamesFromFileOnlyReport, table)
+        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
 
-        saved = save_report(entry, table)
+        saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -484,7 +498,6 @@ class TestSaveAppliesFileColumnNames:
     ):
         """``COLUMN_NAMES`` と ``列名の対応.csv`` の両方に同じキーがあると、
         手書き（``COLUMN_NAMES``）が勝つ。"""
-        _registered_for_save(monkeypatch, _ColumnNamesManualReport)
         # ファイル側は ``Name -> ファイル表示名`` を提案。手書き ``名前（手書き）`` が勝つ
         _write_csv(
             column_csv_path,
@@ -493,13 +506,14 @@ class TestSaveAppliesFileColumnNames:
                 ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesManualReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
+        fetched = _fetch_soql_table(monkeypatch, _ColumnNamesManualReport, table)
+        entry = replace(SOQL_ENTRY, key=_ColumnNamesManualReport.KEY)
 
-        saved = save_report(entry, table)
+        saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -520,15 +534,15 @@ class TestSaveAppliesFileColumnNames:
         取得は失敗させない。"""
         # ``column_csv_path`` は指すがファイルは作らない（fixture の効果）
         assert not column_csv_path.exists()
-        _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            saved = save_report(entry, table)
+            fetched = _fetch_soql_table(monkeypatch, _ColumnNamesFromFileOnlyReport, table)
+            entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
+            saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -552,15 +566,15 @@ class TestSaveAppliesFileColumnNames:
                 ["Account", "Name", "混入してはいけない名前", "", "2026-10-01"],
             ],
         )
-        _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
         with caplog.at_level(logging.WARNING, logger="src.soql_reports.column_names"):
-            saved = save_report(entry, table)
+            fetched = _fetch_soql_table(monkeypatch, _ColumnNamesFromFileOnlyReport, table)
+            entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
+            saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
@@ -578,7 +592,6 @@ class TestSaveAppliesFileColumnNames:
     ):
         """``列名の対応.csv`` のフォーマットが壊れている（旧形式も見出しに必要な列が無い）
         と ``ColumnNamesCSVFormatError`` で失敗し、 CSV が一切残らない。"""
-        _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
         # 旧形式の見出し（``主オブジェクト`` 列が無い）= フォーマット不正
         column_csv_path.parent.mkdir(parents=True, exist_ok=True)
         with CSV(
@@ -596,7 +609,6 @@ class TestSaveAppliesFileColumnNames:
                     },
                 ],
             )
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesFromFileOnlyReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
@@ -609,7 +621,7 @@ class TestSaveAppliesFileColumnNames:
         tmp_csv = paths_inner.make_temp_csv_path(final_csv)
 
         with pytest.raises(ColumnNamesCSVFormatError):
-            save_report(entry, table)
+            _fetch_soql_table(monkeypatch, _ColumnNamesFromFileOnlyReport, table)
 
         assert not final_csv.exists()
         assert not tmp_csv.exists()
@@ -622,8 +634,8 @@ class TestSaveAppliesFileColumnNames:
         column_csv_path,
     ):
         """Report API 経由（``use_soql=False``）のときは ``列名の対応.csv`` が
-        有っても見出しは変わらない。 ``SoqlReport`` 経由でしか取らないので、
-        そもそも ``apply_column_names()`` は呼ばれないのが正。"""
+        有っても見出しは変わらない。 ``save_report()`` は列名の置き換えを
+        しないので、 取得した Table のまま保存される。"""
         # ``_ColumnNamesFromFileOnlyReport`` を登録しておく（API 経路では使われない）
         _registered_for_save(monkeypatch, _ColumnNamesFromFileOnlyReport)
         _write_csv(
@@ -656,7 +668,6 @@ class TestSaveAppliesFileColumnNames:
     ):
         """``COLUMN_NAMES で N 列を置き換えました（ファイル=M, 手書き=K）`` の
         ログが出る（ファイル由来と手書きの内訳が分かる文言）。"""
-        _registered_for_save(monkeypatch, _ColumnNamesManualReport)
         _write_csv(
             column_csv_path,
             [
@@ -664,14 +675,13 @@ class TestSaveAppliesFileColumnNames:
                 ["Opportunity", "Amount", "金額", "", "2026-10-01"],
             ],
         )
-        entry = replace(SOQL_ENTRY, key=_ColumnNamesManualReport.KEY)
         table = Table(
             ["Id", "Name", "Amount"],
             [{"Id": "001", "Name": "山田", "Amount": "100"}],
         )
 
         with caplog.at_level(logging.INFO, logger="src.service"):
-            save_report(entry, table)
+            _fetch_soql_table(monkeypatch, _ColumnNamesManualReport, table)
 
         # ``ファイル=`` と ``手書き=`` の両方が出ている
         assert "ファイル=" in caplog.text
@@ -681,7 +691,7 @@ class TestSaveAppliesFileColumnNames:
         assert "手書き=1" in caplog.text
 
 
-class TestSaveNoFromInSoql:
+class TestFetchNoFromInSoql:
     """SOQL から主オブジェクトを取り出せないケース（``FROM`` が無い等）の挙動確認。
 
     取得は失敗させず、 WARNING を 1 行出して API 名のまま保存する。
@@ -695,7 +705,7 @@ class TestSaveNoFromInSoql:
         caplog,
     ):
         """``FROM`` の無い SOQL では主オブジェクトが取れず、 API 名のまま保存される
-        （``column_names`` 側ではなく ``service.save_report()`` 側で WARNING が出る）。"""
+        （``column_names`` 側ではなく ``src.service`` 側で WARNING が出る）。"""
 
         class _NoFromReport(SoqlReport):
             KEY = "9300"
@@ -705,7 +715,6 @@ class TestSaveNoFromInSoql:
                 # ``FROM`` が無い、壊れた SOQL
                 return "SELECT Id, Name"
 
-        _registered_for_save(monkeypatch, _NoFromReport)
         # ファイルには Account 行を書いておくが、主オブジェクトが取れないので何も適用しない
         _write_csv(
             column_csv_path,
@@ -713,20 +722,19 @@ class TestSaveNoFromInSoql:
                 ["Account", "Name", "ファイル表示名", "", "2026-10-01"],
             ],
         )
-        entry = replace(SOQL_ENTRY, key=_NoFromReport.KEY)
         table = Table(
             ["Id", "Name"],
             [{"Id": "001", "Name": "山田"}],
         )
 
         with caplog.at_level(logging.WARNING, logger="src.service"):
-            saved = save_report(entry, table)
+            fetched = _fetch_soql_table(monkeypatch, _NoFromReport, table)
+            entry = replace(SOQL_ENTRY, key=_NoFromReport.KEY)
+            saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()
-        # 手書きの COLUMN_NAMES は適用されない（extra が空のため ``apply_column_names`` の
-        # 引数 ``extra={}`` で COLUMN_NAMES がそのまま使われるはずだが、
-        # バグが無いようにするためにも結果を確認）
+        # 手書きの COLUMN_NAMES は適用される（extra が空でも COLUMN_NAMES は使われる）
         assert result.columns == ["Id", "名前"]
         # WARNING に ``SOQL から主オブジェクトを取り出せませんでした`` が出ている
         assert "SOQL から主オブジェクトを取り出せませんでした" in caplog.text
@@ -753,8 +761,6 @@ class TestSaveNoFromInSoql:
                 # 本文に目印を入れて、 WARNING 以上に漏れないことを確認する
                 return f"SELECT Id, Name, {marker}"
 
-        _registered_for_save(monkeypatch, _NoFromReport)
-        entry = replace(SOQL_ENTRY, key=_NoFromReport.KEY)
         table = Table(
             ["Id", "Name"],
             [{"Id": "001", "Name": "山田"}],
@@ -762,7 +768,9 @@ class TestSaveNoFromInSoql:
 
         # DEBUG まで拾わないと SOQL 本文の DEBUG 記録を確認できない
         with caplog.at_level(logging.DEBUG, logger="src.service"):
-            save_report(entry, table)
+            fetched = _fetch_soql_table(monkeypatch, _NoFromReport, table)
+            entry = replace(SOQL_ENTRY, key=_NoFromReport.KEY)
+            save_report(entry, fetched)
 
         service_records = [r for r in caplog.records if r.name == "src.service"]
         warnings_and_above = [r for r in service_records if r.levelno >= logging.WARNING]
@@ -1449,6 +1457,47 @@ class TestFetchViaSoqlTransform:
         # 保存フェーズで ``allow_empty=False`` のまま ``EmptyReportError`` が出る
         with pytest.raises(EmptyReportError):
             save_report(entry, fetched)
+
+    def test_transform_filters_by_display_column_name_and_saved_csv_keeps_it(
+        self,
+        monkeypatch,
+        output_folder,
+    ):
+        """``COLUMN_NAMES`` で置き換えた表示名の列で ``transform()`` が絞り、 保存 CSV に
+        絞った行だけが見出し「名称」で残る。
+
+        列名の置き換えが ``transform()`` の **前** にあるため、 ``transform()`` は
+        SOQL の API 名（``Name``）ではなく表示名（``名称``）で列を扱える。
+        """
+
+        class _DisplayNameReport(SoqlReport):
+            KEY = "9105"
+            COLUMN_NAMES: ClassVar[dict[str, str]] = {"Name": "名称"}
+
+            def soql(self) -> str:
+                return "SELECT Id, Name, Amount FROM Opportunity"
+
+            def transform(self, table: Table) -> Table:
+                # 受け取る列は表示名（``Name`` → ``名称``）
+                return table.filter(lambda row: row["名称"] == "山田")
+
+        table = Table(
+            ["Id", "Name", "Amount"],
+            [
+                {"Id": "001", "Name": "山田", "Amount": "100"},
+                {"Id": "002", "Name": "鈴木", "Amount": "200"},
+            ],
+        )
+        fetched = _fetch_soql_table(monkeypatch, _DisplayNameReport, table)
+        entry = replace(SOQL_ENTRY, key=_DisplayNameReport.KEY)
+
+        saved = save_report(entry, fetched)
+
+        with CSV(saved, read_only=True) as csv_file:
+            result = csv_file.read()
+        # 絞った 1 行だけが残り、 見出しは表示名（``名称``）
+        assert result.columns == ["Id", "名称", "Amount"]
+        assert result.to_rows() == [{"Id": "001", "名称": "山田", "Amount": "100"}]
 
     def test_transform_failure_row_uses_salesforce_cause(self):
         """``SoqlTransformError`` は ``ComkenError`` 系なので ``_failure_row()``

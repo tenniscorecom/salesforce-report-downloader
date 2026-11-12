@@ -53,12 +53,13 @@ class SoqlReport:
             無いキーは無視**（SOQL を変えても対応を貼り直さずに済む）。
             置き換え後の見出しが 2 つ以上重なると
             ``SoqlColumnNameConflictError`` （CSV は書かれない）。管理表
-            ルートの ``save_report()`` が保存直前に適用する。
+            ルートの ``fetch_via_soql()`` が **``transform()`` の前** に
+            適用する（＝``transform()`` は表示名の列を受け取る）。
 
             ``列名の対応.csv`` は **全体で 1 ファイル**
             （``主オブジェクト, SOQL列名, 表示名, 備考, 更新日`` の形式）に
             まとめられ、 ``(主オブジェクト, SOQL列名)`` が同じならどのレポート
-            でも同じ表示名が引かれる。 ``service.save_report()`` は ``soql()`` の
+            でも同じ表示名が引かれる。 ``service.fetch_via_soql()`` は ``soql()`` の
             最初の ``FROM <名前>`` を主オブジェクトとして取り、
             ``column_names.load_column_names_for(main_object)`` で
             ``{SOQL列名: 表示名}`` を引き、 ``COLUMN_NAMES`` とマージする
@@ -103,15 +104,16 @@ class SoqlReport:
         """SOQL で取った Table を保存用に加工して返す。
 
         ``fetch_via_soql()`` の中で 取得（``bulk_query()`` / ``query()``）の
-        直後、 件数の比較（``CHECK_COUNT``）と同じ接続のうち、 **加工前の生の
-        結果**に対して呼ばれる（レポートの総件数と比べられるのは加工前の
-        件数のため）。
+        直後、 件数の比較（``CHECK_COUNT``）と同じ接続のうち、 **列名を
+        置き換えたあと** の Table に対して呼ばれる（レポートの総件数と
+        比べられるのは加工前の件数なので、 件数の比較は列名の置き換えより
+        先に行う）。
         返した Table がそのまま CSV に書かれる。
 
-        受け取る ``table`` の列名は SOQL の API 名（``Amount`` 、
-        ``Account.Name``）。 返した ``Table`` には加工で新しく作った列が
-        残っていてもよく、 列名の置き換え（``COLUMN_NAMES`` /
-        ``列名の対応.csv``）はこのあと ``save_report()`` が保存直前に適用する。
+        受け取る ``table`` の列名は **置き換え後の表示名**（``COLUMN_NAMES`` /
+        ``列名の対応.csv`` で置き換えたもの。 対応が無い列は SOQL の API 名の
+        まま）。 返した ``Table`` には加工で新しく作った列が残っていてもよく、
+        その列はそのまま CSV に出る。
 
         **既定は何もしない**（受け取った ``table`` をそのまま返す）。 サマリー
         レポートを Python で組み立てる用途（今までサマリーレポートでやって
@@ -121,18 +123,19 @@ class SoqlReport:
         0 行を返したときは既存の ``ALLOW_EMPTY`` 判定がそのまま動く。
 
         Examples:
-            ``Table`` の ``filter`` / ``select`` / ``group_by`` を使う::
+            ``Table`` の ``filter`` / ``select`` / ``group_by`` を使う
+            （列は表示名を書く）::
 
                 def transform(self, table):
-                    return table.filter(lambda r: r["StageName"] == "Closed Won")
+                    return table.filter(lambda r: r["ステージ"] == "成約済み")
 
             ``group_by`` で集計する::
 
                 def transform(self, table):
                     rows = [
-                        {"StageName": name, "金額合計": sum(int(r["Amount"]) for r in sub)}
-                        for name, sub in table.group_by("StageName").items()
+                        {"ステージ": name, "金額合計": sum(int(r["金額"]) for r in sub)}
+                        for name, sub in table.group_by("ステージ").items()
                     ]
-                    return Table(["StageName", "金額合計"], rows)
+                    return Table(["ステージ", "金額合計"], rows)
         """
         return table

@@ -2,10 +2,10 @@
 
 ``tests/contract/列名の対応.contract.csv`` （soql-collector が出す
 ``列名の対応.csv`` と同じ見本）を使って、 ``src.soql_reports.column_names.load_column_names_for()``
-と ``src.service.save_report()`` が **soql-collector 側の出力と一致して動くこと**を
-固定する。 soql-collector 側の ``tests/contract/列名の対応.contract.csv`` と
-バイト単位で同じファイルをこのリポジトリに置き、 両者が食い違っていないかを
-突き合わせる。
+と ``src.service.fetch_via_soql()`` / ``src.service.save_report()`` が
+**soql-collector 側の出力と一致して動くこと**を固定する。 soql-collector 側の
+``tests/contract/列名の対応.contract.csv`` とバイト単位で同じファイルをこの
+リポジトリに置き、 両者が食い違っていないかを突き合わせる。
 
 変えたくなったら両リポジトリの ``tests/contract/列名の対応.contract.csv`` を
 **同時に** 変える（``tests/contract/README.md`` 参照）。 書き手側
@@ -24,7 +24,7 @@ import logging
 import os
 from pathlib import Path
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from comken.core.table import Table
@@ -111,7 +111,8 @@ class TestContractSampleLoad:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# サービス層 ``save_report()`` でサンプル CSV を使い、 保存 CSV の見出しが置き換わるか
+# サービス層 ``fetch_via_soql()`` → ``save_report()`` でサンプル CSV を使い、
+# 保存 CSV の見出しが置き換わるか
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -164,11 +165,30 @@ def _output_folder(tmp_path: Path, monkeypatch) -> Path:
     return folder
 
 
-class TestContractSampleSave:
-    """``save_report()`` の保存 CSV の見出しがサンプル CSV の表示名に置き換わる検証。
+def _fake_site(table: Table) -> MagicMock:
+    """``bulk_query()`` が ``table`` を返す偽の site を作る。
 
-    既存の ``tests/test_service_soql_fetch.py::TestSaveAppliesFileColumnNames``
-    と同じやり方（``COLUMN_NAMES_CSV_PATH`` を差し替えて ``save_report()`` を呼ぶ）。
+    件数比較の ``request()`` は ``RowCount`` が無い形にして WARNING で
+    握りつぶされる（保存は止まらない）。
+    """
+    client = MagicMock()
+    client.__enter__.return_value.bulk_query.return_value = table
+    client.__enter__.return_value.data_path.side_effect = lambda suffix: (
+        f"/services/data/v67.0{suffix}"
+    )
+    client.__enter__.return_value.request.return_value = (
+        {"reportMetadata": {"aggregates": []}, "factMap": {}},
+        {},
+    )
+    return MagicMock(return_value=client)
+
+
+class TestContractSampleSave:
+    """取得（``fetch_via_soql()``）から保存までの保存 CSV の見出しが
+    サンプル CSV の表示名に置き換わる検証。
+
+    既存の ``tests/test_service_soql_fetch.py::TestFetchAppliesFileColumnNames``
+    と同じやり方（``COLUMN_NAMES_CSV_PATH`` を差し替えて取得してから保存する）。
     ここでは **契約の見本ファイルそのもの**を使って soql-collector の出力と
     一致しているかを確かめる。
     """
@@ -180,8 +200,9 @@ class TestContractSampleSave:
         _column_csv_path_from_sample,
     ):
         """サンプルを ``COLUMN_NAMES_CSV_PATH`` に使い、 SOQL の結果 ``Id, Name,
-        Amount, Account.Name`` を ``save_report()`` に通すと、 保存 CSV の見出しが
-        ``Id, 商談名, 金額, 取引先名`` になる（``Opportunity`` 行だけが残る）。"""
+        Amount, Account.Name`` を取得してから ``save_report()`` に通すと、
+        保存 CSV の見出しが ``Id, 商談名, 金額, 取引先名`` になる
+        （``Opportunity`` 行だけが残る）。"""
         entry = ReportEntry(
             key=_ContractSampleReport.KEY,
             summary="契約テスト",
@@ -204,7 +225,11 @@ class TestContractSampleSave:
             ],
         )
 
-        saved = save_report(entry, table)
+        # 列名の置き換えは取得側（``fetch_via_soql()``）で行われる
+        with patch("src.service.soql.site_for", return_value=_fake_site(table)):
+            fetched = fetch_via_soql(entry)
+
+        saved = save_report(entry, fetched)
 
         with CSV(saved, read_only=True) as csv_file:
             result = csv_file.read()

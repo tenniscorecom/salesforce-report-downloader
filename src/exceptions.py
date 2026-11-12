@@ -187,7 +187,7 @@ class SoqlTransformError(DownloaderError):
 
     メッセージには **行の値は出さない**（元の例外クラス名と失敗した事実だけ）。
 
-    発生箇所: ``src.service.fetch_via_soql()``（加工前の Table に対して呼ばれる）。
+    発生箇所: ``src.service.fetch_via_soql()``（列名を置き換えた Table に対して呼ばれる）。
 
     対処:
         ``reports/<ファイル>.py`` の ``transform()`` を見直す。 ``SoqlReport``
