@@ -43,7 +43,7 @@ class NewReport(SoqlReport):
     USE_BULK: ClassVar[bool] = True
 
     def soql(self) -> str:
-        """TODO: 実行する SOQL クエリ文字列を返す。
+        '''TODO: 実行する SOQL クエリ文字列を返す。
 
         既定（``USE_BULK=True``）の Bulk API 2.0（``bulk_query()``）での取得では、
         集計関数（``COUNT`` / ``SUM`` など）、``GROUP BY``、``OFFSET``、
@@ -60,7 +60,70 @@ class NewReport(SoqlReport):
 
         URL・保存先・0件可否は管理表の ``ReportEntry`` が単一の正なので
         ここには書かない。
-        """
+
+        SOQL は **三重引用符の文字列にそのまま書く**（関数で包まない）。
+        ``SELECT`` / ``FROM`` / ``WHERE`` を行で分け、 中身は 1 段インデント。
+        こうしておくと、 AI に読ませても「どの SOQL を出すか」がそのまま分かる。
+        動的にしたい日付だけ f-string で差し込む。
+
+        Examples:
+            相対日付リテラル（``LAST_N_DAYS:30`` など）で済むものはそのまま
+            書く::
+
+                def soql(self) -> str:
+                    return """
+                        SELECT
+                            Id,
+                            Name,
+                            CloseDate
+                        FROM Opportunity
+                        WHERE
+                            CloseDate = LAST_N_DAYS:30
+                    """
+
+            相対日付リテラルに無い日付（前営業日）は **日付だけ** f-string で
+            差し込む::
+
+                from datetime import timedelta
+
+                from comken.core.dates import clock
+                from comken.core.dates.holidays import workday
+
+                from src.reports.base import SoqlReport
+
+
+                class PreviousWorkdayReport(SoqlReport):
+                    KEY = "9003"
+                    # レポートの相対日付リテラルに「前営業日」が無いので比較しない
+                    CHECK_COUNT = False
+
+                    def soql(self) -> str:
+                        prev = workday(clock.today(), -1)  # 前営業日
+                        next_day = prev + timedelta(days=1)
+                        return f"""
+                            SELECT
+                                Id,
+                                Name
+                            FROM Opportunity
+                            WHERE
+                                CloseDate = {prev:%Y-%m-%d}
+                                AND CreatedDate >= {prev:%Y-%m-%d}T00:00:00+09:00
+                                AND CreatedDate < {next_day:%Y-%m-%d}T00:00:00+09:00
+                        """
+
+        注意:
+            - 日付型の項目（``CloseDate`` など）は ``YYYY-MM-DD``、 日時型の項目
+              （``CreatedDate`` など）は ``+09:00`` を付けて日本時間で書く。
+              ``Z`` を付けると UTC になり 9 時間ずれる。
+            - 基準日は ``clock.today()`` を使う（``date.today()`` でなく。 テストで
+              日付を固定できる）。
+            - ``CHECK_COUNT`` は Report API のレポートの総件数と比べる。 レポートに
+              同じ範囲の日付条件が無いと件数が合わず失敗するので、 レポートと範囲が
+              違う SOQL にするときは ``CHECK_COUNT = False`` にして理由をコメントに
+              書く（「前営業日」はレポートの相対日付リテラルに無い）。
+            - SELECT 句の子サブクエリ（``(SELECT ... FROM Contacts)``）を使うときは
+              ``USE_BULK = False``。
+        '''
         raise NotImplementedError("TODO: SOQL文をここに書く")
 
     # 任意: 取得した ``Table`` を Python で加工して保存する。 既定は何もしない。

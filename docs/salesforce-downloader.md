@@ -914,11 +914,18 @@ class LargeSalesReport(SoqlReport):
     KEY = "9001"  # 社内で決める管理番号
 
     def soql(self) -> str:
-        return (
-            "SELECT Id, Name, Amount, CloseDate, StageName "
-            "FROM Opportunity "
-            "WHERE CloseDate >= 2024-01-01 AND StageName != 'Closed Won'"
-        )
+        return """
+            SELECT
+                Id,
+                Name,
+                Amount,
+                CloseDate,
+                StageName
+            FROM Opportunity
+            WHERE
+                CloseDate >= 2024-01-01
+                AND StageName != 'Closed Won'
+        """
 ```
 
 動かす手順は次のとおり:
@@ -933,6 +940,58 @@ class LargeSalesReport(SoqlReport):
 
 動く例は [examples/soql_report_migration](../examples/soql_report_migration)
 の `large_sales_report.py`（`SoqlReport` サブクラスのサンプル）。
+
+### SOQL の書き方（そのまま書く・日付だけ差し込む）
+
+SOQL は **三重引用符の文字列にそのまま書く**（関数で包まない）。 `SELECT` /
+`FROM` / `WHERE` を行で分け、 中身は 1 段インデントする。 こうしておくと、
+AI に読ませても「どの SOQL を出すか」がそのまま分かる。
+
+相対日付リテラル（`LAST_N_DAYS:30` など）で済むものはそのまま書く。
+相対日付リテラルに無い日付（前営業日など）は **日付だけ** f-string で差し込む。
+
+```python
+from datetime import timedelta
+
+from comken.core.dates import clock
+from comken.core.dates.holidays import workday
+
+from src.reports.base import SoqlReport
+
+
+class PreviousWorkdayReport(SoqlReport):
+    KEY = "9003"
+    # レポートの相対日付リテラルに「前営業日」が無いので比較しない
+    CHECK_COUNT = False
+
+    def soql(self) -> str:
+        prev = workday(clock.today(), -1)  # 前営業日
+        next_day = prev + timedelta(days=1)
+        return f"""
+            SELECT
+                Id,
+                Name
+            FROM Opportunity
+            WHERE
+                CloseDate = {prev:%Y-%m-%d}
+                AND CreatedDate >= {prev:%Y-%m-%d}T00:00:00+09:00
+                AND CreatedDate < {next_day:%Y-%m-%d}T00:00:00+09:00
+        """
+```
+
+- 日付型の項目（`CloseDate` など）は `YYYY-MM-DD`、 日時型の項目（`CreatedDate`
+  など）は `+09:00` を付けて日本時間で書く。 `Z` を付けると UTC になり
+  9 時間ずれる。
+- 基準日は `comken.core.dates.clock.today()` を使う（`date.today()` でなく。
+  テストで日付を固定できる）。
+- `CHECK_COUNT` は Report API のレポートの総件数と比べる。 レポート側に同じ範囲の
+  日付条件が無いと件数が合わず失敗するので、 レポートと範囲が違う SOQL にするときは
+  `CHECK_COUNT = False` にして理由をコメントに書く（「前営業日」はレポートの相対
+  日付リテラルに無い）。
+- SELECT 句の子サブクエリ（`(SELECT ... FROM Contacts)`）を使うときは
+  `USE_BULK = False`。
+
+詳しくは `src/reports/_template.py` の `soql()` を参照。
 
 ### 出力 CSV の見出しを人が読む列名に置き換える（`COLUMN_NAMES`）
 

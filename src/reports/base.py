@@ -1,4 +1,4 @@
-r"""src/reports/base.py — SOQLで取るレポートの基底クラス。
+r'''src/reports/base.py — SOQLで取るレポートの基底クラス。
 
 Report API（2000行上限）で取れない大きなレポートは、SOQL
 （``SalesforceBase.bulk_query()``、上限なし。``SoqlReport.USE_BULK`` を
@@ -13,11 +13,22 @@ Report API（2000行上限）で取れない大きなレポートは、SOQL
         KEY = "9001"
 
         def soql(self) -> str:
-            return "SELECT Id, Name, Amount FROM Opportunity WHERE ..."
+            return """
+                SELECT
+                    Id,
+                    Name,
+                    Amount
+                FROM Opportunity
+                WHERE
+                    CloseDate = LAST_N_DAYS:30
+            """
+
+SOQL は **三重引用符の文字列にそのまま書く**（関数で包まない）。 動的にしたい
+日付だけ f-string で差し込む。 詳しくは ``_template.py`` の ``soql()`` を参照。
 
 URL・保存先・0件可否は **管理表の ReportEntry** が単一の正。``SoqlReport``
 には書かない（管理表なしでは取らない前提）。
-"""
+'''
 
 from __future__ import annotations
 
