@@ -40,7 +40,15 @@ class OpportunityStageSummary(SoqlReport):
     def soql(self) -> str:
         """明細を取ってくる SOQL。 ``StageName`` と ``Amount`` を含むが
         group_by はせず、 加工の ``transform()`` で集計する。"""
-        return "SELECT Id, StageName, Amount FROM Opportunity WHERE CloseDate >= 2024-01-01"
+        return """
+            SELECT
+                Id,
+                StageName,
+                Amount
+            FROM Opportunity
+            WHERE
+                CloseDate >= 2024-01-01
+        """
 
     def transform(self, table: Table) -> Table:
         """``ステージ`` ごとに件数と ``金額`` の合計を集計する。

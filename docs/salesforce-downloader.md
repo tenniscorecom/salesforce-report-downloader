@@ -1169,7 +1169,15 @@ class OpportunityStageSummary(SoqlReport):
     COLUMN_NAMES = {"StageName": "ステージ", "Amount": "金額"}
 
     def soql(self) -> str:
-        return "SELECT Id, StageName, Amount FROM Opportunity WHERE CloseDate >= 2024-01-01"
+        return """
+            SELECT
+                Id,
+                StageName,
+                Amount
+            FROM Opportunity
+            WHERE
+                CloseDate >= 2024-01-01
+        """
 
     def transform(self, table):
         # 受け取る ``table`` の列名は表示名（``COLUMN_NAMES`` で置き換えたもの）

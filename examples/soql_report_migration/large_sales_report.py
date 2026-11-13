@@ -40,9 +40,16 @@ class LargeSalesReport(SoqlReport):
         # 「対応フィールドAPI名」列を見て埋める。
         # 書けない SOQL と値の扱い（bulk の制約・CSV の文字列扱い）は
         # ``_template.py`` の ``soql()`` を参照。
-        return (
-            "SELECT Id, Name, Amount, CloseDate, StageName "
-            "FROM Opportunity "
-            "WHERE CloseDate >= 2024-01-01 AND StageName != 'Closed Won' "
-            "ORDER BY CloseDate DESC"
-        )
+        return """
+            SELECT
+                Id,
+                Name,
+                Amount,
+                CloseDate,
+                StageName
+            FROM Opportunity
+            WHERE
+                CloseDate >= 2024-01-01
+                AND StageName != 'Closed Won'
+            ORDER BY CloseDate DESC
+        """
