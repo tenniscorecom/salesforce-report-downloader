@@ -4300,3 +4300,33 @@ class TestOverwriteWithoutDesiredTime:
         err = capsys.readouterr().err
         assert "上書き" in err
         assert "S001" in err
+
+
+# ── 列の無い表（0 件かつ列名も取れない）の保存 ─────────────────────────
+class TestSaveTableWithoutColumns:
+    """列の無い表を保存したときの警告。"""
+
+    def test_saves_empty_file_and_warns(self, paths, caplog):
+        """列なし0件・0件あり○ で保存すると成功し、WARNING が出る。
+
+        列名を得る手段が無いので動きは変えない（見出しの無い 0 バイトの
+        ファイルになる）。気づけるように警告だけ残す。
+        """
+        from dataclasses import replace
+
+        entry = replace(load_master(paths["master_path"])["1001"], allow_empty=True)
+        table = Table([], [])  # 列も行も無い（USE_BULK=False の SOQL が0件の状態）
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            saved = save_module.save_report(entry, table, current=fixed_now)
+
+        # 見出しの無い 0 バイトのファイルになる（保存は成功する）
+        assert saved.exists()
+        assert saved.stat().st_size == 0
+        # WARNING が 1 行出る（管理番号と概要を含む）
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "見出しの無い空のファイルを保存しました" in warnings[0].message
+        assert "1001" in warnings[0].message
+        assert "顧客一覧" in warnings[0].message
