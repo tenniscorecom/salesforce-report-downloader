@@ -2,7 +2,7 @@
 
 ``tests/contract/列名の対応.contract.csv`` （soql-collector が出す
 ``列名の対応.csv`` と同じ見本）を使って、 ``src.soql_reports.column_names.load_column_names_for()``
-と ``src/service/soql.py`` の ``fetch_via_soql()`` / ``src.service.save_report()`` が
+と ``src/service/soql.py`` の ``fetch_via_soql()`` / ``src.service.save.save_report()`` が
 **soql-collector 側の出力と一致して動くこと**を固定する。 soql-collector 側の
 ``tests/contract/列名の対応.contract.csv`` とバイト単位で同じファイルをこの
 リポジトリに置き、 両者が食い違っていないかを突き合わせる。

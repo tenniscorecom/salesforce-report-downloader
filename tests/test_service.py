@@ -1806,7 +1806,7 @@ class TestHistory:
             assert row["原因区分"] == "ファイル"
 
     def test_cause_is_program_when_unexpected_error_raises(self, tmp_path, monkeypatch):
-        """_fetch() が TypeError を投げる（comken 側のバグ想定）→ 「プログラム」。"""
+        """fetch_via_api() が TypeError を投げる（comken 側のバグ想定）→ 「プログラム」。"""
         base_path = tmp_path / "ベース"
         base_path.mkdir()
         master = make_master(

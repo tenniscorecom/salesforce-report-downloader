@@ -449,7 +449,7 @@ def test_record_soql_takes_priority_over_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``use_soql=True`` と ``exceeds_row_limit=True`` が同時に真のとき、
-    SOQL が優先される（``src.service._fetch()`` と同じ優先順位）。
+    SOQL が優先される（``src.service.routes.fetch_report()`` と同じ優先順位）。
 
     ``_route_of`` の条件式を入れ替えて SOQL と 2000件超を逆にすると、
     ``ブラウザ`` が書かれてこのテストは落ちる。
