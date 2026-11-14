@@ -183,7 +183,8 @@ class SoqlTransformError(DownloaderError):
 
     メッセージには **行の値は出さない**（元の例外クラス名と失敗した事実だけ）。
 
-    発生箇所: ``src.service.fetch_via_soql()``（列名を置き換えた Table に対して呼ばれる）。
+    発生箇所: ``src/service/soql.py`` の ``fetch_via_soql()``
+    （列名を置き換えた Table に対して呼ばれる）。
 
     対処:
         ``src/reports/<ファイル>.py`` の ``transform()`` を見直す。 ``SoqlReport``
@@ -215,7 +216,7 @@ class SoqlIncompleteError(DownloaderError):
     印の文字列は ``src.service.INCOMPLETE_SOQL_MARKER`` で、soql-collector 側の
     ``INCOMPLETE_MARKER`` と同じ。変えるときは両方を同時に変える。
 
-    発生箇所: ``src.service.fetch_via_soql()`` （``bulk_query()`` を呼ぶ前）
+    発生箇所: ``src/service/soql.py`` の ``fetch_via_soql()`` （``bulk_query()`` を呼ぶ前）
 
     対処:
         soql-collector の下書きに作れなかった部分が残っています。

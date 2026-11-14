@@ -385,7 +385,7 @@ def _execute_each_target(
             )
         except (ComkenError, OSError) as e:
             # **想定した失敗は続ける。想定していない失敗は止める。**
-            # - `ComkenError` は `docs/ERRORS.md` に対処法が載っている想定内の失敗
+            # - `ComkenError` は例外クラスの docstring に対処が書いてある想定内の失敗
             # - `OSError` は共有サーバー断・権限・パスなど運用上の失敗（保存先はレポートごとに違う）
             # - それ以外（`TypeError` などのバグ）は捕捉せず、その場で落として気づかせる
             #   （`ScheduledDownloadFailedError` の顔で出ると「もう一度実行」を繰り返すだけになる）

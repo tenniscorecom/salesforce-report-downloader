@@ -200,8 +200,9 @@ def paths(tmp_path, monkeypatch):
 
     テスト関数側に `master_path=` / `history_path=` を渡さなくて済むように、
     `_paths.MASTER_PATH` / `_paths.HISTORY_PATH` を tmp_path 配下の値へ
-    差し替える。`service.py` と `provider.py` は import 時に独自のローカル束縛を
-    作るので、両方の属性も同期する。
+    差し替える。管理表は `src/paths.py` の `MASTER_PATH`、履歴は comken 側の
+    `HISTORY_PATH`（`src/service/_utils.py` が呼び出し時に読む）なので、
+    別の属性を差し替える。
 
     `1001`（=有効）が `download_scheduled()` の唯一の有効件。
     `1002`（=有効）は Excel 出力テストが直接管理表を作る側で検証するため、
@@ -285,11 +286,13 @@ def paths(tmp_path, monkeypatch):
 def _patch_master_path(monkeypatch: pytest.MonkeyPatch, master: Path, history: Path) -> None:
     """``MASTER_PATH`` と履歴パスを差し替えるヘルパー。
 
-    ``service.py`` はローカル束縛を持たず ``_Paths`` ラッパー経由で
-    ``src.paths`` のモジュール変数を呼び出し時に読むので、``_paths`` への
-    1 か所の patch だけで ``output_path`` / 管理表パスに反映される。
-    履歴パスは comken 側 (``comken.services.salesforce_downloader.paths.HISTORY_PATH``)
-    を文字列経由で patch する（``service.py`` 自身も同名で ``from ... import`` するため）。
+    ``src/paths.py`` は ``MASTER_PATH`` をモジュール変数として持ち、
+    ``output_path()`` と管理表の読み込みは呼び出し時にその変数を読むので、
+    ``_paths`` への 1 か所の patch だけで ``output_path`` / 管理表パスに
+    反映される。履歴パスは comken 側
+    (``comken.services.salesforce_downloader.paths.HISTORY_PATH``) を文字列経由で
+    patch する（``src/service/_utils.py`` は comken 側のモジュール属性を
+    呼び出し時に読む）。
     """
     monkeypatch.setattr(_paths_module, "MASTER_PATH", master)
     monkeypatch.setattr("comken.services.salesforce_downloader.paths.HISTORY_PATH", history)
@@ -3043,8 +3046,8 @@ class TestFixedCurrentAcrossExecution:
         next_day_dt = dt.datetime(2026, 9, 17, 0, 1, 0)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
 
         # 1 回目は開始時刻、以降は翌日 00:01 を返す。
-        # ``current`` への固定（service.py）と ``output_path`` 内の
-        # フォールバック（provider.py）で呼ばれる側の差を再現する
+        # ``current`` への固定（src/service/attempt.py）と ``output_path`` 内の
+        # フォールバック（src/paths.py）で呼ばれる側の差を再現する
         call_count = 0
 
         def _clock_now_then_next_day():

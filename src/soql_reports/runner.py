@@ -1,7 +1,7 @@
 """src/soql_reports/runner.py — ``apply_column_names()`` の置き場所。
 
 SOQLレポートの取得・保存は **管理表ルートだけ** に統一した。
-``src.service.fetch_via_soql()`` が取得直後（``transform()`` の前）にこの
+``src/service/soql.py`` の ``fetch_via_soql()`` が取得直後（``transform()`` の前）にこの
 ``apply_column_names()`` を ``SoqlReport`` 経由で呼ぶ。管理表を経由しない
 別ルートは廃止したため、このモジュールには ``apply_column_names()`` だけが残る。
 

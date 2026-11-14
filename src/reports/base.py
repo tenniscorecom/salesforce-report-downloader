@@ -70,8 +70,9 @@ class SoqlReport:
             ``列名の対応.csv`` は **全体で 1 ファイル**
             （``主オブジェクト, SOQL列名, 表示名, 備考, 更新日`` の形式）に
             まとめられ、 ``(主オブジェクト, SOQL列名)`` が同じならどのレポート
-            でも同じ表示名が引かれる。 ``service.fetch_via_soql()`` は ``soql()`` の
-            最初の ``FROM <名前>`` を主オブジェクトとして取り、
+            でも同じ表示名が引かれる。 ``src/service/soql.py`` の
+            ``fetch_via_soql()`` は ``soql()`` の最初の ``FROM <名前>`` を
+            主オブジェクトとして取り、
             ``column_names.load_column_names_for(main_object)`` で
             ``{SOQL列名: 表示名}`` を引き、 ``COLUMN_NAMES`` とマージする
             （手書き優先）。主オブジェクト名は Salesforce の API 名と同じく

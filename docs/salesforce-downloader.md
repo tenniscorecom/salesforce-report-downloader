@@ -1044,7 +1044,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 レポートの元々の見出し（`金額`、`取引先名`）で出したい場合は、
 `SoqlReport.COLUMN_NAMES` に **API名→表示名** の対応を書く。
 **貼り付け元は soql-collector の対応表**。
-`service.fetch_via_soql()` が取得直後（`transform()` の前）にこの表を
+`src/service/soql.py` の `fetch_via_soql()` が取得直後（`transform()` の前）にこの表を
 `Table.select()` に通して列名を差し替える。Report API 経由・ブラウザ経由では
 適用しない（`save_report()` は列名の置き換えをしない）。
 列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
@@ -1061,7 +1061,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 オブジェクト API 名が入る）。 同じ列はどのレポートでも同じ表示名になるので、
 **レポートをまたいで管理表を作る必要が無い**。
 
-`service.fetch_via_soql()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
+`src/service/soql.py` の `fetch_via_soql()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
 を主オブジェクトとして取り出し、 `column_names.load_column_names_for(main_object)`
 で `{SOQL列名: 表示名}` を引いて手書きの `COLUMN_NAMES` とマージする
 （手書き優先）。主オブジェクト名の比較は大文字小文字を区別しない
@@ -1263,8 +1263,8 @@ soql-collector が下書きを出し直すとき、補えなかった部分が�
 
 ## エラー
 
-エラー名と対処法は [docs/ERRORS.md](../ERRORS.md)（comken 全体の例外クラスの docstring
-から自動生成、docstring が正）にまとまっている。Downloader 由来のものは
+エラー名と対処法は **例外クラスの docstring** に書いてある（docstring が正）。
+Downloader 由来のものは
 `ReportNotRegisteredError` / `SoqlReportNotRegisteredError` /
 `GroupNotRegisteredError` / `MasterDuplicateValueError` /
 `MasterRowValueError` / `CachedReportNotFoundError` / `EmptyReportError` /
