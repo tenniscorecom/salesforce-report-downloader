@@ -84,7 +84,7 @@ def make_workbook(
 
 
 class TestSfdlCheckExitCode:
-    """``sfdl check`` の終了コード。"""
+    """``python -m src.cli check`` の終了コード。"""
 
     def test_returns_zero_for_well_formed_book(self, tmp_path):
         """3 シートが正しく相互参照できるブックは、終了コード 0。"""
@@ -200,7 +200,7 @@ class TestSfdlCheckReferenceNotes:
 
 
 class TestSfdlInitExitCode:
-    """``sfdl init`` の終了コードと雛形生成。
+    """``python -m src.cli init`` の終了コードと雛形生成。
 
     ``init`` は ``create_combined_workbook()`` を呼ぶ薄いラッパーで、
 
@@ -249,3 +249,33 @@ class TestSfdlInitExitCode:
         code = sfdl_main(["init", str(path)])
         assert code == 1
         assert path.read_bytes() == original_bytes
+
+
+class TestSfdlCheckWithoutSettingsSheet:
+    """「設定」シートが無い管理表でも、1 件目で止めずに全部出す。"""
+
+    def test_reports_missing_settings_sheet_and_unregistered_groups(self, tmp_path, capsys):
+        """「設定」シートが無いことを1件として出し、残りの検査（未登録グループ）も
+        続けて全部出して、終了コード 1 で戻る。"""
+        path = make_workbook(
+            tmp_path / "管理表.xlsx",
+            master_rows=[
+                # 「営業本部」は設定シートに無い（設定シート自体を作らない）
+                ["1001", "営業本部", "山田", "顧客一覧", URL_A, "○"],
+            ],
+            schedule_rows=[
+                ["S001", "1001", "毎週", "09:00", "", "月", "", "取得しない", "○"],
+            ],
+            settings_rows=None,
+        )
+        code = sfdl_main(["check", str(path)])
+        captured = capsys.readouterr()
+        assert code == 1
+        # 「設定」シートが無い旨
+        assert "設定" in captured.err
+        assert "シートがありません" in captured.err
+        # 未登録グループ（とその管理番号）も出ている
+        assert "営業本部" in captured.err
+        assert "1001" in captured.err
+        # 1 件目で止めていない（2 件以上出ている）
+        assert "2 件" in captured.err

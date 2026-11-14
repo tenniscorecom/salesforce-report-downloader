@@ -1,8 +1,9 @@
 r"""src/sheets/master.py — レポート管理表の列を決める。
 
-**`sheets/` には、ワークブック・CSVの「1枚（1ファイル）」ごとに、そこにある列と意味を
+**`sheets/` には、ワークブックの「1枚（1ファイル）」ごとに、そこにある列と意味を
 宣言するモジュールを集めている**（`schedule.py` = スケジュールシート、`group_settings.py` =
-設定シート、`history.py` = 履歴CSV）。Excel の読み書きの仕組みは `src.report_master` にあり、
+設定シート）。履歴CSVは comken 側（`comken.services.salesforce_downloader.history`）に
+ある。Excel の読み書きの仕組みは `src.report_master` にあり、
 ここは**どんな列があるか**だけを宣言する。
 
     | ID   | グループ | 担当者 | 概要     | Salesforce URL              | 有効 |
@@ -31,7 +32,8 @@ r"""src/sheets/master.py — レポート管理表の列を決める。
 ここに書かないもの:
 - Excel をどう読むか・どう検証するか → src.report_master
 - 取得の実行・保存 → src.service
-- 履歴の読み取り・形式 → src.sheets.history
+- 履歴の読み取り・形式 → src.history（値の組み立て・書き込み）／
+  comken.services.salesforce_downloader.history（形式・読み取り）
 - 出力先フォルダの組み立て → src.paths / src.sheets.group_settings
 """
 

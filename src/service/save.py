@@ -75,6 +75,10 @@ def save_report(
     ``report.get()`` が返す ``Table.columns`` を使うため、0 行でも Salesforce の
     メタデータから得た見出しを保存する。
 
+    **列の無い表を保存するときは WARNING を 1 行出す**（見出しの無い 0 バイトの
+    ファイルになる）。列名を得る手段が無いので動きは変えない
+    （``USE_BULK=False`` の SOQL が 0 件のとき）。
+
     **保存の流れ:**
     本番の名前の空ファイルを **一瞬も作らない** ため、 次の順序で書く。
 
@@ -158,6 +162,7 @@ def save_report(
         # （連番探索は行わない。dry-run は競合判定まで含めて副作用を出さない運用）
         if is_dry_run():
             return base
+        _warn_columns_are_empty(entry, table)
         _write_csv(tmp_path, table)
         final_path = _finalize_save(tmp_path, base, entry)
         _verify_saved_file_not_empty(final_path, table, entry)
@@ -182,6 +187,24 @@ def _prepare_output_directory(base: Path) -> None:
     """
     if not is_dry_run():
         base.parent.mkdir(exist_ok=True)
+
+
+def _warn_columns_are_empty(entry: ReportEntry, table: Table) -> None:
+    """列の無い表を保存するとき、WARNING を 1 行出す。
+
+    **列が無いと見出しも無いので、0 バイトのファイルになる。** 0 バイト検査は
+    「列が無いときは検査しない」ので通ってしまう。列名を得る手段が無いので
+    動きは変えない（``USE_BULK=False`` の SOQL が 0 件のときに起こる）ため、
+    気づけるように警告だけ残す。
+    """
+    if table.columns:
+        return
+    logger.warning(
+        "見出しの無い空のファイルを保存しました: 管理番号=%s, 概要=%s"
+        "（USE_BULK=False の SOQL は0件だと列名が取れません）",
+        entry.key,
+        entry.summary,
+    )
 
 
 def _finalize_save(tmp_path: Path, base: Path, entry: ReportEntry) -> Path:

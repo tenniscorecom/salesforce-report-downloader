@@ -19,6 +19,7 @@ __all__ = [
     "SoqlIncompleteError",
     "EmptyReportError",
     "ReportFolderNotFoundError",
+    "OverwriteTimeMissingError",
     "ScheduledDownloadFailedError",
     "SavedFileEmptyError",
     "MasterTableError",
@@ -279,6 +280,31 @@ class ReportFolderNotFoundError(DownloaderError):
         )
 
 
+class OverwriteTimeMissingError(DownloaderError):
+    """管理表の「上書き」が「○」なのに、スケジュールの時刻が両方とも空欄
+
+    「上書き」○ のレポートはファイル名が ``{管理番号}_{HHMM}.csv`` の固定名で、
+    ``HHMM`` はスケジュールの「取得時刻」か「取得開始時刻」から決める。両方が
+    空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
+    **Salesforce へ問い合わせる前に**止める。
+
+    発生箇所: download_scheduled() の `_download()`
+
+    対処:
+        管理表の「スケジュール」シートで、そのレポートの行の「取得時刻」か
+        「取得開始時刻」のどちらかに時刻を書く
+    """
+
+    def __init__(self, report_key: str, schedule_key: str) -> None:
+        super().__init__(
+            "「上書き」が○のレポートは、ファイル名の時刻を決めるために、"
+            "スケジュールの「取得時刻」か「取得開始時刻」が必要です。"
+            "どちらかを書いてください\n"
+            f"管理番号: {report_key}\n"
+            f"スケジュールキー: {schedule_key}"
+        )
+
+
 class ScheduledDownloadFailedError(DownloaderError):
     """定期取得で1件以上が失敗した
 
@@ -308,9 +334,9 @@ class SavedFileEmptyError(DownloaderError):
     保存先（ファイルサーバー）の書き込みは手元でバッファしてから送られるため、
     クォータ不足で中身が捨てられても Python 側ではエラーにならない。
     空のファイルを成功扱いにしないための検査。``DownloaderError`` 系なので
-    ``_failure_row()`` で「Salesforce」区分になる。
+    ``_failure_row()`` で「ファイル」区分になる。
 
-    発生箇所: ``src/service.py`` の ``save_report()``
+    発生箇所: ``src/service/save.py`` の ``save_report()``
 
     対処:
         保存先フォルダの空き容量・クォータが足りているか確認する（古い取得

@@ -10,7 +10,7 @@ set "PYTHONPATH=%PYTHON_LIBRARY%;%PYTHONPATH%"
 
 rem 共有フォルダ（\\サーバー名\...）から起動されても動くよう pushd を使う（cd は UNC 不可）
 pushd "%~dp0"
-python -m comken.credentials gui
+python -m comken cred gui
 if errorlevel 1 pause
 popd
 endlocal

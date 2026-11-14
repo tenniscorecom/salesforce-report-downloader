@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from comken import dry_run
 from comken.core.table import Table
 from comken.exceptions import (
     HistoryLockTimeoutError,
@@ -35,10 +36,13 @@ from src.exceptions import (
     SavedFileEmptyError,
     ScheduledDownloadFailedError,
 )
+from src.history import record
 from src.service import attempt as attempt_module
 from src.service import download_scheduled
 from src.service import save as save_module
-from src.sheets.master import load_master, shared_report_ids
+from src.service import scheduler as scheduler_module
+from src.sheets.master import ReportEntry, load_master, shared_report_ids
+from src.sheets.schedule import ScheduleRule
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
@@ -3583,10 +3587,10 @@ class TestSavedFileEmpty:
     def test_history_records_saved_file_empty_error(self, paths):
         """``download_scheduled()`` 経由で ``_write_csv`` が「空ファイルだけ作る」
         状態にすると、 ``SavedFileEmptyError`` が履歴に記録され、原因区分は
-        「Salesforce」になる。
+        「ファイル」になる。
 
-        ``DownloaderError`` 系なので ``_failure_row()`` 側で「Salesforce」区分に
-        分類される（プログラム扱いにしない）。空のファイルは成功扱いにせず、
+        取得は成功していて保存の直後に落ちるため、``_failure_row()`` 側は
+        「取得成功・保存失敗・ファイル」にする。空のファイルは成功扱いにせず、
         ``ScheduledDownloadFailedError`` で呼び出し側へ失敗が伝わる。
         """
         with (
@@ -3603,13 +3607,14 @@ class TestSavedFileEmpty:
         ):
             download_scheduled()
 
-        # 履歴に失敗が記録される（成行=失敗 / エラーコード=SavedFileEmptyError /
-        # 原因区分=Salesforce）。``DownloaderError`` 系なので ``_failure_row()`` 側で
-        # 「Salesforce」区分に分類される（プログラム扱いにしない）
+        # 履歴に失敗が記録される（成否=失敗 / エラーコード=SavedFileEmptyError /
+        # 原因区分=ファイル）。取得は成功し保存に失敗した扱い
         row = _history_rows(paths)[-1]
         assert row["成否"] == "失敗"
         assert row["エラーコード"] == "SavedFileEmptyError"
-        assert row["原因区分"] == "Salesforce"
+        assert row["原因区分"] == "ファイル"
+        assert row["Salesforce取得結果"] == "成功"
+        assert row["保存結果"] == "失敗"
         # ``save_report()`` の ``except`` 経路で ``unlink`` 済みなので、ファイルは残らない
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert list(summary_dir.glob("1001_*.csv")) == []
@@ -3974,3 +3979,354 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         assert len(start_records) == 1
         assert "経路=ブラウザ" in start_records[0].message
         assert "9003" in start_records[0].message
+
+
+# ── dry-run では履歴に残さない ───────────────────────────────────────────
+class TestDryRunDoesNotWriteHistory:
+    """dry-run で動かした取得は、履歴に「成功」を残さない。
+
+    履歴に残すと、同じ日の本番の取得が「当日取得済」で飛んでしまうため。
+    """
+
+    def test_dry_run_does_not_create_history_file(self, paths):
+        """dry-run では履歴ファイルが作られない。dry-run の外で動かすと取得できる。"""
+        site = fake_salesforce()
+        with patch("src.service.api.site_for", return_value=site):
+            with dry_run():
+                download_scheduled()
+        # 履歴ファイルは作られていない
+        assert not paths["history_path"].exists()
+        # Salesforce への問い合わせ自体は起きている（取得を止めたわけではない）
+        assert site.return_value.__enter__.return_value.report.get.call_count == 1
+
+        # dry-run の外で動かすと、そのレポートが取得される
+        with patch("src.service.api.site_for", return_value=site):
+            saved = download_scheduled()
+        assert [path.name.split("_")[0] for path in saved] == ["1001"]
+        assert paths["history_path"].exists()
+        with CSV(paths["history_path"]) as csv_file:
+            rows = csv_file.read()
+        assert len(rows) == 1
+        assert rows[0]["成否"] == "成功"
+
+    def test_dry_run_does_not_add_row_to_existing_history(self, paths, monkeypatch):
+        """履歴ファイルが既にあるとき、dry-run では行が増えない。
+
+        実行日往前に進めて「当日取得済」に掛からないようにする（掛かると取得に
+        的行かないため、履歴に追記されるか検証できない）。
+        """
+        first_day = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: first_day)
+        site = fake_salesforce()
+        with patch("src.service.api.site_for", return_value=site):
+            download_scheduled()
+        with CSV(paths["history_path"]) as csv_file:
+            before = csv_file.read()
+        assert len(before) == 1
+
+        # 翌日に dry-run で実行する
+        next_day = first_day + dt.timedelta(days=1)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: next_day)
+        with patch("src.service.api.site_for", return_value=site):
+            with dry_run():
+                download_scheduled()
+        with CSV(paths["history_path"]) as csv_file:
+            after = csv_file.read()
+        assert len(after) == 1
+
+
+# ── 同じレポートに複数のスケジュール行があるときの当日取得 ─────────────
+class TestScheduleRowsOfSameReportInOneDay:
+    """同じレポートに複数のスケジュール行があるときの、当日の取得判定。
+
+    9:00 の行と 15:00 の行があるとき、15:05 に 15:00 の行で取得したら、
+    16:05 の実行で 9:00 の行を取り直さない（＝二重取得にならない）。
+    """
+
+    ENTRY = ReportEntry(
+        key="1001",
+        summary="顧客一覧",
+        url=URL_A,
+        group="営業事務グループ",
+        assignee="山田",
+        enabled=True,
+    )
+
+    @staticmethod
+    def _at(hour: int, minute: int, *, day: int = 7) -> dt.datetime:
+        """テスト用に固定した時刻（tz-naive）。"""
+        return dt.datetime(2026, 1, day, hour, minute)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+
+    def _rule(self, schedule_key: str, start_time: dt.time | None) -> ScheduleRule:
+        """取得開始時刻だけ違うスケジュール行を1行作る。"""
+        return ScheduleRule(
+            schedule_key=schedule_key,
+            report_key="1001",
+            frequency="毎日",
+            start_time=start_time,
+            desired_time=None,
+            raw_weekday="",
+            raw_day_of_month="",
+            holiday_policy="取得しない",
+            enabled=True,
+        )
+
+    def _write_history(
+        self,
+        history_path: Path,
+        schedule_key: str,
+        executed_at: dt.datetime,
+        *,
+        succeeded: bool = True,
+    ) -> None:
+        """履歴（実ファイル）に1行書く。成功行でも失敗行でも ``record()`` を使う。"""
+        record(
+            history_path,
+            entry=self.ENTRY,
+            project="定期実行",
+            row=history.HistoryRow(
+                succeeded=succeeded,
+                fetched_from_salesforce=succeeded,
+                saved_to_file=succeeded,
+                file_name="1001_20260107_1505.csv",
+                row_count=1,
+                seconds=1.0,
+                schedule_key=schedule_key,
+            ),
+            executed_at=executed_at,
+            folder=history_path.parent,
+        )
+
+    def _matched(self, rules: dict, current: dt.datetime, history_path: Path):
+        """対象選定の判定結果を返す。"""
+        return scheduler_module._matched_schedule_key(self.ENTRY, rules, current, history_path)
+
+    def test_success_at_later_row_skips_earlier_row(self, tmp_path):
+        """15:00 の行で成功したら、16:05 では 9:00 の行を取り直さない。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        # 15:05 に 15:00 の行（=S_B）で成功した
+        self._write_history(history_path, "S_B", self._at(15, 5))
+        assert self._matched(rules, self._at(16, 5), history_path) == (False, "", "当日取得済")
+
+    def test_success_at_earlier_row_still_fetches_later_row(self, tmp_path):
+        """9:05 に 9:00 の行で成功したら、15:05 は 15:00 の行で取得する。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        self._write_history(history_path, "S_A", self._at(9, 5))
+        assert self._matched(rules, self._at(15, 5), history_path) == (True, "S_B", "")
+
+    def test_failure_at_earlier_row_is_retried(self, tmp_path):
+        """9:05 に 9:00 の行で失敗したら、10:05 は 9:00 の行でもう一度取得する。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        self._write_history(history_path, "S_A", self._at(9, 5), succeeded=False)
+        assert self._matched(rules, self._at(10, 5), history_path) == (True, "S_A", "")
+
+    def test_rows_without_start_time_are_fetched_only_once(self, tmp_path):
+        """取得開始時刻が両方空欄の2行でも、1回成功したらその日はもう取らない。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", None),
+                self._rule("S_B", None),
+            ]
+        }
+        self._write_history(history_path, "S_A", self._at(9, 5))
+        assert self._matched(rules, self._at(16, 5), history_path) == (False, "", "当日取得済")
+
+    def test_next_day_is_fetched_regardless_of_previous_day(self, tmp_path):
+        """翌日は、前日の成功に関係なく取得する。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        self._write_history(history_path, "S_B", self._at(15, 5))
+        assert self._matched(rules, self._at(9, 5, day=8), history_path) == (True, "S_A", "")
+
+
+# ── 「上書き」○ で「取得時刻」が空欄のときのファイル名 ─────────────────
+class TestOverwriteWithoutDesiredTime:
+    """管理表の「上書き」が「○」のとき、スケジュールの「取得時刻」が空欄でも
+    ファイル名の時刻を決められるようにする（「取得開始時刻」を使う）。
+    """
+
+    def _master(
+        self,
+        tmp_path: Path,
+        base_path: Path,
+        *,
+        start_time: str,
+        desired_time: str,
+        overwrite: str = "○",
+    ) -> Path:
+        """「上書き」の指定だけを変えられる管理表（＋スケジュールシート）を作る。"""
+        return make_master_with_schedule(
+            tmp_path / "管理表.xlsx",
+            [
+                [
+                    "1001",
+                    "顧客一覧",
+                    URL_A,
+                    "営業事務グループ",
+                    "山田",
+                    "○",
+                    "",
+                    "",
+                    "",
+                    overwrite,
+                ]
+            ],
+            settings_rows=[["営業事務グループ", str(base_path)]],
+            schedule_rows=[
+                [
+                    "S001",
+                    "1001",
+                    "毎日",
+                    start_time,
+                    desired_time,
+                    "",
+                    "",
+                    "取得しない",
+                    "○",
+                ]
+            ],
+        )
+
+    def test_file_name_uses_start_time_and_is_overwritten(self, tmp_path, monkeypatch):
+        """上書き○・取得時刻空欄・開始時刻 09:00 のとき、実行時刻が違っても
+        同じファイル名（``_0900.csv``）になり、2 回目は上書きされる。"""
+        from src.paths import summary_folder_name
+
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = self._master(tmp_path, base_path, start_time="09:00", desired_time="")
+        _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
+        # 1 回目は 10:05、2 回目は翌日の 18:05。実行時刻は違うがファイル名は同じ
+        first_now = dt.datetime(2026, 1, 7, 10, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: first_now)
+        first_rows = [{"名前": "山田", "金額": "100"}]
+        with patch("src.service.api.site_for", return_value=fake_salesforce(first_rows)):
+            download_scheduled()
+
+        summary_dir = base_path / summary_folder_name("顧客一覧")
+        assert [p.name for p in summary_dir.glob("*.csv")] == ["1001_0900.csv"]
+
+        second_now = dt.datetime(2026, 1, 8, 18, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: second_now)
+        second_rows = [{"名前": "鈴木", "金額": "200"}]
+        with patch("src.service.api.site_for", return_value=fake_salesforce(second_rows)):
+            download_scheduled()
+
+        # 2 回目も同じファイル名（上書きされる）。連番は付かない
+        assert [p.name for p in summary_dir.glob("*.csv")] == ["1001_0900.csv"]
+        # 中身は 2 回目のもの
+        with CSV(summary_dir / "1001_0900.csv", read_only=True) as csv_file:
+            assert csv_file.read().to_rows() == second_rows
+
+    def test_missing_both_times_stops_before_fetch(self, tmp_path, monkeypatch):
+        """「取得時刻」も「取得開始時刻」も空欄なら、Salesforce へ問い合わせずに
+        履歴へ「設定」の失敗として残す。"""
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = self._master(tmp_path, base_path, start_time="", desired_time="")
+        history_path = tmp_path / "履歴.csv"
+        _patch_master_path(monkeypatch, master, history_path)
+
+        site = fake_salesforce()
+        with (
+            patch("src.service.api.site_for", return_value=site),
+            pytest.raises(ScheduledDownloadFailedError),
+        ):
+            download_scheduled()
+
+        # Salesforce へは問い合わせない
+        assert site.return_value.__enter__.return_value.report.get.call_count == 0
+        # ファイルも作らない
+        assert list(base_path.rglob("*.csv")) == []
+        # 履歴には「設定」の失敗が残る
+        with CSV(history_path) as csv_file:
+            rows = csv_file.read()
+        assert len(rows) == 1
+        assert rows[0]["成否"] == "失敗"
+        assert rows[0]["原因区分"] == "設定"
+        assert rows[0]["エラーコード"] == "OverwriteTimeMissingError"
+
+    def test_overwrite_false_keeps_execution_time_in_file_name(self, tmp_path, monkeypatch):
+        """上書き× は今までどおり。「取得時刻」が空欄なら実行時刻がファイル名に入る
+        （「取得開始時刻」は使わない）。"""
+        from src.paths import summary_folder_name
+
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = self._master(
+            tmp_path, base_path, start_time="09:00", desired_time="", overwrite="×"
+        )
+        _patch_master_path(monkeypatch, master, tmp_path / "履歴.csv")
+        now = dt.datetime(2026, 1, 7, 10, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: now)
+
+        with patch("src.service.api.site_for", return_value=fake_salesforce()):
+            download_scheduled()
+
+        summary_dir = base_path / summary_folder_name("顧客一覧")
+        assert [p.name for p in summary_dir.glob("*.csv")] == ["1001_20260107_1005.csv"]
+
+    def test_check_reports_missing_overwrite_time(self, tmp_path, capsys):
+        """``check`` が同じ組み合わせを相互参照エラーとして出す。"""
+        base_path = tmp_path / "ベース"
+        base_path.mkdir()
+        master = self._master(tmp_path, base_path, start_time="", desired_time="")
+
+        assert cli(["check", str(master)]) == 1
+        err = capsys.readouterr().err
+        assert "上書き" in err
+        assert "S001" in err
+
+
+# ── 列の無い表（0 件かつ列名も取れない）の保存 ─────────────────────────
+class TestSaveTableWithoutColumns:
+    """列の無い表を保存したときの警告。"""
+
+    def test_saves_empty_file_and_warns(self, paths, caplog):
+        """列なし0件・0件あり○ で保存すると成功し、WARNING が出る。
+
+        列名を得る手段が無いので動きは変えない（見出しの無い 0 バイトの
+        ファイルになる）。気づけるように警告だけ残す。
+        """
+        from dataclasses import replace
+
+        entry = replace(load_master(paths["master_path"])["1001"], allow_empty=True)
+        table = Table([], [])  # 列も行も無い（USE_BULK=False の SOQL が0件の状態）
+        fixed_now = dt.datetime(2026, 9, 18, 9, 5)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+
+        with caplog.at_level(logging.WARNING, logger="src.service"):
+            saved = save_module.save_report(entry, table, current=fixed_now)
+
+        # 見出しの無い 0 バイトのファイルになる（保存は成功する）
+        assert saved.exists()
+        assert saved.stat().st_size == 0
+        # WARNING が 1 行出る（管理番号と概要を含む）
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "見出しの無い空のファイルを保存しました" in warnings[0].message
+        assert "1001" in warnings[0].message
+        assert "顧客一覧" in warnings[0].message

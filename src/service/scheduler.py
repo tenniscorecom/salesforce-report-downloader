@@ -61,13 +61,15 @@ def _matched_schedule_key(
     - スケジュール行が無いレポートは取得しない（``(False, "", "")`` を返す）。
       「スケジュール」シートに紐付かないレポートは黙って取らない（気づけるよう、
       ``select_targets()`` 側で 1 実行 1 回のログを出す）
-    - スケジュール行がある場合、いずれかの行が ``is_due()`` True で、かつ
-      ``schedule_succeeded_today()`` が False（=今日まだ成功していない）なら取得。
-      複数の行が True を返す場合は取得時刻が一番遅い行のキーを採用（それより早い
-      時刻の行は無視する）。``start_time is None`` の行は最も早い扱いとし、具体的な
-      時刻を持つ行がある限りそちらを優先する
+    - **その日すでに成功した行のうち「取得開始時刻」が一番遅い行**を基準行とする。
+      基準行以下の取得開始時刻を持つ行は「取得済み」とみなす（その時刻までに
+      取得できる分は揃っているため）。``start_time`` が空欄の行は
+      ``dt.time.min`` として扱う
+    - 取得するのは「時刻を過ぎていて」「その日まだ成功しておらず」「取得済みでは
+      ない」行があるときだけで、その中の一番遅い行のキーを採用する
     - いずれの行も ``is_due()`` False なら ``(False, "", "予定外")``
-    - いずれかの行が ``is_due()`` True でも、今日すでに成功済みなら ``(False, "", "当日取得済")``
+    - 時刻を過ぎた行は残っていても取得対象が無くなった場合は
+      ``(False, "", "当日取得済")``
 
     祝日判定は ``ScheduleRule.is_due()`` が ``comken.core.dates`` の統一
     カレンダーを直接見るため、呼び出し側でカレンダーを用意する必要はない。
@@ -87,17 +89,17 @@ def _matched_schedule_key(
     # 2 回ずつ走らせていた
     rules = rules_by_report.get(entry.key, ())
     due_rules: list[ScheduleRule] = [rule for rule in rules if rule.is_due(current)]
-    due_and_unsucceeded = [
+    succeeded = _succeeded_schedule_keys(rules, history_path, current)
+    done = _done_schedule_keys(rules, succeeded)
+    candidates = [
         rule
         for rule in due_rules
-        if not history.schedule_succeeded_today(
-            history_path, rule.schedule_key, date=current.date()
-        )
+        if rule.schedule_key not in succeeded and rule.schedule_key not in done
     ]
-    if due_and_unsucceeded:
+    if candidates:
         # ``start_time is None`` の行は具体的な時刻より優先度が低い（時刻条件なしの行で
         # 取得すると、後の時刻の行を再評価する余地がなくなるため）。
-        latest = max(due_and_unsucceeded, key=lambda rule: rule.start_time or dt.time.min)
+        latest = max(candidates, key=lambda rule: rule.start_time or dt.time.min)
         return True, latest.schedule_key, ""
     # 取らない理由を「予定外」と「当日取得済」に分ける。後者は is_due は真だが
     # 同日内に既に成功履歴があるケースで、再実行で黙って取られなくなる事故の兆候を
@@ -105,6 +107,42 @@ def _matched_schedule_key(
     if due_rules:
         return False, "", "当日取得済"
     return False, "", "予定外"
+
+
+def _succeeded_schedule_keys(
+    rules: tuple[ScheduleRule, ...] | list[ScheduleRule],
+    history_path,
+    current: dt.datetime,
+) -> set[str]:
+    """その日すでに成功したスケジュール行のキーを集める。
+
+    履歴（実ファイル）を見るので、判定材料は履歴に残っている「成功」だけ。
+    失敗した行は成功扱いにしない（失敗は取り直す対象）。
+    """
+    return {
+        rule.schedule_key
+        for rule in rules
+        if history.schedule_succeeded_today(history_path, rule.schedule_key, date=current.date())
+    }
+
+
+def _done_schedule_keys(
+    rules: tuple[ScheduleRule, ...] | list[ScheduleRule],
+    succeeded: set[str],
+) -> set[str]:
+    """取得済みとみなすスケジュール行のキーを集める。
+
+    その日すでに成功した行のうち **取得開始時刻が一番遅い行**を基準行とし、
+    基準行以下の取得開始時刻を持つ行を「取得済み」とみなす。取得開始時刻が
+    空欄の行は ``dt.time.min`` として扱う（最も早い扱い）。
+    """
+    latest = max(
+        (rule.start_time or dt.time.min for rule in rules if rule.schedule_key in succeeded),
+        default=None,
+    )
+    if latest is None:
+        return set()
+    return {rule.schedule_key for rule in rules if (rule.start_time or dt.time.min) <= latest}
 
 
 def select_targets(

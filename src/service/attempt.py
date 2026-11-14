@@ -32,10 +32,19 @@ from comken.services.salesforce_downloader.history_file_lock import HistoryFileL
 
 from src import paths
 from src.exceptions import (
+    ColumnNamesCSVFormatError,
     EmptyReportError,
+    GroupNotRegisteredError,
+    OverwriteTimeMissingError,
     ReportFolderNotFoundError,
     ReportNotRegisteredError,
+    SavedFileEmptyError,
     ScheduledDownloadFailedError,
+    SoqlColumnNameConflictError,
+    SoqlCountMismatchError,
+    SoqlIncompleteError,
+    SoqlReportNotRegisteredError,
+    SoqlTransformError,
 )
 from src.history import record, resolved_folder
 from src.service._utils import history_path
@@ -53,12 +62,42 @@ from src.sheets.schedule import ScheduleRule, load_schedule
 logger = logging.getLogger("src.service")
 
 # 履歴の「原因区分」列に出す5値。抽象クラス名ではなく誰が直すかで分ける
-# （設計判断は docs/開発/仕様書.md 4.28 参照）
 CAUSE_CONFIG = "設定"
 CAUSE_SALESFORCE = "Salesforce"
 CAUSE_EMPTY_DATA = "データなし"
 CAUSE_FILE = "ファイル"
 CAUSE_PROGRAM = "プログラム"
+
+# 失敗の例外型 → (Salesforce取得結果, 保存結果, 原因区分) の対応表。
+# **上から順に判定し、最初に一致した行を使う。**
+# 「Salesforce取得結果」「保存結果」は ``True``（成功）/ ``False``（失敗）/
+# ``None``（その段階まで到達しなかった）を表す。
+_FAILURE_STAGES: tuple[
+    tuple[tuple[type[BaseException], ...], bool | None, bool | None, str], ...
+] = (
+    # 取得段階に入らない設定の誤り（保存先フォルダ・グループ・SOQL の登録・
+    # 未完成の印・上書き○の時刻）
+    (
+        (
+            ReportFolderNotFoundError,
+            GroupNotRegisteredError,
+            SoqlReportNotRegisteredError,
+            SoqlIncompleteError,
+            OverwriteTimeMissingError,
+        ),
+        None,
+        None,
+        CAUSE_CONFIG,
+    ),
+    # 取得は終わったが、列名（見出し）に問題が起きた。取得自体は成功している
+    ((SoqlColumnNameConflictError, ColumnNamesCSVFormatError), True, None, CAUSE_CONFIG),
+    # 取得は終わったが、SOQL の加工で問題が起きた。取得自体は成功している
+    ((SoqlCountMismatchError, SoqlTransformError), True, None, CAUSE_PROGRAM),
+    # 取得は成功したが 0 件
+    ((EmptyReportError,), True, None, CAUSE_EMPTY_DATA),
+    # 取得も保存も終わったが、ファイルが 0 バイトだった
+    ((SavedFileEmptyError,), True, False, CAUSE_FILE),
+)
 
 
 def _history_path() -> Path:
@@ -190,7 +229,8 @@ def _download_scheduled_locked(
 
     run_started = time.perf_counter()
     targets, skipped = _select_and_log_targets(entries, rules_by_report, current)
-    # 1 件ごとの理由は DEBUG（障害調査時に ``--log-level=DEBUG`` で見る）
+    # 1 件ごとの理由は DEBUG（障害調査時は main.py のコメントにある ``with debug():``
+    # を使って見る）
     _log_skipped_details(skipped)
     # ブラウザ経由の行と、それ以外の行を分ける。どちらを取るかは
     # ``fetch_browser`` の有無だけで決まる
@@ -262,7 +302,8 @@ def _select_and_log_targets(
 def _log_skipped_details(skipped: dict[str, list[str]]) -> None:
     """対象外になった理由を DEBUG で 1 件ずつ出す。
 
-    既定では INFO だけ。障害調査時に ``--log-level=DEBUG`` で「なぜ対象外か」を追える。
+    既定では INFO だけ。障害調査時は ``main.py`` のコメントにある ``with debug():``
+    を使って「なぜ対象外か」を追える。
     """
     for key in skipped["有効×"]:
         logger.debug("対象外: 管理番号=%s, 理由=有効×", key)
@@ -346,6 +387,9 @@ def _execute_each_target(
                     schedule_key,
                     schedule_run_time=(
                         schedule_rule.desired_time if schedule_rule is not None else None
+                    ),
+                    schedule_start_time=(
+                        schedule_rule.start_time if schedule_rule is not None else None
                     ),
                     filters=filters_by_report.get(entry.key),
                     current=current,
@@ -506,6 +550,7 @@ def _download(
     schedule_key: str = "",
     *,
     schedule_run_time: dt.time | None = None,
+    schedule_start_time: dt.time | None = None,
     filters: list[dict] | None = None,
     current: dt.datetime,
     fetch_browser: Callable[[ReportEntry], Table] | None = None,
@@ -513,8 +558,9 @@ def _download(
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
-    ``schedule_run_time`` は出力ファイル名にスケジュール時刻を埋め込むために
-    ``save_report()`` まで運ぶ（``select_targets()`` が必ず渡す）。
+    ``schedule_run_time`` はスケジュール行の「取得時刻」（記録用の希望時刻）、
+    ``schedule_start_time`` は「取得開始時刻」。出力ファイル名に埋め込む時刻は
+    ``_resolve_run_time()`` が決める（``save_report()`` まで運ぶ）。
 
     ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``。
     ``save_report()`` 経由でファイル名に、``_Attempt`` 経由で履歴の「実行日時」に渡す。
@@ -537,14 +583,45 @@ def _download(
         # 「取得 → 保存」を順に呼ぶ。取得と保存のどちらで失敗しても、
         # 下の except で 1 か所に履歴に残す
         _log_fetch_start(entry, route, progress)
+        # ファイル名に使う時刻を決める。「上書き」○ で時刻が両方とも空欄なら
+        # ここで止める（Salesforce へは問い合わせない）
+        run_time = _resolve_run_time(entry, schedule_run_time, schedule_start_time, schedule_key)
         require_folder(entry)
         route, table = fetch_report(entry, filters, fetch_browser=fetch_browser)
-        path = save_report(entry, table, schedule_run_time=schedule_run_time, current=current)
+        path = save_report(entry, table, schedule_run_time=run_time, current=current)
     except Exception as exc:
         _record_failure_safely(attempt, exc, route, history_path)
         raise
     attempt.record_success(path, table, route=route)
     return path
+
+
+def _resolve_run_time(
+    entry: ReportEntry,
+    desired_time: dt.time | None,
+    start_time: dt.time | None,
+    schedule_key: str,
+) -> dt.time | None:
+    """出力ファイル名に埋め込む時刻（``HHMM``）を決める。
+
+    - **「上書き」×**: スケジュールの「取得時刻」（記録用の希望時刻）をそのまま
+      使う。空欄なら ``None`` を返し、``output_path()`` 側で実行時刻に
+      フォールバックさせる（従来の動き）
+    - **「上書き」○**: 「取得時刻」が空欄なら「取得開始時刻」を使う。両方が
+      空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
+      ``OverwriteTimeMissingError`` で取得前に止める
+
+    Raises:
+        OverwriteTimeMissingError: 「上書き」○ で「取得時刻」も「取得開始時刻」も
+            空欄のとき。
+    """
+    if not entry.overwrite:
+        return desired_time
+    if desired_time is not None:
+        return desired_time
+    if start_time is not None:
+        return start_time
+    raise OverwriteTimeMissingError(entry.key, schedule_key)
 
 
 def _record_failure_safely(
@@ -578,31 +655,31 @@ def _failure_row(
     """失敗時の履歴1行を、**例外の型だけから**組み立てる。
 
     `fetched` / `saved` は `_download()` の何処で失敗したかを例外で判別する。
-    判定順（狭い条件から評価）:
+    判定は ``_FAILURE_STAGES`` の対応表（**上から順に判定する**）と、
+    表に無い例外の次の3つで決める。
 
-    1. `ReportFolderNotFoundError` → 取得段階の前（保存先フォルダ検査で停止）
-    2. `EmptyReportError` → 取得は成功、保存は未到達
-    3. `OSError` → 保存段階（書き込み・権限・共有サーバー断）
-    4. その他の `ComkenError` → 取得段階（Salesforce 通信と認証）
-    5. それ以外 → プログラム（想定外）
+    1. 表の1行目: 取得段階の前（保存先フォルダ・グループ・SOQL の登録・
+       未完成の印・上書き○の時刻）→ 取得も保存も未到達・設定
+    2. 表の2行目: 取得は終わったが列名に問題が起きた → 取得成功・保存未到達・設定
+    3. 表の3行目: 取得は終わったが SOQL の加工で問題が起きた
+       → 取得成功・保存未到達・プログラム
+    4. 表の4行目: 取得は成功したが 0 件 → 取得成功・保存未到達・データなし
+    5. 表の5行目: 保存は終わったがファイルが 0 バイト
+       → 取得成功・保存失敗・ファイル
+    6. `OSError` → 保存段階（書き込み・権限・共有サーバー断）
+       → 取得成功・保存失敗・ファイル
+    7. その他の `ComkenError` → 取得段階（Salesforce 通信と認証）
+       → 取得失敗・保存未到達・Salesforce
+    8. それ以外 → 取得失敗・保存未到達・プログラム（想定外）
 
-    4. は `download_scheduled()` が捕捉する範囲と一致させている。
+    7. は `download_scheduled()` が捕捉する範囲と一致させている。
 
     `schedule_key` は履歴の「スケジュールキー」列へ書く（`record_success()` と対称）。
 
     `route` は取得経路（``ROUTE_API`` / ``ROUTE_SOQL`` / ``ROUTE_BROWSER``）。
     例外の型から判別できないので、``_download()`` が確定した値をキーワード引数で受ける。
     """
-    if isinstance(exc, ReportFolderNotFoundError):
-        fetched, saved, cause = None, None, CAUSE_CONFIG
-    elif isinstance(exc, EmptyReportError):
-        fetched, saved, cause = True, None, CAUSE_EMPTY_DATA
-    elif isinstance(exc, OSError):
-        fetched, saved, cause = True, False, CAUSE_FILE
-    elif isinstance(exc, ComkenError):
-        fetched, saved, cause = False, None, CAUSE_SALESFORCE
-    else:
-        fetched, saved, cause = False, None, CAUSE_PROGRAM
+    fetched, saved, cause = _failure_stage(exc)
     return HistoryRow(
         succeeded=False,
         fetched_from_salesforce=fetched,
@@ -614,3 +691,24 @@ def _failure_row(
         schedule_key=schedule_key,
         route=route,
     )
+
+
+def _failure_stage(exc: BaseException) -> tuple[bool | None, bool | None, str]:
+    """例外から ``(Salesforce取得結果, 保存結果, 原因区分)`` を求める。
+
+    ``_FAILURE_STAGES`` の対応表を上から順に当たり、最初に一致した行の
+    値を返す。表に無い例外は、``OSError`` → ファイル、その他の ``ComkenError``
+    → Salesforce、それ以外 → プログラムで決める。
+
+    Returns:
+        ``(Salesforce取得結果, 保存結果, 原因区分)``。取得結果・保存結果は
+        ``True``（成功）/ ``False``（失敗）/ ``None``（未到達）。
+    """
+    for exception_types, fetched, saved, cause in _FAILURE_STAGES:
+        if isinstance(exc, exception_types):
+            return fetched, saved, cause
+    if isinstance(exc, OSError):
+        return True, False, CAUSE_FILE
+    if isinstance(exc, ComkenError):
+        return False, None, CAUSE_SALESFORCE
+    return False, None, CAUSE_PROGRAM
