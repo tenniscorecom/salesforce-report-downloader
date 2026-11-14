@@ -62,7 +62,6 @@ from src.sheets.schedule import ScheduleRule, load_schedule
 logger = logging.getLogger("src.service")
 
 # 履歴の「原因区分」列に出す5値。抽象クラス名ではなく誰が直すかで分ける
-# （設計判断は docs/開発/仕様書.md 4.28 参照）
 CAUSE_CONFIG = "設定"
 CAUSE_SALESFORCE = "Salesforce"
 CAUSE_EMPTY_DATA = "データなし"
@@ -230,7 +229,8 @@ def _download_scheduled_locked(
 
     run_started = time.perf_counter()
     targets, skipped = _select_and_log_targets(entries, rules_by_report, current)
-    # 1 件ごとの理由は DEBUG（障害調査時に ``--log-level=DEBUG`` で見る）
+    # 1 件ごとの理由は DEBUG（障害調査時は main.py のコメントにある ``with debug():``
+    # を使って見る）
     _log_skipped_details(skipped)
     # ブラウザ経由の行と、それ以外の行を分ける。どちらを取るかは
     # ``fetch_browser`` の有無だけで決まる
@@ -302,7 +302,8 @@ def _select_and_log_targets(
 def _log_skipped_details(skipped: dict[str, list[str]]) -> None:
     """対象外になった理由を DEBUG で 1 件ずつ出す。
 
-    既定では INFO だけ。障害調査時に ``--log-level=DEBUG`` で「なぜ対象外か」を追える。
+    既定では INFO だけ。障害調査時は ``main.py`` のコメントにある ``with debug():``
+    を使って「なぜ対象外か」を追える。
     """
     for key in skipped["有効×"]:
         logger.debug("対象外: 管理番号=%s, 理由=有効×", key)

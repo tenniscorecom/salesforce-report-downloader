@@ -127,7 +127,7 @@ flowchart TD
 ### 1. 起動と排他
 
 1. `main.py` が `run()` を呼び、`run()` が `download_scheduled("Salesforceレポートダウンローダー")` を呼ぶ。
-2. 最初に**実行ロック**（`ダウンロード履歴.csv.run`）を取る。取れなければ別の実行が進行中なので、
+2. 最初に**実行ロック**（`ダウンロード履歴.csv.run.lock`）を取る。取れなければ別の実行が進行中なので、
    **警告ログだけ出して正常終了**する（失敗扱いにすると RPA 基盤に誤報が飛ぶため）。
    進行中の実行が今回の分も担当するので、次の呼び出しで追従できる。
 3. この実行の**基準日時を最初に1回だけ固定**し、スケジュール判定・保存ファイル名・履歴の「実行日時」の
@@ -135,7 +135,7 @@ flowchart TD
 
 ### 2. 読み込みと対象選び
 
-1. 管理表（`レポート管理表.xlsx`）の「レポート」シート、「スケジュール」シート、設定シート（グループ → 保存先のベース）を読む。
+1. 管理表（`レポート管理表.xlsx`）の「管理表」シート、「スケジュール」シート、設定シート（グループ → 保存先のベース）を読む。
 2. 「有効」が `○` のレポートそれぞれについて、**今取るべきか**を判定する。
 
 | 管理表の状態 | 取る条件 |
@@ -310,10 +310,10 @@ python -m comken sf check
 
 ### 3. 管理表を用意する
 
-**管理表（Excel）は非エンジニアが手動で用意・編集する。** ライブラリ側は雛形を
-自動生成する `init` コマンドを提供していない。雛形が必要な場合は、
-`Salesforceレポートダウンローダー` リポジトリ側（`src/template_writer.py`）
-の関数（`create_combined_workbook()` など）を Python から直接呼んで作成する
+**管理表（Excel）は非エンジニアが手動で用意・編集する。** 雛形は
+`python -m src.cli init` で生成できる（保存先に既にファイルがある場合は上書き
+しない）。Python から直接作る場合は `Salesforceレポートダウンローダー` リポジトリ側
+（`src/template_writer.py`）の関数（`create_combined_workbook()` など）を呼んで作成する
 （サンプルは [管理表（master_table）](master-table.md) を参照）。
 
 管理表の1行目（見出し）は次のとおり。各列の意味は「記入方法」シートを用意するなら
@@ -531,7 +531,8 @@ Excel の数式 (VLOOKUP 等) で組み立てる案も検討したが、openpyxl
 | **グループ** | 社内のグループ名・部署名。管理表の「グループ」列と一致させる。同じ名前は1行しか登録できない（重複は `MasterTableError`） |
 | **ベースURL** | そのグループの出力先の起点パス。出力ファイルはこのベースパスの下の、概要の名前のフォルダに置かれる |
 
-設定シートは雛形自動生成の対象外（手で追加する運用）。列の宣言は
+設定シートも雛形自動生成の対象（`python -m src.cli init` で「管理表」「スケジュール」
+「設定」の3シートと「記入方法」シートが1ブックに作られる）。列の宣言は
 `src/sheets/group_settings.py` にある。
 
 シート名は `設定`。「管理表」「スケジュール」と同じく、実際に Excel 上へ作られる
@@ -862,9 +863,10 @@ comken 側に置くのは、そのプロジェクトが従う**管理表・履�
 運用では `load_schedule()` 経由で読むのが基本:
 
 ```python
+from src.paths import MASTER_PATH
 from src.sheets.schedule import load_schedule
 
-rules = load_schedule()  # 引数なしなら MASTER_PATH を自動で読む
+rules = load_schedule(MASTER_PATH)  # パスは必須（管理表と同じブックを読む）
 for rule in rules:
     print(rule.schedule_key, rule.report_key, rule.frequency)
 ```
@@ -1050,7 +1052,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 
 **2026-10 に `soql-collector` の出力形式を「全体で 1 ファイル」に変更した。**
 `soql-collector` の出力先（`OUTPUT_DIR`）を
-[`COLUMN_NAMES_CSV_PATH`](../../sfdl-autocol/src/paths.py)（既定
+[`COLUMN_NAMES_CSV_PATH`](../src/paths.py)（既定
 `\\server\share\tools\salesforce\soql-collector\列名の対応.csv`）
 のフォルダに合わせておけば、 `COLUMN_NAMES` を 1 つも書かなくても見出しが
 置き換わる。 新形式は **(主オブジェクト, SOQL列名) をキーに表示名を引く**形

@@ -45,8 +45,7 @@ class GroupSetting(MasterRow):
     base_path: Path = column(
         "ベースURL",
         help="このグループの出力先の起点パス（例: \\\\server\\share\\営業本部）。"
-        "出力ファイルはこのベースパスの直下に置きます"
-        "（`provider.report_folder()` の戻り値をそのまま保存先フォルダとして使う）",
+        "出力ファイルは「このパスの下に概要名のフォルダを足した場所」に置きます",
     )
 
 

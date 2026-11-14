@@ -40,7 +40,7 @@ if __name__ == "__main__":
     try:
         main()
     except ComkenError as e:
-        # comken のエラーはメッセージに対処法が入っている（docs/ERRORS.md も参照）
+        # comken のエラーはメッセージに対処法が入っている
         logger.error("処理を中断しました: %s", e)
         raise
     except Exception:
@@ -53,7 +53,7 @@ if __name__ == "__main__":
 # comken_logger.setup_local_logging() は呼ばない（呼んでも二重設定にはならないが、
 # 基盤の設定が正になる）。
 #
-#     from comken.toolbox.rpa import backoffice   # イントラネットのツールなら intranet に変える
+#     from comken.run import backoffice   # イントラネットのツールなら intranet に変える
 #
 #     PROJECT_NAME = "Salesforceレポートダウンローダー"   # 基盤へ渡す名前。ログの識別に使われる
 #

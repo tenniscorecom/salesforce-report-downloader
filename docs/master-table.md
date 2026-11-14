@@ -58,7 +58,7 @@ for item in Item.load():  # 読む（型変換・検証込み）
 テーブル名も同様に `PY_T_` が前置される。**Python 側のコードや `SHEET_NAME` の
 宣言、このドキュメントの記述はすべて生の名前（プレフィックス無し）で書けばよく、
 プレフィックスの付け外しはライブラリ側が両方向で自動的に行う**（詳細は
-[Excel（excel）](excel.md) を参照）。
+`comken.toolbox.excel.Excel` の仕様を参照）。
 
 ---
 
@@ -185,5 +185,5 @@ ReportEntry.headers()  # → ["ID", "概要", "Salesforce URL", ...]（宣言順
 ## 使っているところ
 
 - [Salesforce レポートの集約取得](salesforce-downloader.md) — `ReportEntry` が
-  管理表（ID / グループ名 / 担当者 / 概要 / 個人情報 / Salesforce URL / 保存先 / 有効 / 0件あり / 2000件超 / SOQL / RPA使用 / 集計形式 / 上書き）を宣言している
+  管理表（ID / グループ名 / 担当者 / 概要 / 個人情報 / Salesforce URL / 有効 / 0件あり / 2000件超 / SOQL / RPA使用 / 集計形式 / 上書き）を宣言している
 
