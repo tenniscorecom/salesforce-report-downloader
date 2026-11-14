@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from comken import dry_run
 from comken.core.table import Table
 from comken.exceptions import (
     HistoryLockTimeoutError,
@@ -3974,3 +3975,57 @@ class TestFetchStartLogEmittedBeforeSalesforceContact:
         assert len(start_records) == 1
         assert "経路=ブラウザ" in start_records[0].message
         assert "9003" in start_records[0].message
+
+
+# ── dry-run では履歴に残さない ───────────────────────────────────────────
+class TestDryRunDoesNotWriteHistory:
+    """dry-run で動かした取得は、履歴に「成功」を残さない。
+
+    履歴に残すと、同じ日の本番の取得が「当日取得済」で飛んでしまうため。
+    """
+
+    def test_dry_run_does_not_create_history_file(self, paths):
+        """dry-run では履歴ファイルが作られない。dry-run の外で動かすと取得できる。"""
+        site = fake_salesforce()
+        with patch("src.service.api.site_for", return_value=site):
+            with dry_run():
+                download_scheduled()
+        # 履歴ファイルは作られていない
+        assert not paths["history_path"].exists()
+        # Salesforce への問い合わせ自体は起きている（取得を止めたわけではない）
+        assert site.return_value.__enter__.return_value.report.get.call_count == 1
+
+        # dry-run の外で動かすと、そのレポートが取得される
+        with patch("src.service.api.site_for", return_value=site):
+            saved = download_scheduled()
+        assert [path.name.split("_")[0] for path in saved] == ["1001"]
+        assert paths["history_path"].exists()
+        with CSV(paths["history_path"]) as csv_file:
+            rows = csv_file.read()
+        assert len(rows) == 1
+        assert rows[0]["成否"] == "成功"
+
+    def test_dry_run_does_not_add_row_to_existing_history(self, paths, monkeypatch):
+        """履歴ファイルが既にあるとき、dry-run では行が増えない。
+
+        実行日往前に進めて「当日取得済」に掛からないようにする（掛かると取得に
+        的行かないため、履歴に追記されるか検証できない）。
+        """
+        first_day = dt.datetime(2026, 1, 7, 12, 0)  # noqa: DTZ001
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: first_day)
+        site = fake_salesforce()
+        with patch("src.service.api.site_for", return_value=site):
+            download_scheduled()
+        with CSV(paths["history_path"]) as csv_file:
+            before = csv_file.read()
+        assert len(before) == 1
+
+        # 翌日に dry-run で実行する
+        next_day = first_day + dt.timedelta(days=1)
+        monkeypatch.setattr(attempt_module, "clock_now", lambda: next_day)
+        with patch("src.service.api.site_for", return_value=site):
+            with dry_run():
+                download_scheduled()
+        with CSV(paths["history_path"]) as csv_file:
+            after = csv_file.read()
+        assert len(after) == 1

@@ -13,6 +13,7 @@ import datetime as dt
 import logging
 from pathlib import Path
 
+from comken.runtime import is_dry_run
 from comken.services.salesforce_downloader.history import (
     COLUMNS,
     FAILURE,
@@ -46,6 +47,9 @@ def record(
     「取得経路」列は、呼び出し側が ``row.route`` に明示していればそれを、無ければ
     ``_route_of(entry)`` で「SOQL」「2000件超」列から決める。
 
+    **dry-run のときは何も書かない。** 成功でも失敗でも、INFO ログを1行出して戻る。
+    履歴に「成功」が残ると、同じ日の本番の取得が「当日取得済」で飛んでしまうため。
+
     Args:
         path: 履歴 CSV のパス。
         entry: 管理表1行。管理番号・概要・レポートID・URLはこの中身を履歴に出す。
@@ -58,6 +62,15 @@ def record(
             （``ベース/概要``）を渡す。ファイル未保存のケースでは ``resolved_folder()`` が
             作った ``(保存先を組み立てられません: ...)`` 文字列を渡す。
     """
+    if is_dry_run():
+        # dry-run は副作用を出さない契約。履歴も残さない（残すと本番の取得が
+        # 「当日取得済」で飛ぶため）
+        logger.info(
+            "dry-run のため履歴に書きません: 管理番号=%s, 成否=%s",
+            entry.key,
+            SUCCESS if row.succeeded else FAILURE,
+        )
+        return
     path = Path(path)
     logger.debug(
         "履歴追記開始: path=%s, 管理番号=%s, schedule_key=%s, project=%s",
