@@ -334,9 +334,9 @@ class SavedFileEmptyError(DownloaderError):
     保存先（ファイルサーバー）の書き込みは手元でバッファしてから送られるため、
     クォータ不足で中身が捨てられても Python 側ではエラーにならない。
     空のファイルを成功扱いにしないための検査。``DownloaderError`` 系なので
-    ``_failure_row()`` で「Salesforce」区分になる。
+    ``_failure_row()`` で「ファイル」区分になる。
 
-    発生箇所: ``src/service.py`` の ``save_report()``
+    発生箇所: ``src/service/save.py`` の ``save_report()``
 
     対処:
         保存先フォルダの空き容量・クォータが足りているか確認する（古い取得

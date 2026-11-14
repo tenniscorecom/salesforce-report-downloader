@@ -271,12 +271,13 @@ class TestDownloadScheduledTransformFailure:
         assert row_1001["成否"] == "成功"
         assert row_1001["保存結果"] == "成功"
 
-        # ``1002`` は失敗（SoqlTransformError）
+        # ``1002`` は失敗（SoqlTransformError）。取得は成功しているので
+        # 原因区分は「プログラム」
         row_1002 = history_rows[1]
         assert row_1002["管理番号"] == "1002"
         assert row_1002["成否"] == "失敗"
         assert row_1002["エラーコード"] == "SoqlTransformError"
-        assert row_1002["原因区分"] == "Salesforce"
+        assert row_1002["原因区分"] == "プログラム"
 
         # ``1001`` のファイルは残っている
         summary_dir = paths_two_reports["base_path"] / "レポートA"
@@ -396,7 +397,8 @@ class TestDownloadScheduledIncompleteSoql:
         assert row_1002["管理番号"] == "1002"
         assert row_1002["成否"] == "失敗"
         assert row_1002["エラーコード"] == "SoqlIncompleteError"
-        assert row_1002["原因区分"] == "Salesforce"
+        # Salesforce へ問い合わせる前に止まるので、原因区分は「設定」
+        assert row_1002["原因区分"] == "設定"
 
         # ``1001`` のファイルは残っている
         summary_dir = paths_two_reports["base_path"] / "レポートA"

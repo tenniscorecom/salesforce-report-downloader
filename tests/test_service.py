@@ -3587,10 +3587,10 @@ class TestSavedFileEmpty:
     def test_history_records_saved_file_empty_error(self, paths):
         """``download_scheduled()`` 経由で ``_write_csv`` が「空ファイルだけ作る」
         状態にすると、 ``SavedFileEmptyError`` が履歴に記録され、原因区分は
-        「Salesforce」になる。
+        「ファイル」になる。
 
-        ``DownloaderError`` 系なので ``_failure_row()`` 側で「Salesforce」区分に
-        分類される（プログラム扱いにしない）。空のファイルは成功扱いにせず、
+        取得は成功していて保存の直後に落ちるため、``_failure_row()`` 側は
+        「取得成功・保存失敗・ファイル」にする。空のファイルは成功扱いにせず、
         ``ScheduledDownloadFailedError`` で呼び出し側へ失敗が伝わる。
         """
         with (
@@ -3607,13 +3607,14 @@ class TestSavedFileEmpty:
         ):
             download_scheduled()
 
-        # 履歴に失敗が記録される（成行=失敗 / エラーコード=SavedFileEmptyError /
-        # 原因区分=Salesforce）。``DownloaderError`` 系なので ``_failure_row()`` 側で
-        # 「Salesforce」区分に分類される（プログラム扱いにしない）
+        # 履歴に失敗が記録される（成否=失敗 / エラーコード=SavedFileEmptyError /
+        # 原因区分=ファイル）。取得は成功し保存に失敗した扱い
         row = _history_rows(paths)[-1]
         assert row["成否"] == "失敗"
         assert row["エラーコード"] == "SavedFileEmptyError"
-        assert row["原因区分"] == "Salesforce"
+        assert row["原因区分"] == "ファイル"
+        assert row["Salesforce取得結果"] == "成功"
+        assert row["保存結果"] == "失敗"
         # ``save_report()`` の ``except`` 経路で ``unlink`` 済みなので、ファイルは残らない
         summary_dir = paths["base_path"] / paths["summary_folder_1001"]
         assert list(summary_dir.glob("1001_*.csv")) == []

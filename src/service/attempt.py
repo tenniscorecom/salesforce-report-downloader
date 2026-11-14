@@ -32,11 +32,19 @@ from comken.services.salesforce_downloader.history_file_lock import HistoryFileL
 
 from src import paths
 from src.exceptions import (
+    ColumnNamesCSVFormatError,
     EmptyReportError,
+    GroupNotRegisteredError,
     OverwriteTimeMissingError,
     ReportFolderNotFoundError,
     ReportNotRegisteredError,
+    SavedFileEmptyError,
     ScheduledDownloadFailedError,
+    SoqlColumnNameConflictError,
+    SoqlCountMismatchError,
+    SoqlIncompleteError,
+    SoqlReportNotRegisteredError,
+    SoqlTransformError,
 )
 from src.history import record, resolved_folder
 from src.service._utils import history_path
@@ -60,6 +68,37 @@ CAUSE_SALESFORCE = "Salesforce"
 CAUSE_EMPTY_DATA = "データなし"
 CAUSE_FILE = "ファイル"
 CAUSE_PROGRAM = "プログラム"
+
+# 失敗の例外型 → (Salesforce取得結果, 保存結果, 原因区分) の対応表。
+# **上から順に判定し、最初に一致した行を使う。**
+# 「Salesforce取得結果」「保存結果」は ``True``（成功）/ ``False``（失敗）/
+# ``None``（その段階まで到達しなかった）を表す。
+_FAILURE_STAGES: tuple[
+    tuple[tuple[type[BaseException], ...], bool | None, bool | None, str], ...
+] = (
+    # 取得段階に入らない設定の誤り（保存先フォルダ・グループ・SOQL の登録・
+    # 未完成の印・上書き○の時刻）
+    (
+        (
+            ReportFolderNotFoundError,
+            GroupNotRegisteredError,
+            SoqlReportNotRegisteredError,
+            SoqlIncompleteError,
+            OverwriteTimeMissingError,
+        ),
+        None,
+        None,
+        CAUSE_CONFIG,
+    ),
+    # 取得は終わったが、列名（見出し）に問題が起きた。取得自体は成功している
+    ((SoqlColumnNameConflictError, ColumnNamesCSVFormatError), True, None, CAUSE_CONFIG),
+    # 取得は終わったが、SOQL の加工で問題が起きた。取得自体は成功している
+    ((SoqlCountMismatchError, SoqlTransformError), True, None, CAUSE_PROGRAM),
+    # 取得は成功したが 0 件
+    ((EmptyReportError,), True, None, CAUSE_EMPTY_DATA),
+    # 取得も保存も終わったが、ファイルが 0 バイトだった
+    ((SavedFileEmptyError,), True, False, CAUSE_FILE),
+)
 
 
 def _history_path() -> Path:
@@ -615,32 +654,31 @@ def _failure_row(
     """失敗時の履歴1行を、**例外の型だけから**組み立てる。
 
     `fetched` / `saved` は `_download()` の何処で失敗したかを例外で判別する。
-    判定順（狭い条件から評価）:
+    判定は ``_FAILURE_STAGES`` の対応表（**上から順に判定する**）と、
+    表に無い例外の次の3つで決める。
 
-    1. `ReportFolderNotFoundError` / `OverwriteTimeMissingError` → 取得段階の前
-       （保存先フォルダの検査・ファイル名の時刻の決定で停止）
-    2. `EmptyReportError` → 取得は成功、保存は未到達
-    3. `OSError` → 保存段階（書き込み・権限・共有サーバー断）
-    4. その他の `ComkenError` → 取得段階（Salesforce 通信と認証）
-    5. それ以外 → プログラム（想定外）
+    1. 表の1行目: 取得段階の前（保存先フォルダ・グループ・SOQL の登録・
+       未完成の印・上書き○の時刻）→ 取得も保存も未到達・設定
+    2. 表の2行目: 取得は終わったが列名に問題が起きた → 取得成功・保存未到達・設定
+    3. 表の3行目: 取得は終わったが SOQL の加工で問題が起きた
+       → 取得成功・保存未到達・プログラム
+    4. 表の4行目: 取得は成功したが 0 件 → 取得成功・保存未到達・データなし
+    5. 表の5行目: 保存は終わったがファイルが 0 バイト
+       → 取得成功・保存失敗・ファイル
+    6. `OSError` → 保存段階（書き込み・権限・共有サーバー断）
+       → 取得成功・保存失敗・ファイル
+    7. その他の `ComkenError` → 取得段階（Salesforce 通信と認証）
+       → 取得失敗・保存未到達・Salesforce
+    8. それ以外 → 取得失敗・保存未到達・プログラム（想定外）
 
-    4. は `download_scheduled()` が捕捉する範囲と一致させている。
+    7. は `download_scheduled()` が捕捉する範囲と一致させている。
 
     `schedule_key` は履歴の「スケジュールキー」列へ書く（`record_success()` と対称）。
 
     `route` は取得経路（``ROUTE_API`` / ``ROUTE_SOQL`` / ``ROUTE_BROWSER``）。
     例外の型から判別できないので、``_download()`` が確定した値をキーワード引数で受ける。
     """
-    if isinstance(exc, (ReportFolderNotFoundError, OverwriteTimeMissingError)):
-        fetched, saved, cause = None, None, CAUSE_CONFIG
-    elif isinstance(exc, EmptyReportError):
-        fetched, saved, cause = True, None, CAUSE_EMPTY_DATA
-    elif isinstance(exc, OSError):
-        fetched, saved, cause = True, False, CAUSE_FILE
-    elif isinstance(exc, ComkenError):
-        fetched, saved, cause = False, None, CAUSE_SALESFORCE
-    else:
-        fetched, saved, cause = False, None, CAUSE_PROGRAM
+    fetched, saved, cause = _failure_stage(exc)
     return HistoryRow(
         succeeded=False,
         fetched_from_salesforce=fetched,
@@ -652,3 +690,24 @@ def _failure_row(
         schedule_key=schedule_key,
         route=route,
     )
+
+
+def _failure_stage(exc: BaseException) -> tuple[bool | None, bool | None, str]:
+    """例外から ``(Salesforce取得結果, 保存結果, 原因区分)`` を求める。
+
+    ``_FAILURE_STAGES`` の対応表を上から順に当たり、最初に一致した行の
+    値を返す。表に無い例外は、``OSError`` → ファイル、その他の ``ComkenError``
+    → Salesforce、それ以外 → プログラムで決める。
+
+    Returns:
+        ``(Salesforce取得結果, 保存結果, 原因区分)``。取得結果・保存結果は
+        ``True``（成功）/ ``False``（失敗）/ ``None``（未到達）。
+    """
+    for exception_types, fetched, saved, cause in _FAILURE_STAGES:
+        if isinstance(exc, exception_types):
+            return fetched, saved, cause
+    if isinstance(exc, OSError):
+        return True, False, CAUSE_FILE
+    if isinstance(exc, ComkenError):
+        return False, None, CAUSE_SALESFORCE
+    return False, None, CAUSE_PROGRAM

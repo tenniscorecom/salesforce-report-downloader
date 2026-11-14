@@ -1091,15 +1091,17 @@ class TestCountMismatchFailureRow:
     で記録される。
     """
 
-    def test_failure_row_uses_salesforce_cause(self):
+    def test_failure_row_uses_program_cause(self):
+        """``SoqlCountMismatchError`` は取得は成功している（保存は未到達）ので、
+        原因区分は「プログラム」になる。"""
         from src.service.attempt import _failure_row
 
         exc = SoqlCountMismatchError("9001", "顧客一覧", 5, 10)
         row = _failure_row(exc, 1.5, schedule_key="S001", route="SOQL")
-        assert row.cause == "Salesforce"
+        assert row.cause == "プログラム"
         assert row.error_code == "SoqlCountMismatchError"
         assert row.succeeded is False
-        assert row.fetched_from_salesforce is False
+        assert row.fetched_from_salesforce is True
         assert row.saved_to_file is None
         # エラーメッセージに管理番号・概要・件数が出ている
         assert "9001" in row.error
@@ -1503,22 +1505,19 @@ class TestFetchViaSoqlTransform:
         assert result.columns == ["Id", "名称", "Amount"]
         assert result.to_rows() == [{"Id": "001", "名称": "山田", "Amount": "100"}]
 
-    def test_transform_failure_row_uses_salesforce_cause(self):
-        """``SoqlTransformError`` は ``ComkenError`` 系なので ``_failure_row()``
-        で「Salesforce」区分に入る。"""
+    def test_transform_failure_row_uses_program_cause(self):
+        """``SoqlTransformError`` は取得は成功している（保存は未到達）ので、
+        原因区分は「プログラム」になる。"""
         from src.service.attempt import _failure_row
 
         exc = SoqlTransformError("9001", "顧客一覧", "MyReport", "ValueError")
         row = _failure_row(exc, 1.5, schedule_key="S001", route="SOQL")
-        assert row.cause == "Salesforce"
+        assert row.cause == "プログラム"
         assert row.error_code == "SoqlTransformError"
         assert row.succeeded is False
-        # ``DownloadedComkenError`` 系の取り決めに従い ``fetched_from_salesforce``
-        # は ``False``（``_failure_row()`` は例外の型だけから組み立てる）。
-        # 技術的には ``bulk_query()`` が成功してから失敗しているのでデータ自体は
-        # 取れているが、 既存の 3 状態（``fetched`` / ``saved``）の単純化は
-        # 維持する（``cause`` で Salesforce 区分に入れば履歴から追える）
-        assert row.fetched_from_salesforce is False
+        # 取得 (``bulk_query()``) は成功してから加工で失敗しているので、
+        # 「取得成功・保存未到達」になる
+        assert row.fetched_from_salesforce is True
         assert row.saved_to_file is None
 
 
@@ -1613,17 +1612,17 @@ class TestFetchViaSoqlIncompleteMarker:
 
         assert result is table
 
-    def test_marker_uses_comkenerror_cause_in_failure_row(self):
-        """``SoqlIncompleteError`` も ``DownloaderError`` 系なので ``_failure_row()``
-        で「Salesforce」区分に入る。"""
+    def test_marker_uses_config_cause_in_failure_row(self):
+        """``SoqlIncompleteError`` は Salesforce へ問い合わせる前に止まるので、
+        取得も保存も未到達で、原因区分は「設定」になる。"""
         from src.service.attempt import _failure_row
 
         exc = SoqlIncompleteError("9001", "顧客一覧")
         row = _failure_row(exc, 0.5, schedule_key="S001", route="SOQL")
-        assert row.cause == "Salesforce"
+        assert row.cause == "設定"
         assert row.error_code == "SoqlIncompleteError"
         assert row.succeeded is False
-        assert row.fetched_from_salesforce is False
+        assert row.fetched_from_salesforce is None
         assert row.saved_to_file is None
 
 
