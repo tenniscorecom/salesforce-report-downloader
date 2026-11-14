@@ -108,16 +108,6 @@ def move_into_place(tmp_path: Path, base_path: Path, report_key: str) -> Path:
     探す。``RESERVE_PATH_LIMIT`` を超えると ``DownloaderError``。先に一時ファイルへ全部
     書いてから移すので、本番の名前の空ファイルは一瞬も作らない。
 
-    Args:
-        tmp_path: 既に内容物が書かれている一時ファイルのパス（呼び出し側が
-            作った ``~`` プレフィックスのファイル）。
-        base_path: 本番の保存先候補パス。既に同名ファイルがある可能性がある。
-        report_key: エラーメッセージに含める管理番号。
-
-    Returns:
-        実際に移った先のパス。``base_path`` か ``base_path_1.csv`` /
-        ``base_path_2.csv`` … のいずれか。
-
     Raises:
         DownloaderError: ``RESERVE_PATH_LIMIT`` 回試しても空きが
             見つからなかった場合。
@@ -151,7 +141,7 @@ def output_path(
     の 2 階層。ファイル名は次のどちらか:
 
     - ``entry.overwrite`` が ``False``（既定）: ``{管理番号}_{YYYYMMDD}_{HHMM}.csv``
-      （衝突時は ``service.save_report()`` が連番で別名にする）
+      （衝突時は ``service.save.save_report()`` が連番で別名にする）
     - ``entry.overwrite`` が ``True``: ``{管理番号}_{HHMM}.csv``
       （同じ ``HHMM`` なら翌日に上書きされる。日付は入らない）
 
@@ -168,16 +158,6 @@ def output_path(
 
     フォルダは作らないし検査もしない（保存時に呼び出し側が ``mkdir``、検査は
     ``service.require_folder``）。
-
-    Args:
-        entry: レポート管理表の1行。
-        schedule_run_time: 今回の取得の根拠になったスケジュール行の「取得時刻」
-            （``ScheduleRule.desired_time``）。判定には使われず、ファイル名の
-            ``HHMM`` 部（``overwrite=True`` のとき）または ``YYYYMMDD_HHMM`` 部
-            （``overwrite=False`` のとき）に使う。無ければ ``now`` にフォールバック
-            する（``overwrite=True`` のときは「取得開始時刻」を渡す）。
-        now: ``schedule_run_time`` が無いときに使う時刻。省略時は現在時刻
-            （``comken.core.dates.now()`` を使う）。
 
     Raises:
         GroupNotRegisteredError: 設定シートにないグループ名の場合（``report_folder()`` 経由）。
@@ -209,12 +189,6 @@ def base_folder(entry: ReportEntry) -> Path:
     ``report_folder()`` に委譲する。フォルダは作らないし検査もしない。
     ``MASTER_PATH`` は呼び出し時点のモジュール変数を参照する。
 
-    Args:
-        entry: レポート管理表の1行。
-
-    Returns:
-        保存先のベースフォルダの ``Path``。
-
     Raises:
         GroupNotRegisteredError: ``entry.group`` が設定シートに無い場合。
     """
@@ -226,14 +200,6 @@ def report_folder(entry: ReportEntry, group_settings: dict[str, Path]) -> Path:
 
     組み立てルールは **設定シートのベースパス** のみ。管理表の `assignee` / `summary` は
     出力パスには使わない。
-
-    Args:
-        entry: レポート管理表の1行。
-        group_settings: ``{グループ名: ベースパス}`` の辞書
-            （``load_group_settings()`` の戻り値）。
-
-    Returns:
-        保存先フォルダの ``Path``。
 
     Raises:
         GroupNotRegisteredError: ``entry.group`` が ``group_settings`` に無い場合。

@@ -287,9 +287,6 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
     / ``create_combined_workbook()`` で生成したシートにも同じ書式が
     付く（``_finalize_sheet`` 経由で同じ関数を呼ぶ）。
 
-    Args:
-        path: 「スケジュール」シートを持つ Excel ファイル（既存）。
-
     Raises:
         ComkenFileNotFoundError: ``path`` が存在しない場合。
         SheetNotFoundError: 「スケジュール」シートが無い場合。
@@ -304,7 +301,7 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
     book = load_workbook(source)
     # `comken.toolbox.excel.Excel.create_data_sheet()` は `PY_` プレフィックスを
     # 自動付与するため、シート探索も `PY_` 付きで行う。プレフィックス無しの
-    # 旧シート名もフォールバックとして受け付ける（手作業で「スケジュール」と
+    # シート名もフォールバックとして受け付ける（手作業で「スケジュール」と
     # 付けた既存ブックへの後付けを想定）
     prefixed_sheet_name = f"PY_{SCHEDULE_SHEET_NAME}"
     if prefixed_sheet_name in book.sheetnames:

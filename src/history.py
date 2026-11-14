@@ -131,11 +131,7 @@ def _stage(value: bool | None) -> str:
 def _route_of(entry: ReportEntry) -> str:
     """``entry``（管理表の1行）から「取得経路」列に書く文字列を決める。
 
-    優先順位は ``src.service.routes.fetch_report()`` と同じ（**SOQL → 2000件超 → API**）:
-
-    1. ``entry.use_soql`` が真 → ``ROUTE_SOQL``
-    2. ``entry.exceeds_row_limit`` が真 → ``ROUTE_BROWSER``
-    3. どちらも偽 → ``ROUTE_API``
+    優先順位は ``src.service.routes.fetch_report()`` と同じ（**SOQL → 2000件超 → API**）。
     """
     if entry.use_soql:
         return ROUTE_SOQL
