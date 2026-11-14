@@ -36,10 +36,13 @@ from src.exceptions import (
     SavedFileEmptyError,
     ScheduledDownloadFailedError,
 )
+from src.history import record
 from src.service import attempt as attempt_module
 from src.service import download_scheduled
 from src.service import save as save_module
-from src.sheets.master import load_master, shared_report_ids
+from src.service import scheduler as scheduler_module
+from src.sheets.master import ReportEntry, load_master, shared_report_ids
+from src.sheets.schedule import ScheduleRule
 
 URL_A = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000ABCDE/view"
 URL_B = "https://example--sandbox.sandbox.my.salesforce.com/lightning/r/Report/00O5g00000FGHIJ/view"
@@ -4029,3 +4032,131 @@ class TestDryRunDoesNotWriteHistory:
         with CSV(paths["history_path"]) as csv_file:
             after = csv_file.read()
         assert len(after) == 1
+
+
+# ── 同じレポートに複数のスケジュール行があるときの当日取得 ─────────────
+class TestScheduleRowsOfSameReportInOneDay:
+    """同じレポートに複数のスケジュール行があるときの、当日の取得判定。
+
+    9:00 の行と 15:00 の行があるとき、15:05 に 15:00 の行で取得したら、
+    16:05 の実行で 9:00 の行を取り直さない（＝二重取得にならない）。
+    """
+
+    ENTRY = ReportEntry(
+        key="1001",
+        summary="顧客一覧",
+        url=URL_A,
+        group="営業事務グループ",
+        assignee="山田",
+        enabled=True,
+    )
+
+    @staticmethod
+    def _at(hour: int, minute: int, *, day: int = 7) -> dt.datetime:
+        """テスト用に固定した時刻（tz-naive）。"""
+        return dt.datetime(2026, 1, day, hour, minute)  # noqa: DTZ001 — テスト用に意図的に固定した tz-naive な datetime
+
+    def _rule(self, schedule_key: str, start_time: dt.time | None) -> ScheduleRule:
+        """取得開始時刻だけ違うスケジュール行を1行作る。"""
+        return ScheduleRule(
+            schedule_key=schedule_key,
+            report_key="1001",
+            frequency="毎日",
+            start_time=start_time,
+            desired_time=None,
+            raw_weekday="",
+            raw_day_of_month="",
+            holiday_policy="取得しない",
+            enabled=True,
+        )
+
+    def _write_history(
+        self,
+        history_path: Path,
+        schedule_key: str,
+        executed_at: dt.datetime,
+        *,
+        succeeded: bool = True,
+    ) -> None:
+        """履歴（実ファイル）に1行書く。成功行でも失敗行でも ``record()`` を使う。"""
+        record(
+            history_path,
+            entry=self.ENTRY,
+            project="定期実行",
+            row=history.HistoryRow(
+                succeeded=succeeded,
+                fetched_from_salesforce=succeeded,
+                saved_to_file=succeeded,
+                file_name="1001_20260107_1505.csv",
+                row_count=1,
+                seconds=1.0,
+                schedule_key=schedule_key,
+            ),
+            executed_at=executed_at,
+            folder=history_path.parent,
+        )
+
+    def _matched(self, rules: dict, current: dt.datetime, history_path: Path):
+        """対象選定の判定結果を返す。"""
+        return scheduler_module._matched_schedule_key(self.ENTRY, rules, current, history_path)
+
+    def test_success_at_later_row_skips_earlier_row(self, tmp_path):
+        """15:00 の行で成功したら、16:05 では 9:00 の行を取り直さない。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        # 15:05 に 15:00 の行（=S_B）で成功した
+        self._write_history(history_path, "S_B", self._at(15, 5))
+        assert self._matched(rules, self._at(16, 5), history_path) == (False, "", "当日取得済")
+
+    def test_success_at_earlier_row_still_fetches_later_row(self, tmp_path):
+        """9:05 に 9:00 の行で成功したら、15:05 は 15:00 の行で取得する。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        self._write_history(history_path, "S_A", self._at(9, 5))
+        assert self._matched(rules, self._at(15, 5), history_path) == (True, "S_B", "")
+
+    def test_failure_at_earlier_row_is_retried(self, tmp_path):
+        """9:05 に 9:00 の行で失敗したら、10:05 は 9:00 の行でもう一度取得する。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        self._write_history(history_path, "S_A", self._at(9, 5), succeeded=False)
+        assert self._matched(rules, self._at(10, 5), history_path) == (True, "S_A", "")
+
+    def test_rows_without_start_time_are_fetched_only_once(self, tmp_path):
+        """取得開始時刻が両方空欄の2行でも、1回成功したらその日はもう取らない。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", None),
+                self._rule("S_B", None),
+            ]
+        }
+        self._write_history(history_path, "S_A", self._at(9, 5))
+        assert self._matched(rules, self._at(16, 5), history_path) == (False, "", "当日取得済")
+
+    def test_next_day_is_fetched_regardless_of_previous_day(self, tmp_path):
+        """翌日は、前日の成功に関係なく取得する。"""
+        history_path = tmp_path / "履歴.csv"
+        rules = {
+            "1001": [
+                self._rule("S_A", dt.time(9, 0)),
+                self._rule("S_B", dt.time(15, 0)),
+            ]
+        }
+        self._write_history(history_path, "S_B", self._at(15, 5))
+        assert self._matched(rules, self._at(9, 5, day=8), history_path) == (True, "S_A", "")
