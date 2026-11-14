@@ -187,7 +187,7 @@ class TestNthBusinessDayIsDue:
         """「第35営業日」のような月の営業日数を超える指定で ``False`` を返す。
 
         ``WorkdayNotFoundError`` を上位へ伝播させず、この日を「対象外」として
-        扱う（``service.py`` の「1件失敗でも他は続ける」設計を守るため）。
+        扱う（``src/service/`` の「1件失敗でも他は続ける」設計を守るため）。
         """
         with _HolidaysScope(set()):  # 祝日は 1 件も無い想定
             rule = self._monthly_rule("第35営業日")

@@ -1,6 +1,6 @@
 """``SoqlReport.transform()`` と未完成 SOQL の ``download_scheduled()`` 統合テスト。
 
-``src.service.fetch_via_soql()`` に ``transform()`` の呼び出しと未完成印の
+``src/service/soql.py`` の ``fetch_via_soql()`` に ``transform()`` の呼び出しと未完成印の
 検知を入れた変更が、 2 本以上のレポートを含む 1 実行で
 
 - ``transform()`` の例外が **そのレポートだけの失敗**になり、 次のレポートの
@@ -149,7 +149,6 @@ def paths_two_reports(tmp_path, monkeypatch):
         "comken.services.salesforce_downloader.paths.HISTORY_PATH",
         history_path,
     )
-    _paths_inner.reset_group_settings_cache()
 
     return {
         "master_path": master,

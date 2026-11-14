@@ -555,7 +555,8 @@ Excel の数式 (VLOOKUP 等) で組み立てる案も検討したが、openpyxl
 - **概要**は管理表の「概要」列。フォルダ名にできない文字（`\ / : * ? " < > |`）は取り除き、30文字で切る。
   空になったら「レポート」。概要を変えると保存先のフォルダも変わる。
 - **ファイル名**は `{管理番号}_{YYYYMMDD_HHMM}.csv`。`HHMM` はこの取得の根拠になったスケジュール行の
-  「取得時刻」（`ScheduleRule.desired_time`）。 **拡張子は常に `.csv`**。
+  「取得時刻」（`ScheduleRule.desired_time`）。「取得時刻」が空欄のときは実行した時刻になる。
+  **拡張子は常に `.csv`**。
 
 1 日に複数回取得したときは、ファイル名に付いている実行時刻で区別される。同名のファイルが既に
 あった場合は連番（`_1` / `_2` …）を付けて別ファイルにする（既存ファイルを上書きしない）。
@@ -569,8 +570,8 @@ Excel の数式 (VLOOKUP 等) で組み立てる案も検討したが、openpyxl
 向け**。
 
 **「上書き」列が `○` のときの `HHMM` は、スケジュールの「取得時刻」か「取得開始時刻」から
-決める。** 「取得時刻」は記録用の希望時刻（「17:00 までに欲しい」のような運用メモ）だが、
-`○` のときはファイル名にもそのまま使う。「取得時刻」が空欄なら「取得開始時刻」を使う。
+決める。** 「取得時刻」はファイル名に埋め込む時刻なので、`○` のときはそのまま使う。
+「取得時刻」が空欄なら「取得開始時刻」を使う。
 **両方とも空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
 取得前に `OverwriteTimeMissingError` で止める**（履歴の「原因区分」は `設定`、
 `python -m src.cli check` も同じ組み合わせを相互参照エラーとして出す）。
@@ -800,12 +801,13 @@ comken 側に置くのは、そのプロジェクトが従う**管理表・履�
 時刻を過ぎたら取得してよい）。**「取得開始時刻」列は空欄にできる**（`S005` が
 この例）。
 
-**「取得時刻」列はこのレポートが何時までに欲しいかの目安（記録用）。**
-ファイル名 `_{YYYYMMDD_HHMM}.csv` の `HHMM` 部にこの値が入る。`is_due()` の
-判定ロジックには**組み込まない**ので、運用メモとして自由に使ってよい（例:
-「17:00 までに欲しい」を書いておく）。空欄可（`S004` がこの例）。
-**ただし管理表の「上書き」列が `○` のときは、この値がそのままファイル名の `HHMM` になる**
-（「取得時刻」が空欄なら「取得開始時刻」を使い、両方とも空欄なら取得前に止まる）。
+**「取得時刻」列は出力ファイル名の時刻（`_{YYYYMMDD_HHMM}.csv` / `_{HHMM}.csv` の
+`HHMM`）に使う値。** `is_due()` の判定ロジックには**組み込まない**（取得するかどうかの
+判定に使うのは「取得開始時刻」）。空欄可（`S004` がこの例）。
+空欄のときは管理表の「上書き」列によって次のようになる:
+
+- **「上書き」が `○`**: 「取得開始時刻」を `HHMM` に使う（両方とも空欄なら取得前に止まる）
+- **「上書き」が `×`（空欄を含む）**: 実行した時刻が `HHMM` になる
 
 **「曜日」列は「月〜日」のプルダウンから選ぶ。** `column()` 宣言で `choices`
 が付いているので、ドロップダウンは自動で付く。
@@ -888,7 +890,7 @@ rule = ScheduleRule(
     report_key="R001",
     frequency="毎週",
     start_time=datetime.strptime("09:00", "%H:%M").time(),
-    desired_time=None,  # 記録用。判定には使わないので省略可（既定値 None）
+    desired_time=None,  # ファイル名の HHMM に使う値。判定には使わないので省略可（既定値 None）
     raw_weekday="月",
     raw_day_of_month="",
     holiday_policy="取得しない",
@@ -1044,7 +1046,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 レポートの元々の見出し（`金額`、`取引先名`）で出したい場合は、
 `SoqlReport.COLUMN_NAMES` に **API名→表示名** の対応を書く。
 **貼り付け元は soql-collector の対応表**。
-`service.fetch_via_soql()` が取得直後（`transform()` の前）にこの表を
+`src/service/soql.py` の `fetch_via_soql()` が取得直後（`transform()` の前）にこの表を
 `Table.select()` に通して列名を差し替える。Report API 経由・ブラウザ経由では
 適用しない（`save_report()` は列名の置き換えをしない）。
 列の並び順は元のまま、値は変えない。SOQL の結果に無いキーは無視される
@@ -1061,7 +1063,7 @@ SOQL の結果は Salesforce の API 名（`Amount`、`Account.Name`）のまま
 オブジェクト API 名が入る）。 同じ列はどのレポートでも同じ表示名になるので、
 **レポートをまたいで管理表を作る必要が無い**。
 
-`service.fetch_via_soql()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
+`src/service/soql.py` の `fetch_via_soql()` は `soql()` の SOQL 文字列から **最初の `FROM <名前>`**
 を主オブジェクトとして取り出し、 `column_names.load_column_names_for(main_object)`
 で `{SOQL列名: 表示名}` を引いて手書きの `COLUMN_NAMES` とマージする
 （手書き優先）。主オブジェクト名の比較は大文字小文字を区別しない
@@ -1263,8 +1265,8 @@ soql-collector が下書きを出し直すとき、補えなかった部分が�
 
 ## エラー
 
-エラー名と対処法は [docs/ERRORS.md](../ERRORS.md)（comken 全体の例外クラスの docstring
-から自動生成、docstring が正）にまとまっている。Downloader 由来のものは
+エラー名と対処法は **例外クラスの docstring** に書いてある（docstring が正）。
+Downloader 由来のものは
 `ReportNotRegisteredError` / `SoqlReportNotRegisteredError` /
 `GroupNotRegisteredError` / `MasterDuplicateValueError` /
 `MasterRowValueError` / `CachedReportNotFoundError` / `EmptyReportError` /

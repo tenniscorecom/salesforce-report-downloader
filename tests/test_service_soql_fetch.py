@@ -136,7 +136,7 @@ class TestFetchRoutesToSoql:
 
 
 class TestFetchViaSoql:
-    """fetch_via_soql() — SOQL経由で取得し、_fetch() と同じ Table を返す。"""
+    """fetch_via_soql() — SOQL経由で取得し、fetch_via_api() と同じ Table を返す。"""
 
     def test_returns_table_from_bulk_query(self):
         table = Table(["Id", "Name"], [{"Id": "001", "Name": "山田"}])

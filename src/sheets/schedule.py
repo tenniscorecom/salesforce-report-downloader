@@ -52,32 +52,18 @@ SCHEDULE_SHEET_NAME = "スケジュール"
 class ScheduleRule(MasterRow):
     """「スケジュール」シートの1行。1行 = 1つの取得ルール。
 
-    列定義は `column()` に集約されている。``曜日`` / ``日付`` 列は自由記述（空欄を許す）
-    なので、``weekday`` / ``day_of_month`` / ``month_end`` / ``nth_business_day`` の
-    `@property` でパース結果だけを公開する。
+    列の宣言（見出し・書き方）は `column()` に集約されている。``曜日`` / ``日付`` 列は
+    自由記述（空欄を許す）なので、``weekday`` / ``day_of_month`` / ``month_end`` /
+    ``nth_business_day`` の `@property` でパース結果だけを公開する。
 
     Attributes:
-        schedule_key: 列「スケジュールキー」。このルールを一意に識別するキー。
-            履歴の「スケジュールキー」列に記録され、同じ行を同日に何度も
-            実行しないための dedup 判定にも使う。
-        report_key: 列「レポートキー」。対象のレポートの管理番号
-            （レポート管理表シートの ID と対応する）。
-        frequency: 列「取得頻度」。`FREQUENCY_DAILY` / `FREQUENCY_WEEKLY` /
-            `FREQUENCY_MONTHLY` / `FREQUENCY_BUSINESS_DAY` のいずれか。
-        start_time: 列「取得開始時刻」。毎日・毎週・毎月・毎営業日の実行開始時刻
-            （この時刻を過ぎたら取得してよい）。空欄可。
-        desired_time: 列「取得時刻」。このレポートが何時までに欲しいかの目安
-            （記録用）。判定には使わない。
-        raw_weekday: 列「曜日」。`frequency` が毎週のときだけ使う
-            （下の `weekday` property で 0=月〜6=日 に変換）。
-        raw_day_of_month: 列「日付」。`frequency` が毎月のときだけ使う
-            （1〜31 の数字 / `月末` / `第N営業日` のいずれかを下の
-            `day_of_month` / `month_end` / `nth_business_day` property で
-            分解する）。
-        holiday_policy: 列「祝日対応」。`HOLIDAY_SKIP`（既定、祝日はスキップ）/
-            `HOLIDAY_FETCH`（曜日/日付/月末/第N営業日が祝日でも取得）/
-            `HOLIDAY_BEFORE`（対象日が祝日なら前営業日へ前倒し）/
-            `HOLIDAY_AFTER`（対象日が祝日なら翌営業日へ繰り越し）の 4 値から選ぶ。
+        raw_weekday: 列「曜日」。`frequency` が毎週のときだけ使う（`weekday` property
+            で 0=月〜6=日 に変換する）。
+        raw_day_of_month: 列「日付」。`frequency` が毎月のときだけ使う（`day_of_month` /
+            `month_end` / `nth_business_day` の property で分解する）。
+        desired_time: 列「取得時刻」。出力ファイル名の時刻（``HHMM``）に使う値。
+            取得するかどうかの判定には使わない（判定は「取得開始時刻」）。
+            空欄のときの扱いは管理表の「上書き」列の値による。
         enabled: 列「有効」。`○`/`×`。既定値なし（書き忘れはエラー）。
     """
 
@@ -107,8 +93,10 @@ class ScheduleRule(MasterRow):
     desired_time: dt.time | None = column(
         "取得時刻",
         default=None,
-        help="このレポートが何時までに欲しいかの目安（記録用）。"
-        "取得の判定には使いません（判定に使うのは「取得開始時刻」）。空欄可",
+        help="出力ファイル名の時刻（{管理番号}_{YYYYMMDD_HHMM}.csv の HHMM）に使う値。"
+        "取得の判定には使いません（判定に使うのは「取得開始時刻」）。"
+        "空欄のときは管理表の「上書き」が「○」なら「取得開始時刻」を使い、"
+        "「×」（空欄を含む）なら実行した時刻になります。空欄可",
     )
     # `choices` で読み込み時に「月〜日」に絞り込まれる（ドロップダウンは `column_specs()` 経由で
     # `apply_schedule_dropdowns()` が付与する）
@@ -357,7 +345,7 @@ class ScheduleRule(MasterRow):
 
         ``direction="before"`` のときは ``date`` の翌日から次の営業日に達するまで、
         ``"after"`` のときは前日から前の営業日に達するまでの非営業日区間（``date`` 自身を含まない）
-        を見て、**その区間に祝日である対象日が 1 つでも含まれていれば ``True``**。
+        を見て、**その区間に祝日である対象日が 1 つでも含まれていれば ``True``。
         区間は ``comken.core.dates`` の ``non_workdays_after`` / ``non_workdays_before`` が返す。
         ``date`` 自身が非営業日の場合は呼び出し元（``_date_matches``）で先に弾く。
         """

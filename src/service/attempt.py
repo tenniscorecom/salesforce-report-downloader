@@ -100,15 +100,6 @@ _FAILURE_STAGES: tuple[
 )
 
 
-def _history_path() -> Path:
-    """呼び出し時点の履歴CSVのパスを ``Path`` で返す。
-
-    ``src/service/_utils.py`` の ``history_path()`` への薄いラッパー。
-    テストが comken 側の ``HISTORY_PATH`` を差し替えるので、呼び出し時点で読む。
-    """
-    return history_path()
-
-
 @measure
 def download_scheduled(
     project: str = "定期実行",
@@ -118,33 +109,17 @@ def download_scheduled(
 ) -> list[Path]:
     """管理表で有効なレポートをまとめて取得する。
 
-    定期実行のプロジェクトから呼ぶ。**1件失敗しても残りは続ける**。戻り値は `list[Path]`
-    のままで `CSV` を返さない（定期取得の呼び出し側は中身を読まないため）。
-
-    ``filters_by_report`` は、管理番号ごとに Salesforce Report API の実行時フィルタを
-    指定する。指定のない管理番号は、Salesforce に保存されているレポート条件のまま実行する。
-    URL やレポート ID ではなく管理番号をキーにするため、管理表で参照先を差し替えても
-    呼び出し側のコードは変えなくてよい。
+    定期実行のプロジェクトから呼ぶ。**1件失敗しても残りは続ける**。戻り値は
+    `list[Path]` のままで `CSV` を返さない（定期取得の呼び出し側は中身を読まないため）。
 
     **API・SOQLのどれで取るかは、管理表の「2000件超」「SOQL」列で決まる**
-    （呼び出し側は管理番号を意識しない）。SOQL経由のレポートは同じ管理番号の `SoqlReport` が
-    `src.reports` に登録されている必要がある（`fetch_via_soql()` 参照）。
+    （呼び出し側は管理番号を意識しない）。SOQL経由のレポートは同じ管理番号の
+    `SoqlReport` が `src.reports` に登録されている必要がある。
 
     **ブラウザ経由はこの本体では取らない。** 管理表の「2000件超」が `○` の行は
     別リポジトリ ``salesforce-report-browser`` の担当で、このリポジトリの
     通常の実行（``fetch_browser`` を渡さない）では **取らない**。1 実行につき
     1 行の INFO ログを出して対象から外す（履歴には書かない）。
-
-    ``fetch_browser`` を渡すと、**対象選定で選ばれた行を全部** ブラウザで取る
-    （経路が SOQL でも「2000件超」でも通常でも、1 件ずつ ``fetch_browser(entry)``
-    を呼ぶ。履歴の「取得経路」は全部 ``ROUTE_BROWSER``）。渡された関数は 1 件だけ
-    取りに行く責務を持つ（ブラウザの起動・ログイン・使い回しは
-    ``salesforce-report-browser`` 側の責任）。
-
-    **本体の後に実行する前提**の運用。ブラウザ側は本体の取り残しを全部拾う役で、
-    本体で失敗した行（Report API の打ち切り・0 件・SOQL の失敗など）や、本体が
-    飛ばした「2000件超」○ の行は、当日の成功履歴が無いので対象選定でそのまま
-    選ばれ、ブラウザで取られる。
 
     **「スケジュール」シート**にこのレポートの行が無いレポートは取得しない。
     1 回の実行につき、取らなかった管理番号を並べた警告を 1 件出す（黙って取らなくなると
@@ -161,11 +136,16 @@ def download_scheduled(
         project: 履歴の「プロジェクト」列へ残す呼び出し元の名前。
         filters_by_report: ``{管理番号: [Report APIフィルタ, ...]}``。各フィルタは
             ``{"column": ..., "operator": ..., "value": ...}`` の形で指定する。
+            指定のない管理番号は Salesforce に保存されているレポート条件のまま実行する。
+            URL やレポート ID ではなく管理番号をキーにするため、管理表で参照先を
+            差し替えても呼び出し側のコードは変えなくてよい。
             ブラウザ経由・SOQL経由のレポートには指定できない（``ValueError``）。
-            ``fetch_browser`` を渡す実行にも指定できない（``ValueError``）。
         fetch_browser: ブラウザ経由で 1 件取得する関数。渡すと、対象選定で選ばれた
-            行を **全部** ブラウザで取る（経路は問わない）。``None``（既定）なら
-            管理表の「2000件超」が `○` の行は取らない。
+            行を **全部** ブラウザで取る（経路は問わない。履歴の「取得経路」は全部
+            ``ROUTE_BROWSER``）。渡された関数は 1 件だけ取りに行く責務を持つ
+            （ブラウザの起動・ログイン・使い回しは ``salesforce-report-browser``
+            側の責任）。**本体の後に実行する前提**の運用で、ブラウザ側は本体の
+            取り残しを全部拾う役。``None``（既定）なら「2000件超」が `○` の行は取らない。
 
     Returns:
         保存したファイルのパス一覧。1件も取得対象が無いとき・別の実行が
@@ -186,7 +166,7 @@ def download_scheduled(
     # プロセス間排他する。取れなければ別プロセスが進行中なので ``[]`` を返す。
     # ロック取得**だけ**を try/except で囲う: 本体の ``HistoryLockTimeoutError`` は
     # 履歴読み書きの障害なので、``[]`` で握りつぶさず伝播させる。
-    hp = _history_path()
+    hp = history_path()
     run_lock_path = Path(f"{hp}.run")
     with contextlib.ExitStack() as stack:
         try:
@@ -273,13 +253,8 @@ def _select_and_log_targets(
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,
 ) -> tuple[list, dict[str, list[str]]]:
-    """対象レポートを選定し、 内訳をログにまとめて返す。
-
-    ``select_targets()`` の戻り値 ``_already_failed`` は常に空なので使わない。
-    """
-    targets, _already_failed, skipped = select_targets(
-        entries, rules_by_report, current, _history_path()
-    )
+    """対象レポートを選定し、 内訳をログにまとめて返す。"""
+    targets, skipped = select_targets(entries, rules_by_report, current, history_path())
     enabled_count = sum(1 for entry in entries.values() if entry.enabled)
     logger.info(
         "定期取得を開始します: 管理表=%s, 全 %d 件 / 有効 %d 件 / 対象 %d 件",
@@ -383,7 +358,7 @@ def _execute_each_target(
                 _download(
                     entry,
                     project,
-                    _history_path(),
+                    history_path(),
                     schedule_key,
                     schedule_run_time=(
                         schedule_rule.desired_time if schedule_rule is not None else None
@@ -399,7 +374,7 @@ def _execute_each_target(
             )
         except (ComkenError, OSError) as e:
             # **想定した失敗は続ける。想定していない失敗は止める。**
-            # - `ComkenError` は `docs/ERRORS.md` に対処法が載っている想定内の失敗
+            # - `ComkenError` は例外クラスの docstring に対処が書いてある想定内の失敗
             # - `OSError` は共有サーバー断・権限・パスなど運用上の失敗（保存先はレポートごとに違う）
             # - それ以外（`TypeError` などのバグ）は捕捉せず、その場で落として気づかせる
             #   （`ScheduledDownloadFailedError` の顔で出ると「もう一度実行」を繰り返すだけになる）
@@ -428,7 +403,7 @@ def _report_run_results(
         run_seconds,
     )
     if failed:
-        raise ScheduledDownloadFailedError(failed, _history_path()) from last_exception
+        raise ScheduledDownloadFailedError(failed, history_path()) from last_exception
     return saved
 
 
@@ -558,16 +533,15 @@ def _download(
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
-    ``schedule_run_time`` はスケジュール行の「取得時刻」（記録用の希望時刻）、
-    ``schedule_start_time`` は「取得開始時刻」。出力ファイル名に埋め込む時刻は
-    ``_resolve_run_time()`` が決める（``save_report()`` まで運ぶ）。
+    ``schedule_run_time`` はスケジュール行の「取得時刻」、``schedule_start_time``
+    は「取得開始時刻」。出力ファイル名に埋め込む時刻は ``_resolve_run_time()`` が
+    決める（``save_report()`` まで運ぶ）。
 
     ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``。
     ``save_report()`` 経由でファイル名に、``_Attempt`` 経由で履歴の「実行日時」に渡す。
 
-    ``fetch_browser`` はブラウザ経由で 1 件取得する関数（=別リポジトリ
-    ``salesforce-report-browser`` が渡すもの）。渡されているときは **経路がどう
-    であれ** その関数で取る（履歴の「取得経路」も ``ROUTE_BROWSER``）。
+    ``fetch_browser`` が渡されているときは **経路がどうであれ** その関数で取る
+    （履歴の「取得経路」も ``ROUTE_BROWSER``）。
 
     **取得の途中で取り直しはしない。** Report API が 2000 件超で打ち切られた
     ときは ``SalesforceReportTruncatedError`` がそのまま失敗になる（管理表の
@@ -604,9 +578,8 @@ def _resolve_run_time(
 ) -> dt.time | None:
     """出力ファイル名に埋め込む時刻（``HHMM``）を決める。
 
-    - **「上書き」×**: スケジュールの「取得時刻」（記録用の希望時刻）をそのまま
-      使う。空欄なら ``None`` を返し、``output_path()`` 側で実行時刻に
-      フォールバックさせる（従来の動き）
+    - **「上書き」×**: スケジュールの「取得時刻」をそのまま使う。空欄なら
+      ``None`` を返し、``output_path()`` 側で実行時刻にフォールバックさせる
     - **「上書き」○**: 「取得時刻」が空欄なら「取得開始時刻」を使う。両方が
       空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
       ``OverwriteTimeMissingError`` で取得前に止める
@@ -658,21 +631,13 @@ def _failure_row(
     判定は ``_FAILURE_STAGES`` の対応表（**上から順に判定する**）と、
     表に無い例外の次の3つで決める。
 
-    1. 表の1行目: 取得段階の前（保存先フォルダ・グループ・SOQL の登録・
-       未完成の印・上書き○の時刻）→ 取得も保存も未到達・設定
-    2. 表の2行目: 取得は終わったが列名に問題が起きた → 取得成功・保存未到達・設定
-    3. 表の3行目: 取得は終わったが SOQL の加工で問題が起きた
-       → 取得成功・保存未到達・プログラム
-    4. 表の4行目: 取得は成功したが 0 件 → 取得成功・保存未到達・データなし
-    5. 表の5行目: 保存は終わったがファイルが 0 バイト
+    1. ``OSError`` → 保存段階（書き込み・権限・共有サーバー断）
        → 取得成功・保存失敗・ファイル
-    6. `OSError` → 保存段階（書き込み・権限・共有サーバー断）
-       → 取得成功・保存失敗・ファイル
-    7. その他の `ComkenError` → 取得段階（Salesforce 通信と認証）
+    2. その他の `ComkenError` → 取得段階（Salesforce 通信と認証）
        → 取得失敗・保存未到達・Salesforce
-    8. それ以外 → 取得失敗・保存未到達・プログラム（想定外）
+    3. それ以外 → 取得失敗・保存未到達・プログラム（想定外）
 
-    7. は `download_scheduled()` が捕捉する範囲と一致させている。
+    2. は `download_scheduled()` が捕捉する範囲と一致させている。
 
     `schedule_key` は履歴の「スケジュールキー」列へ書く（`record_success()` と対称）。
 

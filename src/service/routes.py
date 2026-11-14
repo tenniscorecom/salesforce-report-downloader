@@ -47,12 +47,9 @@ def planned_route(
 
     「取得開始」ログは ``require_folder()`` の前に出すので、Salesforce へ
     問い合わせる前の段階では「実際に何を使うか」は未確定。``fetch_report()`` の
-    分岐ロジック（``use_soql`` → SOQL / ``exceeds_row_limit`` → ブラウザ /
-    どちらも偽 → API）をそのまま写して、予定していた経路の文字列だけを
-    先に出しておく。
+    分岐ロジックをそのまま写して、予定していた経路の文字列だけ先に出しておく。
 
-    ``fetch_browser`` が渡されているときは **経路に関係なくブラウザ** を返す
-    （``fetch_report()`` も同じ順にブラウザを取る）。
+    ``fetch_browser`` が渡されているときは **経路に関係なくブラウザ** を返す。
     """
     if fetch_browser is not None:
         return ROUTE_BROWSER

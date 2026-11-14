@@ -30,9 +30,6 @@ r"""src/service/ — 取得の本体（パッケージ）。
 あれば、呼び出し側でスケジューラを増やす。Downloader 側に「今すぐ取りに行く」
 だけの関数を残すと、定期取得が動いていないことに誰も気づかなくなるため。
 
-プロジェクト側のコードに Salesforce の URL もレポート ID も現れない。管理表の
-参照先を差し替えても、`CUSTOMER_LIST = "1001"` はそのままでよい。
-
 このパッケージが持つもの:
 - 1件を取得して保存し履歴に残す流れ（``attempt.py`` の ``download_scheduled`` と
   ``_download_scheduled_locked`` / ``_download`` / ``_Attempt``）

@@ -2,14 +2,9 @@ r"""src/service/save.py — 保存とフォルダ検査。
 
 `download_scheduled()` の 1 件単位で「フォルダ検査 → 取得 → 保存」を担当する
 `save_report()` / `_write_csv()` / `require_folder()` を置く。下位モジュール
-（`api.py` / `soql.py`）には依存しない（`src.paths`
-と `src.exceptions` だけ）。
+（`api.py` / `soql.py`）には依存しない（`src.paths` と `src.exceptions` だけ）。
 
     from src.service.save import save_report, _write_csv, require_folder
-
-`save_report()` は ``~`` 一時ファイルに書いてから ``os.rename`` / ``os.replace``
-で最終パスへ移す（``paths.move_into_place()`` が上書きしない保存ヘルパー）。
-``_write_csv()`` は ``atomic_write()`` を使った一時ファイル書き込み。
 
 **列名の置き換えはここでは行わない。** SOQL 経由のレポートの列名
 （``COLUMN_NAMES`` / ``列名の対応.csv``）は ``src.service.soql`` の
@@ -42,20 +37,16 @@ logger = logging.getLogger("src.service")
 def require_folder(entry: ReportEntry) -> None:
     """保存先フォルダが無ければ `ReportFolderNotFoundError`。**勝手に作らない。**
 
-    作らずに失敗させる。無いのは書き間違いのことが多く、勝手に作ると
-    誰も読まない場所へ置き続けることになる。
+    無いのは書き間違いのことが多く、勝手に作ると誰も読まない場所へ置き続けることになる。
 
-    検査するのは「**ベースフォルダ**」のみ。出力パスは「ベース / 概要」の
-    2 階層になったが、ここで作るかを分けるのはベースの有無だけで十分
-    （概要のフォルダは ``save_report()`` が ``mkdir(exist_ok=True)`` で自動作成する。
-    ここで概要の有無まで検査すると、保存のたびに人が概要フォルダを掘る必要が
-    出て、運用上の意味がない）。
+    検査するのは**ベースフォルダ**のみ。出力パスは「ベース / 概要」の 2 階層だが、
+    概要のフォルダは ``save_report()`` が ``mkdir(exist_ok=True)`` で自動作成する
+    （ここで検査すると、人が概要フォルダを掘る手間が増える）。
 
-    保存先フォルダは ``paths.base_folder()`` が組み立てる
-    （管理表の「グループ」＋設定シートの「ベースURL」）。
-    `entry.group` が設定シートに無い場合はここより先に
-    `GroupNotRegisteredError` が上がる（フォルダの有無より先に、
-    そもそも出力先を決められないという、より根本的なエラーとして扱う）。
+    保存先フォルダは ``paths.base_folder()`` が組み立てる（管理表の「グループ」＋
+    設定シートの「ベースURL」）。`entry.group` が設定シートに無い場合はここより先に
+    `GroupNotRegisteredError` が上がる（出力先そのものを決められないほうが
+    根本的なエラーだから）。
     """
     base = paths.base_folder(entry)
     if not base.is_dir():
@@ -79,78 +70,51 @@ def save_report(
     ファイルになる）。列名を得る手段が無いので動きは変えない
     （``USE_BULK=False`` の SOQL が 0 件のとき）。
 
-    **保存の流れ:**
-    本番の名前の空ファイルを **一瞬も作らない** ため、 次の順序で書く。
+    **保存の流れ**（本番の名前の空ファイルを**一瞬も作らない**ため）:
 
-    1. 同じフォルダに **一時ファイル**（``~`` プレフィックス + UUID）に CSV を全部書く
+    1. 同じフォルダに**一時ファイル**（``~`` プレフィックス + UUID）へ CSV を全部書く
     2. 通常モード（``entry.overwrite`` が ``False``）は ``os.rename`` で最終パス
-       （または連番 ``_1`` / ``_2`` …）へ移す — ``os.rename`` は Windows で
-       移し先が存在すると ``FileExistsError`` になるので、それを「次の連番候補
-       へ」の判定に使い、**上書きしない**
-    3. 上書きモード（``entry.overwrite`` が ``True``）は ``os.replace`` で最終
-       パスへ **毎回上書き** する（Windows でも移し先が存在してよい）。 連番は
-       付けない（``{管理番号}_{HHMM}.csv``。同じ ``HHMM`` なら同じ名前になり、
-       翌日の同時刻に上書きされる）
+       （または連番 ``_1`` / ``_2`` …）へ移す。``os.rename`` は Windows で移し先が
+       存在すると ``FileExistsError`` になるので、それを「次の連番候補へ」の判定に
+       使い、**上書きしない**
+    3. 上書きモード（``entry.overwrite`` が ``True``）は ``os.replace`` で最終パスへ
+       **毎回上書き**する（Windows でも移し先が存在してよい）。連番は付けない
+       （``{管理番号}_{HHMM}.csv``。同じ ``HHMM`` なら同じ名前になり、翌日の同時刻に
+       上書きされる）
     4. 失敗時は一時ファイルと（移せていれば）最終ファイルを ``unlink`` で片付ける
 
-    という流れになり、**本番の名前の空ファイルを一瞬も作らない**。
     連番上限 ``RESERVE_PATH_LIMIT`` まで ``FileExistsError`` が続いたら
-    ``DownloaderError``。詳細は ``paths.move_into_place()`` の
-    docstring 参照。
+    ``DownloaderError``。詳細は ``paths.move_into_place()`` の docstring 参照。
 
     保存先は ``paths.output_path()`` が返す単一のパス:
 
     - 通常モード: ``ベース/概要/{管理番号}_{YYYYMMDD}_{HHMM}.csv``
     - 上書きモード: ``ベース/概要/{管理番号}_{HHMM}.csv``
 
-    通常モードの衝突回避は ``paths.move_into_place()`` で常に（連番 ``_1`` /
-    ``_2`` … を付けて）。 同じパスへの上書きは想定しない — 取得済みキャッシュを
-    読む側（`pathlib.Path.glob()` で `paths.output_path()` が組み立てたパスを
-    探す運用）は、同じフォルダ内の連番を全部候補に含めて新しい順で拾えるので、
-    何度実行しても履歴と当日の最新状態は崩れない。 上書きモードは ``os.replace``
-    で ``HHMM`` 単位で毎回置き換える（古いファイルの内容は消える）。
+    通常モードは連番（``_1`` / ``_2`` …）を付けて上書きしない。取得済みキャッシュを
+    読む側は同じフォルダの連番を全部候補に拾えるので、何度実行しても当日の最新状態は
+    崩れない。上書きモードは ``os.replace`` で ``HHMM`` 単位に毎回置き換える
+    （古いファイルの内容は消える）。
 
     **概要のフォルダは保存前にここで ``mkdir`` する。** ベースフォルダは
-    ``_download()`` 側の ``require_folder()`` で先に検査済みなので、
-    ``parents=False`` で「無ければ失敗する」をそのまま流用できる（ベースが既に
-    無い場合はここで ``FileNotFoundError`` が出る。先に ``require_folder()`` で
-    ``ReportFolderNotFoundError`` に変換する流れが壊れないよう、 ``save_report()`` 単体で
-    動くテスト経路のために ``OSError`` のまま伝播させる）。**dry-run 中は
-    ``mkdir`` もしない**（``comken.runtime.dry_run`` のブロック内では保存もしない設計に
+    ``require_folder()`` で先に検査済みなので、``parents=False`` で「無ければ失敗する」
+    をそのまま流用できる。**dry-run 中は ``mkdir`` もしない**（保存もしない契約に
     沿って、フォルダだけ作ると「書き込まないのにフォルダだけが残る」事故を防ぐ）。
 
     ``current`` は ``_download_scheduled_locked()`` で固定した ``clock_now()`` の値。
-    ``paths.output_path(now=current)`` に渡すことで、23:59 に始まった実行が日付をまたいで
-    終わっても、出力ファイル名が開始日で揃う。``None`` のときは ``paths.output_path()``
-    側で ``clock_now()`` にフォールバックする（既存の単体テスト経路を残すため）。
-    上書きモードは ``HHMM`` 単位なので ``current`` は ``schedule_run_time`` と
-    合成する**日付**にしか影響しない（テストの出力パス固定のために
-    ``schedule_run_time`` / ``now`` を渡しても安全）。
-
-    **失敗時の後始末について:** 書き込みが例外の原因になった場合は、既存の
-    ``_download()`` の ``except Exception`` 経路で ``_Attempt.record_failure()``
-    を経由して ``ScheduledDownloadFailedError`` に変換される。一時ファイル
-    （``move_into_place()`` がまだ移せていない）と最終ファイル（移せたが 0 バイト
-    検査で落とすケース）は ``unlink(missing_ok=True)`` で後始末する。
-
-    **複雑度を下げる:** 本体は「``base`` を決める → 一時ファイルを
-    用意 → ``EmptyReportError`` / dry-run を判定 → CSV を書く
-    → 最終パスへ移す → 0 バイト検査」の手順に絞り、 各手順を ``_prepare_*`` /
-    ``_finalize_*`` / ``_verify_*`` / ``_cleanup_*`` 系のヘルパーに委譲して
-    本体の複雑度を下げる。
+    23:59 に始まった実行が日付をまたいで終わっても、出力ファイル名が開始日で揃う。
 
     **列名の置き換えはここでは行わない。** SOQL 経由のレポートの列名は
     ``src.service.soql`` の ``fetch_via_soql()`` が取得時に置き換える
-    （``transform()`` の前）。 ここは受け取った ``Table`` をそのまま CSV に書く。
+    （``transform()`` の前）。ここは受け取った ``Table`` をそのまま CSV に書く。
     """
     base = paths.output_path(entry, schedule_run_time, now=current)
-    # 保存先を決定した時点で DEBUG を 1 行出す（上書きモードかどうかも一緒に出す）。
-    # 障害調査時に「どのパスに書こうとして何が起きなかったか」を追えるようにする
+    # 障害調査時に「どのパスに書こうとして何が起きなかったか」を追えるよう、
+    # 保存先を決定した時点で DEBUG を 1 行出す（上書きモードかどうかも一緒に出す）
     logger.debug("保存先を決定しました: パス=%s, 上書き=%s", base, entry.overwrite)
     _prepare_output_directory(base)
 
-    # **一時ファイル（~プレフィックス）を作ってそこへ書く。** 本番の名前の
-    # 空ファイルを一瞬も作らない。
+    # 一時ファイル（~プレフィックス）へ全部書いてから移す
     tmp_path = paths.make_temp_csv_path(base)
     final_path: Path | None = None
     try:
@@ -158,8 +122,8 @@ def save_report(
         if not table and not entry.allow_empty:
             raise EmptyReportError(entry.key, entry.summary, entry.url)
         # **dry-run は副作用を出さない契約。** ファイルも一時ファイルも作らない。
-        # ``save_report()`` の戻り値パスは「保存しようとしたパス」と同じ ``base`` を返す
-        # （連番探索は行わない。dry-run は競合判定まで含めて副作用を出さない運用）
+        # 戻り値は「保存しようとしたパス」と同じ ``base``（連番探索は行わない。
+        # dry-run は競合判定まで含めて副作用を出さない運用）
         if is_dry_run():
             return base
         _warn_columns_are_empty(entry, table)
@@ -167,10 +131,9 @@ def save_report(
         final_path = _finalize_save(tmp_path, base, entry)
         _verify_saved_file_not_empty(final_path, table, entry)
     except Exception:
-        # **失敗時の後始末。** ``final_path`` が決まっていれば（move_into_place が
-        # 成功したあとに 0 バイト検査で落とすケース）削除。``tmp_path`` は
-        # move_into_place に成功していれば既に存在しない（rename で消えた）ので
-        # ``missing_ok=True`` で安全
+        # **失敗時の後始末。** ``final_path`` が決まっていれば削除する。
+        # ``tmp_path`` は move_into_place に成功していれば既に存在しない
+        # （rename で消えた）ので ``missing_ok=True`` で安全
         _cleanup_failed_save(tmp_path, final_path)
         raise
     return final_path
@@ -234,7 +197,6 @@ def _verify_saved_file_not_empty(final_path: Path, table: Table, entry: ReportEn
     中身だけが捨てられ、 0 バイトのファイルが残る。 空のファイルを
     成功扱いにしないための検査。 ``table.columns`` が空のときは見出しも無いので
     検査しない（書きようが無い）。 dry-run はこの手前で ``return`` 済み。
-    経緯は ``docs/HISTORY.md`` 参照。
     """
     if not table.columns:
         return
@@ -257,7 +219,7 @@ def _cleanup_failed_save(tmp_path: Path, final_path: Path | None) -> None:
 
 
 def _write_csv(path: Path, table: Table) -> None:
-    """一時ファイルへ書いてから置き換える。
+    """一時ファイルへ CSV を書く。
 
     複数のプロジェクトが同時に呼ぶので、直接書くと**読んでいる最中のファイルが
     半端な状態**になりうる。同じフォルダ内の置き換えは一度に入れ替わる。

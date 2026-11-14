@@ -279,16 +279,13 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
     （``choices`` が宣言された列）。`祝日対応` は「取得しない」「取得する」
     「1営業日前」「1営業日後」の 4 値プルダウン（`HOLIDAY_SKIP` /
     `HOLIDAY_FETCH` / `HOLIDAY_BEFORE` / `HOLIDAY_AFTER`）。「曜日」「日付」
-    「取得時刻」（記録用）は自由記述のため対象外。
+    「取得時刻」は自由記述のため対象外。
 
     **「曜日」「日付」セルには赤い条件付き書式も付与する。**「取得頻度」と
     矛盾するセル（毎週なのに曜日が空、毎月なのに日付が空、毎日・毎営業日に
     曜日が入っている、等）を編集時点で気づかせるため。``create_template()``
     / ``create_combined_workbook()`` で生成したシートにも同じ書式が
     付く（``_finalize_sheet`` 経由で同じ関数を呼ぶ）。
-
-    Args:
-        path: 「スケジュール」シートを持つ Excel ファイル（既存）。
 
     Raises:
         ComkenFileNotFoundError: ``path`` が存在しない場合。
@@ -304,7 +301,7 @@ def apply_schedule_dropdowns(path: str | Path) -> None:
     book = load_workbook(source)
     # `comken.toolbox.excel.Excel.create_data_sheet()` は `PY_` プレフィックスを
     # 自動付与するため、シート探索も `PY_` 付きで行う。プレフィックス無しの
-    # 旧シート名もフォールバックとして受け付ける（手作業で「スケジュール」と
+    # シート名もフォールバックとして受け付ける（手作業で「スケジュール」と
     # 付けた既存ブックへの後付けを想定）
     prefixed_sheet_name = f"PY_{SCHEDULE_SHEET_NAME}"
     if prefixed_sheet_name in book.sheetnames:

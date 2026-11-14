@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -154,16 +155,17 @@ def _make_master(
     return path
 
 
-@pytest.fixture(autouse=True)
-def _reset_group_settings_cache():
-    """``src.paths`` のグループ設定キャッシュをテストごとに破棄する。"""
-    import src.paths as paths_module
+def _patch_clock(monkeypatch) -> None:
+    """``clock_now()`` を平日 9:00 に固定する。
 
-    paths_module.reset_group_settings_cache()
-    try:
-        yield
-    finally:
-        paths_module.reset_group_settings_cache()
+    このテストのスケジュール行は「取得開始時刻」が ``09:00`` なので、実行時刻が
+    09:00 未満だと対象選定から外れてしまい、「グループ未登録で失敗する」経路を
+    通らない。判定が実行時刻に左右されないよう固定する。
+    """
+    import src.service.attempt as attempt_module
+
+    fixed_now = dt.datetime(2026, 9, 18, 9, 0)  # noqa: DTZ001
+    monkeypatch.setattr(attempt_module, "clock_now", lambda: fixed_now)
 
 
 def test_unregistered_group_is_recorded_as_config(tmp_path, monkeypatch) -> None:
@@ -171,6 +173,7 @@ def test_unregistered_group_is_recorded_as_config(tmp_path, monkeypatch) -> None
 
     出力先を決められないので取得段階の前で止まる（取得結果・保存結果は空）。
     """
+    _patch_clock(monkeypatch)
     master = _make_master(
         tmp_path / "管理表.xlsx",
         master_rows=[["1001", "営業本部", "山田", "顧客一覧", URL_A, "○"]],

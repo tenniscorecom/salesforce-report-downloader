@@ -1,13 +1,9 @@
 r"""src/service/soql.py — SOQL 経由の取得と件数検証・列名の置き換え。
 
 ``download_scheduled()`` の 1 件分で、管理表の「SOQL」列が「○」のときに呼ばれる。
-SOQL の本文は ``soql_report_for(entry.key)`` で引いた ``SoqlReport`` が出す —
+SOQL の本文は ``soql_report_for(entry.key)`` で引いた ``SoqlReport`` が出す。
 ``fetch_via_soql()`` はそれを ``SalesforceBase.bulk_query()`` に渡す
 （``SoqlReport.USE_BULK`` が ``False`` のときは ``SalesforceBase.query()``）。
-
-**取得後の流れは「取得 → 件数の比較 → 列名の置き換え → ``transform()``」** の順。
-列名の置き換え（``COLUMN_NAMES`` / ``列名の対応.csv``）は ``transform()`` の
-**前** に行うので、 ``transform()`` は **表示名の列** を受け取る。
 
     from src.service.soql import (
         fetch_via_soql,
@@ -16,9 +12,6 @@ SOQL の本文は ``soql_report_for(entry.key)`` で引いた ``SoqlReport`` が
         _extract_row_count_from_report_payload,
         INCOMPLETE_SOQL_MARKER,
     )
-
-``INCOMPLETE_SOQL_MARKER`` の文字列は soql-collector 側の ``INCOMPLETE_MARKER``
-と同じ。 変えるときは両方同時に。
 """
 
 from __future__ import annotations
@@ -55,61 +48,40 @@ INCOMPLETE_SOQL_MARKER = "【未完成】"
 
 
 def fetch_via_soql(entry: ReportEntry) -> Table:
-    """SOQL経由で entry を取得し、`_fetch()` と同じ Table を返す。
+    """SOQL経由で entry を取得し、``fetch_via_api()`` と同じ Table を返す。
 
-    ``entry.key`` と同じ ``KEY`` を持つ ``SoqlReport`` を comken の
-    ``soql_report_for()`` で探す。管理表の「SOQL」列が「○」なのに登録が無い
-    場合は ``SoqlReportNotRegisteredError``（設定ミス）で止まる。
+    ``entry.key`` と同じ ``KEY`` を持つ ``SoqlReport`` を ``soql_report_for()`` で
+    探す。管理表の「SOQL」列が「○」なのに登録が無い場合は
+    ``SoqlReportNotRegisteredError``（設定ミス）で止まる。
+    つなぐ組織は管理表の ``entry.url`` を使う。
 
-    つなぐ組織は管理表の ``entry.url`` を使う。 ``SoqlReport`` には URL などの
-    接続情報を持たせず、管理表の ``ReportEntry`` を単一の正にしている
-    （管理表を経由しない別ルートは廃止）。
+    取り方は ``SoqlReport.USE_BULK`` で選ぶ（既定は Bulk API 2.0 の
+    ``SalesforceBase.bulk_query()``、``False`` なら REST の
+    ``SalesforceBase.query()``）。集計関数・``GROUP BY`` を使う SOQL は
+    ``USE_BULK=False`` にする。
 
-    取得は ``SoqlReport.USE_BULK`` で選ぶ。 **既定（``True``）** は
-    ``SalesforceBase.bulk_query()``（Bulk API 2.0）。サーバ側で
-    データを処理する非同期ジョブのため、件数が多い SOQL レポートでの
-    往復回数を抑えられる。集計関数・``GROUP BY`` 等 ``bulk_query()``
-    が受け付けない SOQL はこの経路では使えない。 ``USE_BULK=False`` にすると
-    ``SalesforceBase.query()``（REST API・ページ送り）で取り、集計関数・
-    ``GROUP BY`` も使える。
+    取得後の流れは「取得 → 件数の比較 → 列名の置き換え → ``transform()``」の順。
 
-    **未完成の SOQL の検知:** ``soql()`` が返した本文の
-    先頭（前後の空白を除く）が ``INCOMPLETE_SOQL_MARKER`` で始まる SOQL は
-    そのままでは Salesforce に問い合わせられない。 取得（``bulk_query()`` /
-    ``query()``）を呼ぶ **前**に ``SoqlIncompleteError`` で止める
+    - **件数の比較**（``SoqlReport.CHECK_COUNT`` が真のとき）: 同じ接続のうちにもう
+      1 度 Report API を叩いて総件数を取り、SOQL の件数と比べる。**一致しなければ
+      ``SoqlCountMismatchError`` で保存せずに止める**（一時ファイルも作らない）。
+      レポート ID が取れない / 総件数が取れない / 401・403 以外の HTTP エラーは
+      WARNING を出して保存を続ける（401・403 は取得の失敗として扱う）。
+      ``CHECK_COUNT=False`` のときは Report API を 1 度も叩かない。
+    - **列名の置き換え**: ``SoqlReport.COLUMN_NAMES``（手書き）と
+      ``列名の対応.csv``（soql-collector の出力）で SOQL の API 名の列を表示名に
+      置き換える。見出しが衝突すると ``SoqlColumnNameConflictError`` で止まる
+      （そのレポートだけの失敗になり、CSV は書かれない）。
+    - **加工 transform()**: ``SoqlReport.transform()`` を呼ぶ。受け取る ``Table``
+      は**列名を置き換えたあとのもの**（見出しは表示名）なので、``transform()`` は
+      表示名の列で書ける。中の例外（``ComkenError`` 系以外も含む）や ``Table`` でない
+      戻り値は ``SoqlTransformError``（``DownloaderError`` 系）に包み直す。
+      メッセージには **行の値や SOQL 本文を含めない**。
+
+    **未完成の SOQL の検知:** ``soql()`` が返した本文の先頭（前後の空白を除く）が
+    ``INCOMPLETE_SOQL_MARKER`` で始まる SOQL は、そのままでは Salesforce に
+    問い合わせられない。取得を呼ぶ **前** に ``SoqlIncompleteError`` で止める
     （Salesforce には問い合わせない）。
-    印の文字列は ``soql.INCOMPLETE_SOQL_MARKER`` の定数で soql-collector 側の
-    ``INCOMPLETE_MARKER`` と同じ。
-
-    **件数の比較:** ``SoqlReport.CHECK_COUNT`` が ``True`` のとき
-    （既定）、 取得の **直後** に **同じ接続のうち** にもう 1 度
-    Report API を叩いて ``factMap["T!T"]["aggregates"]`` の ``RowCount`` を取り、
-    ``len(table)`` と比べる。一致すれば INFO ログを 1 行出して返す。**一致
-    しなければ** ``SoqlCountMismatchError`` で **保存させずに**例外を上げる
-    （一時ファイルも作らない）。レポート ID が URL から取れない / ``RowCount``
-    が無い / 401・403 以外の HTTP エラー / ``SalesforceError`` は WARNING を出して
-    保存を続ける（401・403 は既存の失敗扱いに揃える）。 ``CHECK_COUNT=False`` のときは
-    Report API を 1 度も叩かずに 取得した結果をそのまま返す
-    （=レポートの GET が必要ないレポート向け）。**同じ接続のうち** に比較するため
-    ``site_for()`` も 1 回しか呼ばれない（ログインは 1 回だけ）。
-
-    **加工 transform():** 件数の比較と列名の置き換えの **あと**に
-    ``SoqlReport.transform()`` を呼ぶ。 受け取る ``Table`` は
-    **列名を置き換えたあとのもの**（見出しは表示名に置き換わっている）
-    なので、 ``transform()`` は表示名の列で書ける。 件数の比較は
-    加工前の件数で行われる（レポートの総件数と比べられるのは加工前の件数
-    のため）。 加工後が 0 行のときは既存の ``ALLOW_EMPTY`` 判定がそのまま動く。
-    ``transform()`` の中で起きた例外（``ComkenError`` 系以外も含む）は
-    ``SoqlTransformError`` （``DownloaderError`` 系）に包み直す。 戻り値が
-    ``Table`` でない（``None`` を返した等）場合も ``SoqlTransformError``
-    で止める。 どちらも ``from exc`` で元の例外を繋ぐ。 メッセージには
-    **行の値や SOQL 本文を含めない** （``str(exc)`` をそのまま載せない）。
-
-    **列名の置き換え:** 件数の比較の **あと**・``transform()`` の **前** に
-    ``SoqlReport.COLUMN_NAMES``（手書き）と ``列名の対応.csv``（soql-collector
-    の出力）で SOQL の API 名の列を表示名に置き換える。 見出しが衝突すると
-    ``SoqlColumnNameConflictError`` で止まる（取得側の例外なので、
-    そのレポートだけの失敗になり、 CSV は書かれない）。
     """
     report_cls = soql_report_for(entry.key)
     instance = report_cls()
@@ -239,11 +211,6 @@ def _fetch_report_total_count(salesforce: Any, report_id: str) -> int | None:
     （HTTP 以外の致命的なら、それは Salesforce 全体に問題があるときで、
     レポートの本体の取得は別経路で実行済み ── 件数比較だけを諦めて続行する
     方が、 取得済みのレコードを捨てずに済む）。
-
-    実装は soql-collector の ``445b817`` （``src/fetch.py``）から移植した
-    ヘルパーとほぼ同じ形。**値の形**は ``int`` の他に ``{"label": ..., "value": n}``
-    形式の ``dict`` を受ける（bool は除外）。取れる形が無い場合は WARNING を
-    1 行出し、 ``None`` を返す。
     """
     reports_path = salesforce.data_path("/analytics/reports")
     path = f"{reports_path}/{report_id}?includeDetails=false"
@@ -289,12 +256,10 @@ def _extract_row_count_from_report_payload(payload: object) -> int | None:
     値が想定形でない（``int`` / ``{"value": int}`` の ``dict`` 以外 /
     ``bool``）のときは ``None`` 。
 
-    実装は「``_resolve_report_metadata()`` で ``reportMetadata`` /
-    ``aggregates`` まで安全に取り出す → ``_find_row_count_index()`` で
-    ``RowCount`` の位置を特定 → ``_coerce_row_count_value()`` で値を
-    ``int`` に整形」の 3 段構成にして複雑度を下げる。 1 段目・2 段目で
-    形をチェックして ``None`` を弾き、3 段目で値だけを判定するため、
-    メインの本体はガード文の連なりだけになる。
+    入れ子の取り出しを 3 段（``_resolve_report_metadata()`` →
+    ``_find_row_count_index()`` → ``_resolve_fact_aggregates()`` →
+    ``_coerce_row_count_value()``）に分け、形をチェックする段で ``None`` を弾く
+    ことで、メインの本体はガード文の連なりだけになる。
     """
     aggregates = _resolve_report_metadata(payload)
     if aggregates is None:
@@ -370,9 +335,7 @@ def _coerce_row_count_value(value: object) -> int | None:
     Salesforce の API は ``int`` か ``{"label": ..., "value": n}`` 形式の
     ``dict`` を返す。 ``bool`` は ``int`` のサブクラスなので先に除外する。
     それ以外の形（``str`` / ``float`` / その他 ``dict``）は ``None`` 。
-    想定値 ``int`` / ``{"value": int}`` の ``dict`` しか受け付けない理由は
-    親関数 ``_extract_row_count_from_report_payload()`` の docstring に
-    従う（件数の比較にしか使わないので、要件外の形は黙って捨てる）。
+    件数の比較にしか使わないので、要件外の形は黙って捨てる。
     """
     if isinstance(value, bool):
         return None
@@ -405,13 +368,11 @@ def _apply_soql_columns(
 ) -> Table:
     """列名の置き換えを適用した ``Table`` を返す。
 
-    **管理表の「SOQL」列が「○」の行は ``src/reports/`` 配下の ``SoqlReport`` 経由で
-    取りに来ていて、 ``SoqlReport.COLUMN_NAMES`` が人が読む列名への対応表を
-    持っている。 ``soql-collector`` が出力する ``列名の対応.csv``
-    からも自動で拾う（手書きが無い列や新しいレポートでも、 soql-collector を
-    一度走らせれば反映される）。 ``COLUMN_NAMES`` の **手書きは優先**
-    （同じキーは手書きが勝つ） — 「直したい列だけ書けばよい」を崩さないため。
-    経緯は ``docs/HISTORY.md`` 参照。
+    ``SoqlReport.COLUMN_NAMES`` が人が読む列名への対応表を持っている。
+    ``soql-collector`` が出力する ``列名の対応.csv`` からも自動で拾う
+    （手書きが無い列や新しいレポートでも、 soql-collector を一度走らせれば
+    反映される）。 ``COLUMN_NAMES`` の **手書きは優先**（同じキーは手書きが勝つ）
+    ──「直したい列だけ書けばよい」を崩さないため。
 
     見出しが衝突すると ``SoqlColumnNameConflictError`` が送出される。 ここは
     取得側なので、 CSV は書かれない（当該レポートだけの失敗になる）。

@@ -1,15 +1,14 @@
 r"""src/service/_utils.py — 履歴パスを返すだけの内部ヘルパー。
 
-``src/service/attempt.py`` から ``scheduler.py`` の依存を避けるため、
+履歴CSVのパスを読み取る箇所を 1 か所に寄せるため、
 ``comken.services.salesforce_downloader.paths.HISTORY_PATH`` を
-``_history_path()`` でラップした関数を置く。
+``history_path()`` で返す関数を置く。
 
     from src.service._utils import history_path
 
-履歴CSVの置き場は ``comken.services.salesforce_downloader.paths.HISTORY_PATH``
-で、テストでは ``monkeypatch.setattr`` で comken 側のモジュール属性を
-差し替える運用なので、呼び出し時点で ``history_paths.HISTORY_PATH`` を読む
-（``from ... import HISTORY_PATH`` で名前を固定すると差し替えが効かない）。
+``from ... import HISTORY_PATH`` で名前を固定すると差し替えが効かないので、
+呼び出し時点で ``history_paths.HISTORY_PATH`` を読む（テストでは
+``monkeypatch.setattr`` で comken 側のモジュール属性を差し替える運用）。
 """
 
 from __future__ import annotations

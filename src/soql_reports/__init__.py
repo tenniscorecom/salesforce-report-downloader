@@ -4,15 +4,15 @@
 （``SoqlReport.USE_BULK`` を ``False`` にすると ``SalesforceBase.query()`` で取る
 レポートも作れる）。
 **登録は自動** — ``src/reports/`` パッケージに ``SoqlReport`` サブクラスを置くと、
-``_registry.registered_reports()`` が ``pkgutil.iter_modules`` で走査して
-自動で集める。明示的なタプル編集は不要。
+``_registry.registered_reports()`` がそのパッケージを走査して自動で集める。
+明示的なタプル編集は不要。
 
-取得の入口は **管理表ルートだけ** に統一した。管理表の「SOQL」列が「○」の行は
-取得実行側（``src.service.fetch_via_soql()`` / ``save_report()``）が
-``soql_report_for()`` で管理番号から ``SoqlReport`` を引く。
+取得の入口は **管理表ルートだけ**。管理表の「SOQL」列が「○」の行は取得実行側
+（``src/service/soql.py`` の ``fetch_via_soql()``）が ``soql_report_for()`` で
+管理番号から ``SoqlReport`` を引く。
 
-``_registry.py`` は別モジュールに置く（``_registry`` 自体は ``src.soql_reports``
-パッケージの別モジュールとして読み込み、 ``runner`` からの循環を避ける）。
+``_registry.py`` は別モジュールに置く（``runner`` から ``__init__`` を逆に import
+すると循環するため）。
 """
 
 from src.exceptions import SoqlReportNotRegisteredError

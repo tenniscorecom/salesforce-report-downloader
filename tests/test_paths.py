@@ -17,7 +17,7 @@
 `MASTER_PATH` / `HISTORY_PATH` は `src.paths` のモジュール変数で、テストでは
 `monkeypatch.setattr` で tmp_path のパスへ差し替える。``_Paths`` ラッパー経由の
 ``output_path`` は呼び出し時点のモジュール変数を読むので、``src.paths`` 1 か所を
-patch するだけで全箇所に反映される（``service.py`` 内のローカル束縛を経由しない）。
+patch するだけで全箇所に反映される（``src/service/`` 内のローカル束縛を経由しない）。
 """
 
 import datetime as dt
@@ -57,16 +57,6 @@ SUMMARY_1002 = "売上実績"
 SUMMARY_1003 = "停止中"
 
 
-@pytest.fixture(autouse=True)
-def reset_master_cache():
-    """グループ設定のプロセス内キャッシュをテストごとに破棄する。"""
-    paths_module.reset_group_settings_cache()
-    try:
-        yield
-    finally:
-        paths_module.reset_group_settings_cache()
-
-
 def make_master(path: Path, rows: list[list], settings_rows: list[list] | None = None) -> Path:
     """管理表（Excel）を作る。設定シートも一緒に作るかは ``settings_rows`` で切り替える。"""
     table_rows = [dict(zip(HEADERS, row, strict=True)) for row in rows]
@@ -93,7 +83,7 @@ def paths(tmp_path, monkeypatch):
 
     ベースパス（設定シート）だけを作り、その配下に「担当者」「概要」の
     サブフォルダは作らない（``output_path()`` が指す概要フォルダは呼び出し側
-    ``service.save_report()`` が保存時に ``mkdir`` で作る）。
+    ``service.save.save_report()`` が保存時に ``mkdir`` で作る）。
     """
     base_path = tmp_path / "ベース"
     base_path.mkdir()

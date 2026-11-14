@@ -34,7 +34,7 @@ class ReportNotRegisteredError(DownloaderError):
     管理番号はコードに定数で書く（CUSTOMER_LIST = "1001"）。管理表から行を消したり、
     番号を打ち間違えたりすると、どのレポートを指しているか決められない。
 
-    発生箇所: download_scheduled() の `_validate_filters_by_report()`
+    発生箇所: ``src.service.attempt`` の `_validate_filters_by_report()`
 
     対処:
         管理表を開いて、その管理番号の行があるか確認する。
@@ -124,10 +124,10 @@ class SoqlCountMismatchError(DownloaderError):
     """SOQL で取った件数が、 レポート API で取った件数と合わない
 
     SOQL は人や AI が ``SoqlReport.soql()`` に書くため、条件の書き間違いでレポートと
-    違う範囲を取ることがある。件数は **取得のたびに** 比較し、**合わなければ保存しない**。
+    違う範囲を取ることがある。件数は取得のたびに比較し、**合わなければ保存しない**。
     件数一致は中身の一致を意味しない。0 件同士は一致扱い（``ALLOW_EMPTY`` の判定はその後）。
 
-    発生箇所: ``src.service`` の ``fetch_via_soql()``（``bulk_query()`` 直後に
+    発生箇所: ``src.service.soql`` の ``fetch_via_soql()``（``bulk_query()`` 直後に
     ``Report API`` で総件数を取って比較する）
 
     対処:
@@ -183,7 +183,8 @@ class SoqlTransformError(DownloaderError):
 
     メッセージには **行の値は出さない**（元の例外クラス名と失敗した事実だけ）。
 
-    発生箇所: ``src.service.fetch_via_soql()``（列名を置き換えた Table に対して呼ばれる）。
+    発生箇所: ``src/service/soql.py`` の ``fetch_via_soql()``
+    （列名を置き換えた Table に対して呼ばれる）。
 
     対処:
         ``src/reports/<ファイル>.py`` の ``transform()`` を見直す。 ``SoqlReport``
@@ -212,10 +213,10 @@ class SoqlIncompleteError(DownloaderError):
     1 行目（前後の空白を除く）にある SOQL は、Salesforce に問い合わせる前に止める。
     本文の途中に出てくるだけなら止めない。
 
-    印の文字列は ``src.service.INCOMPLETE_SOQL_MARKER`` で、soql-collector 側の
+    印の文字列は ``src.service.soql.INCOMPLETE_SOQL_MARKER`` で、soql-collector 側の
     ``INCOMPLETE_MARKER`` と同じ。変えるときは両方を同時に変える。
 
-    発生箇所: ``src.service.fetch_via_soql()`` （``bulk_query()`` を呼ぶ前）
+    発生箇所: ``src/service/soql.py`` の ``fetch_via_soql()`` （``bulk_query()`` を呼ぶ前）
 
     対処:
         soql-collector の下書きに作れなかった部分が残っています。
@@ -238,7 +239,7 @@ class EmptyReportError(DownloaderError):
     空のファイルを置くと、使う側は「データが無い日」と「取得が失敗した日」を
     区別できなくなる。0 行のときはファイルを作らず、失敗として扱う。
 
-    発生箇所: download_scheduled() の `save_report()`
+    発生箇所: ``src.service.save`` の `save_report()`
 
     対処:
         Salesforce の画面で同じレポートを開き、本当に 0 件か確認してください。
@@ -263,7 +264,7 @@ class ReportFolderNotFoundError(DownloaderError):
     無いフォルダを作らないのは、書き間違いのことが多いため。
     勝手に作ると、誰も読まない場所へ置き続けることになる。
 
-    発生箇所: download_scheduled() の `require_folder()`
+    発生箇所: ``src.service.save`` の `require_folder()`
 
     対処:
         設定シートの「ベースURL」（フォルダのパス）と、管理表の「グループ」を
@@ -288,7 +289,7 @@ class OverwriteTimeMissingError(DownloaderError):
     空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
     **Salesforce へ問い合わせる前に**止める。
 
-    発生箇所: download_scheduled() の `_download()`
+    発生箇所: ``src.service.attempt`` の `_download()`
 
     対処:
         管理表の「スケジュール」シートで、そのレポートの行の「取得時刻」か
@@ -312,7 +313,7 @@ class ScheduledDownloadFailedError(DownloaderError):
     ログだけに出して正常終了すると、スケジューラや RPA 基盤から見て成功と区別が付かず、
     落ちていることに誰も気づかない。
 
-    発生箇所: download_scheduled() の `_download_scheduled_locked()`
+    発生箇所: ``src.service.attempt`` の `_download_scheduled_locked()`
 
     対処:
         履歴（ダウンロード履歴.csv）の「エラー内容」で、失敗した理由を確認する。

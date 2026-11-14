@@ -290,7 +290,6 @@ class MasterRow:
     def column_specs(cls) -> list[tuple[str, ColumnSpec, Any, Any]]:
         """(Python の名前, 列の決まり, 型注釈, 既定値) を宣言順で返す。
 
-        雛形生成・入力規則（ドロップダウン）適用など、列定義を必要とする
         雛形生成・入力規則（ドロップダウン）適用など、列定義を必要とする利用側のための
         公開API。**既定値が `dataclasses.MISSING` のとき、その列は必須（空欄不可）**。
         """

@@ -2,7 +2,7 @@
 
 ``tests/contract/列名の対応.contract.csv`` （soql-collector が出す
 ``列名の対応.csv`` と同じ見本）を使って、 ``src.soql_reports.column_names.load_column_names_for()``
-と ``src.service.fetch_via_soql()`` / ``src.service.save_report()`` が
+と ``src/service/soql.py`` の ``fetch_via_soql()`` / ``src.service.save.save_report()`` が
 **soql-collector 側の出力と一致して動くこと**を固定する。 soql-collector 側の
 ``tests/contract/列名の対応.contract.csv`` とバイト単位で同じファイルをこの
 リポジトリに置き、 両者が食い違っていないかを突き合わせる。
@@ -13,7 +13,7 @@
 
 ``tests/contract/未完成のSOQL.contract.txt`` は soql-collector が SOQL の
 下書きを出し直すときに 1 行目に付ける ``【未完成】`` の印を含む見本。
-``src.service.fetch_via_soql()`` がこの印を検知して ``bulk_query()``
+``src/service/soql.py`` の ``fetch_via_soql()`` がこの印を検知して ``bulk_query()``
 の **前** に ``SoqlIncompleteError`` で止めることを確かめる。 soql-collector
 側にも同じファイルを置き、 両リポジトリで同じ見本を参照する。
 """

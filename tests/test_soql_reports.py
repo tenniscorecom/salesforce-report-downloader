@@ -1,6 +1,6 @@
 """``SoqlReport`` の基底クラス・登録・``soql_report_for()``・``apply_column_names()`` の検証。
 
-SOQL レポートの取得・保存は管理表ルート（``src.service.save_report()``）に統一
+SOQL レポートの取得・保存は管理表ルート（``src.service.save.save_report()``）に統一
 したため、 別ルート用のテストは持たない。 ``apply_column_names()`` の単体
 テストと、 ``SoqlReport`` サブクラスの登録・引き当ての挙動を確認する。
 """
