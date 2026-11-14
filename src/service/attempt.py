@@ -100,15 +100,6 @@ _FAILURE_STAGES: tuple[
 )
 
 
-def _history_path() -> Path:
-    """呼び出し時点の履歴CSVのパスを ``Path`` で返す。
-
-    ``src/service/_utils.py`` の ``history_path()`` への薄いラッパー。
-    テストが comken 側の ``HISTORY_PATH`` を差し替えるので、呼び出し時点で読む。
-    """
-    return history_path()
-
-
 @measure
 def download_scheduled(
     project: str = "定期実行",
@@ -186,7 +177,7 @@ def download_scheduled(
     # プロセス間排他する。取れなければ別プロセスが進行中なので ``[]`` を返す。
     # ロック取得**だけ**を try/except で囲う: 本体の ``HistoryLockTimeoutError`` は
     # 履歴読み書きの障害なので、``[]`` で握りつぶさず伝播させる。
-    hp = _history_path()
+    hp = history_path()
     run_lock_path = Path(f"{hp}.run")
     with contextlib.ExitStack() as stack:
         try:
@@ -273,13 +264,8 @@ def _select_and_log_targets(
     rules_by_report: dict[str, list[ScheduleRule]],
     current: dt.datetime,
 ) -> tuple[list, dict[str, list[str]]]:
-    """対象レポートを選定し、 内訳をログにまとめて返す。
-
-    ``select_targets()`` の戻り値 ``_already_failed`` は常に空なので使わない。
-    """
-    targets, _already_failed, skipped = select_targets(
-        entries, rules_by_report, current, _history_path()
-    )
+    """対象レポートを選定し、 内訳をログにまとめて返す。"""
+    targets, skipped = select_targets(entries, rules_by_report, current, history_path())
     enabled_count = sum(1 for entry in entries.values() if entry.enabled)
     logger.info(
         "定期取得を開始します: 管理表=%s, 全 %d 件 / 有効 %d 件 / 対象 %d 件",
@@ -383,7 +369,7 @@ def _execute_each_target(
                 _download(
                     entry,
                     project,
-                    _history_path(),
+                    history_path(),
                     schedule_key,
                     schedule_run_time=(
                         schedule_rule.desired_time if schedule_rule is not None else None
@@ -428,7 +414,7 @@ def _report_run_results(
         run_seconds,
     )
     if failed:
-        raise ScheduledDownloadFailedError(failed, _history_path()) from last_exception
+        raise ScheduledDownloadFailedError(failed, history_path()) from last_exception
     return saved
 
 

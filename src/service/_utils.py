@@ -1,8 +1,8 @@
 r"""src/service/_utils.py — 履歴パスを返すだけの内部ヘルパー。
 
-``src/service/attempt.py`` から ``scheduler.py`` の依存を避けるため、
+履歴CSVのパスを読み取る箇所を 1 か所に寄せるため、
 ``comken.services.salesforce_downloader.paths.HISTORY_PATH`` を
-``_history_path()`` でラップした関数を置く。
+``history_path()`` で返す関数を置く。
 
     from src.service._utils import history_path
 

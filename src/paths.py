@@ -263,11 +263,3 @@ def _load_group_settings_cached(master_path: Path) -> dict[str, Path]:
     if len(cache) > _GROUP_SETTINGS_CACHE_MAXSIZE:
         cache.popitem(last=False)
     return settings
-
-
-def reset_group_settings_cache() -> None:
-    """グループ設定のプロセス内キャッシュを破棄する（テスト用）。
-
-    ``tmp_path`` ごとに管理表を差し替えるテストで、前のテストの設定が漏れないようにする。
-    """
-    _group_settings_cache.clear()

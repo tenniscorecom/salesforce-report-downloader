@@ -85,21 +85,17 @@ class TestPathsCache:
 
     def test_caches_by_resolved_path(self, tmp_path):
         """同じパスで2回呼ぶと、設定シートを1回しか開かない（キャッシュが効く）。"""
-        paths_module.reset_group_settings_cache()
-        try:
-            make_book_with_settings(
-                tmp_path / "設定.xlsx",
-                [["営業本部", str(tmp_path / "A")]],
-            )
-            first = load_group_settings(tmp_path / "設定.xlsx")
-            # キャッシュ済みなので、オブジェクトが同一になる
-            second = paths_module._load_group_settings_cached(tmp_path / "設定.xlsx")
-            assert first == second
-            # paths のキャッシュ経由でも同じ dict が返る
-            third = paths_module._load_group_settings_cached(tmp_path / "設定.xlsx")
-            assert first == third
-        finally:
-            paths_module.reset_group_settings_cache()
+        make_book_with_settings(
+            tmp_path / "設定.xlsx",
+            [["営業本部", str(tmp_path / "A")]],
+        )
+        first = load_group_settings(tmp_path / "設定.xlsx")
+        # キャッシュ済みなので、オブジェクトが同一になる
+        second = paths_module._load_group_settings_cached(tmp_path / "設定.xlsx")
+        assert first == second
+        # paths のキャッシュ経由でも同じ dict が返る
+        third = paths_module._load_group_settings_cached(tmp_path / "設定.xlsx")
+        assert first == third
 
 
 class TestGroupSettingDirectLoad:

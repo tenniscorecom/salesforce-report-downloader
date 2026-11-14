@@ -282,22 +282,6 @@ def paths(tmp_path, monkeypatch):
     }
 
 
-@pytest.fixture(autouse=True)
-def _reset_paths_cache():
-    """``paths._load_group_settings_cached()`` のプロセス内キャッシュをテストごとに破棄する。
-
-    ``output_path`` / ``report_folder`` が内部で ``MASTER_PATH`` をキーに
-    設定シートを読むため、前のテストで作ったキャッシュが次のテストの設定シート
-    読込に混入しないようにする。``test_paths.py`` と同じ ``autouse=True`` で
-    全テストに作用させる。
-    """
-    _paths_module.reset_group_settings_cache()
-    try:
-        yield
-    finally:
-        _paths_module.reset_group_settings_cache()
-
-
 def _patch_master_path(monkeypatch: pytest.MonkeyPatch, master: Path, history: Path) -> None:
     """``MASTER_PATH`` と履歴パスを差し替えるヘルパー。
 
@@ -3415,8 +3399,7 @@ class TestTruncatedSkip:
     **「当日中の再実行で Salesforce へ問い合わせない」スキップも無い。**
     当日中に truncated で失敗した記録があっても、同じ日の 2 回目の
     ``download_scheduled()`` でまた Report API へ問い合わせる（失敗した行には
-    成功履歴が残らないため）。``select_targets`` の ``already_failed`` は常に
-    空リストになる。
+    成功履歴が残らないため。対象選定は成功した履歴だけを見る）。
     """
 
     @staticmethod

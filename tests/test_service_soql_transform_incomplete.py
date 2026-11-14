@@ -149,7 +149,6 @@ def paths_two_reports(tmp_path, monkeypatch):
         "comken.services.salesforce_downloader.paths.HISTORY_PATH",
         history_path,
     )
-    _paths_inner.reset_group_settings_cache()
 
     return {
         "master_path": master,

@@ -154,18 +154,6 @@ def _make_master(
     return path
 
 
-@pytest.fixture(autouse=True)
-def _reset_group_settings_cache():
-    """``src.paths`` のグループ設定キャッシュをテストごとに破棄する。"""
-    import src.paths as paths_module
-
-    paths_module.reset_group_settings_cache()
-    try:
-        yield
-    finally:
-        paths_module.reset_group_settings_cache()
-
-
 def test_unregistered_group_is_recorded_as_config(tmp_path, monkeypatch) -> None:
     """グループ未登録のレポートは、履歴の「原因区分」が ``設定`` になる。
 

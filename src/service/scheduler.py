@@ -79,8 +79,8 @@ def _matched_schedule_key(
     （23:59 をまたぐ実行で「判定は開始日・履歴は翌日」となる事故を防ぐ）。
 
     ``history_path`` は呼び出し時点で ``comken.services.salesforce_downloader.paths``
-    から読んだパスを受け取る形にした（以前の ``src.service._history_path()`` は
-    パッケージ ``__init__`` 側に置いた）。
+    から読んだパスを受け取る形にした（読み出しは
+    ``src.service._utils.history_path()`` に集約している）。
     """
     # スケジュール行が無いレポートは ``due_rules`` が空になり、取らない。警告ログは
     # ``select_targets()`` 側で出す。 ``is_due()`` と ``rules_by_report.get()`` は
@@ -152,7 +152,6 @@ def select_targets(
     history_path,
 ) -> tuple[
     list[tuple[ReportEntry, str, ScheduleRule | None]],
-    list[str],
     dict[str, list[str]],
 ]:
     """定期取得の対象を「有効」かつ「取得すべき」レポートに絞る。
@@ -162,9 +161,8 @@ def select_targets(
     既に10近くの分岐があり、複雑度の上限に近い）。
 
     **失敗したレポートも再問い合わせする。** 当日中の取り直しを止める仕組みは
-    無い（``already_failed`` は常に空リスト）。判定材料になるのは
-    「成功した履歴」だけなので、取得に失敗した行には成功履歴が残らず、
-    同じ日の 2 回目の実行でもその行は再び対象になる。
+    無い。判定材料になるのは「成功した履歴」だけなので、取得に失敗した行には
+    成功履歴が残らず、同じ日の 2 回目の実行でもその行は再び対象になる。
     2000 件超で打ち切られたレポート（``SalesforceReportTruncatedError``）も
     取り直しはしないので、次の実行でまた Report API へ問い合わせることになる
     （管理表の「SOQL」か「2000件超」を `○` にして対処する運用）。
@@ -188,11 +186,8 @@ def select_targets(
     内訳ログと、1 件ごとの DEBUG ログに使う。
 
     Returns:
-        ``(targets, already_failed, skipped_by_reason)``。``targets`` は実際に
-        取得を試みる ``(ReportEntry, schedule_key, ScheduleRule | None)`` のリスト。
-        ``already_failed`` は空（失敗した行も再問い合わせするため、当日の失敗を
-        理由に対象から外すことはしない。``_download_scheduled_locked()`` の
-        呼び出しシグネチャを保つために残してある）。
+        ``(targets, skipped_by_reason)``。``targets`` は実際に取得を試みる
+        ``(ReportEntry, schedule_key, ScheduleRule | None)`` のリスト。
         ``skipped_by_reason`` は対象外理由を管理番号で引ける ``dict``。
     """
     targets: list[tuple[ReportEntry, str, ScheduleRule | None]] = []
@@ -237,4 +232,4 @@ def select_targets(
             "（管理表の「スケジュール」シートに行を追加してください）",
             "、".join(unscheduled_enabled),
         )
-    return targets, [], skipped
+    return targets, skipped

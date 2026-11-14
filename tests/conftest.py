@@ -7,6 +7,9 @@
 - ``default_executed_at`` — 時刻固定がテストの本質でないときに使い回す値。
   ``record()`` 側の ``executed_at`` 引数は必須なので、時刻を特に固定しない
   テストでも何かを入れる必要がある（=None の後方互換は廃止）。
+- ``clear_group_settings_cache`` — ``src.paths`` のグループ設定キャッシュを
+  テストごとに破棄する ``autouse`` fixture。管理表を ``tmp_path`` 配下に
+  差し替えるテストどうしで設定が混ざるのを防ぐ。
 
 **パス設定:** comken の場所を ``PYTHON_LIBRARY`` 環境変数 → 無ければ
 隣接フォルダ ``../comken`` の順で ``sys.path`` の末尾に足す。
@@ -85,3 +88,21 @@ DEFAULT_EXECUTED_AT = dt.datetime(2026, 9, 26, 10, 0, 0)  # noqa: DTZ001
 def default_executed_at() -> dt.datetime:
     """``executed_at`` をテスト固有の時刻で固定しない ``record()`` 呼び出し用。"""
     return DEFAULT_EXECUTED_AT
+
+
+@pytest.fixture(autouse=True)
+def clear_group_settings_cache():
+    """``src.paths`` のグループ設定キャッシュをテストごとに破棄する。
+
+    ``output_path()`` / ``report_folder()`` は管理表のパスをキーに設定シートを
+    読むため、前のテストで作ったキャッシュが次のテストの設定シート読込に
+    混入すると、管理表を差し替えたテストの結果が壊れる。キャッシュは
+    ``src.paths`` の内部状態なので、テスト側で直接空にする。
+    """
+    import src.paths as paths_module
+
+    paths_module._group_settings_cache.clear()
+    try:
+        yield
+    finally:
+        paths_module._group_settings_cache.clear()
