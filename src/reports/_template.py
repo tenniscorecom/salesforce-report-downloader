@@ -127,8 +127,7 @@ class NewReport(SoqlReport):
         raise NotImplementedError("TODO: SOQL文をここに書く")
 
     # 任意: 取得した ``Table`` を Python で加工して保存する。 既定は何もしない。
-    # サマリーレポートを Python で組み立てる用途（今までサマリーレポートで
-    # やっていたものを Python で加工して代わりにする）以外は上書きしなくてよい。
+    # サマリーレポートを Python で組み立てる用途以外は上書きしなくてよい。
     # 列名の置き換え（``COLUMN_NAMES`` / ``列名の対応.csv``）は **この前** に
     # ``fetch_via_soql()`` が適用する。 受け取る ``table`` の列名は **表示名**
     # （対応が無い列は SOQL の API 名のまま）なので、 加工のコードは表示名で書く。
