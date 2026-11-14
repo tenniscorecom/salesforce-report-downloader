@@ -19,6 +19,7 @@ __all__ = [
     "SoqlIncompleteError",
     "EmptyReportError",
     "ReportFolderNotFoundError",
+    "OverwriteTimeMissingError",
     "ScheduledDownloadFailedError",
     "SavedFileEmptyError",
     "MasterTableError",
@@ -276,6 +277,31 @@ class ReportFolderNotFoundError(DownloaderError):
             "設定シートの「ベースURL」（フォルダのパス）と、管理表の「グループ」を"
             "確認してください。\n"
             "共有フォルダの場合は、つながっているか（権限があるか）も確認してください。"
+        )
+
+
+class OverwriteTimeMissingError(DownloaderError):
+    """管理表の「上書き」が「○」なのに、スケジュールの時刻が両方とも空欄
+
+    「上書き」○ のレポートはファイル名が ``{管理番号}_{HHMM}.csv`` の固定名で、
+    ``HHMM`` はスケジュールの「取得時刻」か「取得開始時刻」から決める。両方が
+    空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
+    **Salesforce へ問い合わせる前に**止める。
+
+    発生箇所: download_scheduled() の `_download()`
+
+    対処:
+        管理表の「スケジュール」シートで、そのレポートの行の「取得時刻」か
+        「取得開始時刻」のどちらかに時刻を書く
+    """
+
+    def __init__(self, report_key: str, schedule_key: str) -> None:
+        super().__init__(
+            "「上書き」が○のレポートは、ファイル名の時刻を決めるために、"
+            "スケジュールの「取得時刻」か「取得開始時刻」が必要です。"
+            "どちらかを書いてください\n"
+            f"管理番号: {report_key}\n"
+            f"スケジュールキー: {schedule_key}"
         )
 
 

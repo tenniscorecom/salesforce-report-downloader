@@ -155,9 +155,15 @@ def output_path(
     - ``entry.overwrite`` が ``True``: ``{管理番号}_{HHMM}.csv``
       （同じ ``HHMM`` なら翌日に上書きされる。日付は入らない）
 
-    時刻は ``schedule_run_time``（スケジュール行の希望時刻）を今日の日付と合成して使い、
-    無ければ ``now``（省略時は現在時刻）を使う。スケジュール行が無いレポートは取得しない
-    ので、上書きモードでは ``schedule_run_time`` が必ず渡る。
+    時刻は ``schedule_run_time``（スケジュール行の「取得時刻」）を今日の日付と合成して
+    使い、無ければ ``now``（省略時は現在時刻）を使う。**「取得時刻」は記録用の希望時刻
+    だが、ファイル名の時刻にはそのまま使う**（``overwrite=True`` のときは
+    ``HHMM`` 部、``overwrite=False`` のときは ``YYYYMMDD_HHMM`` 部）。
+
+    **「上書き」○ のときは「取得時刻」が空欄なら「取得開始時刻」を渡す。**
+    呼び出し側（``src.service.attempt`` の ``_download()``）が「取得時刻」か
+    「取得開始時刻」のどちらかを解決して渡す。両方が空欄ならファイル名を決められない
+    ので、取得前に ``OverwriteTimeMissingError`` で止める。
 
     フォルダは作らないし検査もしない（保存時に呼び出し側が ``mkdir``、検査は
     ``service.require_folder``）。
@@ -168,7 +174,8 @@ def output_path(
             （``ScheduleRule.desired_time``）。判定には使われない記録用の希望時刻で、
             ファイル名の ``HHMM`` 部（``overwrite=True`` のとき）または
             ``YYYYMMDD_HHMM`` 部（``overwrite=False`` のとき）に使う。無ければ
-            ``now`` にフォールバックする。
+            ``now`` にフォールバックする（``overwrite=True`` のときは
+            「取得開始時刻」を渡す）。
         now: ``schedule_run_time`` が無いときに使う時刻。省略時は現在時刻
             （``comken.core.dates.now()`` を使う）。
 

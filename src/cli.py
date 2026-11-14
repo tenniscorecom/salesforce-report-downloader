@@ -207,6 +207,8 @@ def _collect_cross_errors(
 
     - スケジュールの「レポートキー」が管理表の「ID」に無い
     - 管理表で使われているグループが「設定」シートに登録されていない
+    - 管理表の「上書き」が「○」なのに、スケジュールの「取得時刻」も「取得開始時刻」も
+      空欄（ファイル名の時刻が決められない）
     """
     cross_errors: list[str] = []
     for rule in rules:
@@ -223,7 +225,36 @@ def _collect_cross_errors(
         cross_errors.append(
             f"管理表で使われているグループが「設定」シートに登録されていません: {group}"
         )
+    cross_errors.extend(_overwrite_time_errors(entries, rules))
     return cross_errors
+
+
+def _overwrite_time_errors(
+    entries: dict[str, ReportEntry],
+    rules: list[ScheduleRule],
+) -> list[str]:
+    """「上書き」○ のレポートで、ファイル名の時刻が決められない行を列挙する。
+
+    「上書き」○ のレポートはファイル名が ``{管理番号}_{HHMM}.csv`` の固定名なので、
+    スケジュールの「取得時刻」か「取得開始時刻」のどちらかが要る。両方とも空欄の行は
+    取得前に ``OverwriteTimeMissingError`` で止まるため、ここで指摘する。
+    対象は「有効な管理番号」×「有効なスケジュール行」の組だけ（実行時に選ばれる
+    行だけを見る）。
+    """
+    errors: list[str] = []
+    for entry in entries.values():
+        if not entry.enabled or not entry.overwrite:
+            continue
+        for rule in rules:
+            if rule.report_key != entry.key or not rule.enabled:
+                continue
+            if rule.desired_time is None and rule.start_time is None:
+                errors.append(
+                    f"管理表の「上書き」が「○」のレポートで、スケジュールの"
+                    f"「取得時刻」と「取得開始時刻」が両方とも空欄です: "
+                    f"{entry.key}（スケジュールキー={rule.schedule_key}）"
+                )
+    return errors
 
 
 if __name__ == "__main__":

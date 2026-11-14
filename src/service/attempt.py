@@ -33,6 +33,7 @@ from comken.services.salesforce_downloader.history_file_lock import HistoryFileL
 from src import paths
 from src.exceptions import (
     EmptyReportError,
+    OverwriteTimeMissingError,
     ReportFolderNotFoundError,
     ReportNotRegisteredError,
     ScheduledDownloadFailedError,
@@ -347,6 +348,9 @@ def _execute_each_target(
                     schedule_run_time=(
                         schedule_rule.desired_time if schedule_rule is not None else None
                     ),
+                    schedule_start_time=(
+                        schedule_rule.start_time if schedule_rule is not None else None
+                    ),
                     filters=filters_by_report.get(entry.key),
                     current=current,
                     fetch_browser=fetch_browser,
@@ -506,6 +510,7 @@ def _download(
     schedule_key: str = "",
     *,
     schedule_run_time: dt.time | None = None,
+    schedule_start_time: dt.time | None = None,
     filters: list[dict] | None = None,
     current: dt.datetime,
     fetch_browser: Callable[[ReportEntry], Table] | None = None,
@@ -513,8 +518,9 @@ def _download(
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
-    ``schedule_run_time`` は出力ファイル名にスケジュール時刻を埋め込むために
-    ``save_report()`` まで運ぶ（``select_targets()`` が必ず渡す）。
+    ``schedule_run_time`` はスケジュール行の「取得時刻」（記録用の希望時刻）、
+    ``schedule_start_time`` は「取得開始時刻」。出力ファイル名に埋め込む時刻は
+    ``_resolve_run_time()`` が決める（``save_report()`` まで運ぶ）。
 
     ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``。
     ``save_report()`` 経由でファイル名に、``_Attempt`` 経由で履歴の「実行日時」に渡す。
@@ -537,14 +543,45 @@ def _download(
         # 「取得 → 保存」を順に呼ぶ。取得と保存のどちらで失敗しても、
         # 下の except で 1 か所に履歴に残す
         _log_fetch_start(entry, route, progress)
+        # ファイル名に使う時刻を決める。「上書き」○ で時刻が両方とも空欄なら
+        # ここで止める（Salesforce へは問い合わせない）
+        run_time = _resolve_run_time(entry, schedule_run_time, schedule_start_time, schedule_key)
         require_folder(entry)
         route, table = fetch_report(entry, filters, fetch_browser=fetch_browser)
-        path = save_report(entry, table, schedule_run_time=schedule_run_time, current=current)
+        path = save_report(entry, table, schedule_run_time=run_time, current=current)
     except Exception as exc:
         _record_failure_safely(attempt, exc, route, history_path)
         raise
     attempt.record_success(path, table, route=route)
     return path
+
+
+def _resolve_run_time(
+    entry: ReportEntry,
+    desired_time: dt.time | None,
+    start_time: dt.time | None,
+    schedule_key: str,
+) -> dt.time | None:
+    """出力ファイル名に埋め込む時刻（``HHMM``）を決める。
+
+    - **「上書き」×**: スケジュールの「取得時刻」（記録用の希望時刻）をそのまま
+      使う。空欄なら ``None`` を返し、``output_path()`` 側で実行時刻に
+      フォールバックさせる（従来の動き）
+    - **「上書き」○**: 「取得時刻」が空欄なら「取得開始時刻」を使う。両方が
+      空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
+      ``OverwriteTimeMissingError`` で取得前に止める
+
+    Raises:
+        OverwriteTimeMissingError: 「上書き」○ で「取得時刻」も「取得開始時刻」も
+            空欄のとき。
+    """
+    if not entry.overwrite:
+        return desired_time
+    if desired_time is not None:
+        return desired_time
+    if start_time is not None:
+        return start_time
+    raise OverwriteTimeMissingError(entry.key, schedule_key)
 
 
 def _record_failure_safely(
@@ -580,7 +617,8 @@ def _failure_row(
     `fetched` / `saved` は `_download()` の何処で失敗したかを例外で判別する。
     判定順（狭い条件から評価）:
 
-    1. `ReportFolderNotFoundError` → 取得段階の前（保存先フォルダ検査で停止）
+    1. `ReportFolderNotFoundError` / `OverwriteTimeMissingError` → 取得段階の前
+       （保存先フォルダの検査・ファイル名の時刻の決定で停止）
     2. `EmptyReportError` → 取得は成功、保存は未到達
     3. `OSError` → 保存段階（書き込み・権限・共有サーバー断）
     4. その他の `ComkenError` → 取得段階（Salesforce 通信と認証）
@@ -593,7 +631,7 @@ def _failure_row(
     `route` は取得経路（``ROUTE_API`` / ``ROUTE_SOQL`` / ``ROUTE_BROWSER``）。
     例外の型から判別できないので、``_download()`` が確定した値をキーワード引数で受ける。
     """
-    if isinstance(exc, ReportFolderNotFoundError):
+    if isinstance(exc, (ReportFolderNotFoundError, OverwriteTimeMissingError)):
         fetched, saved, cause = None, None, CAUSE_CONFIG
     elif isinstance(exc, EmptyReportError):
         fetched, saved, cause = True, None, CAUSE_EMPTY_DATA
