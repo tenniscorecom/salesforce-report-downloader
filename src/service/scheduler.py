@@ -50,11 +50,9 @@ def _matched_schedule_key(
     """このレポートを今取得すべきか、すべきなら根拠のスケジュールキーを返す。
 
     戻り値は ``(取得すべきか, スケジュールキー, 外した理由)``。
-    スケジュールキーは、取得すべきだった場合に「どのスケジュール行が根拠になったか」を
-    表し、履歴の ``スケジュールキー`` 列にそのまま記録する。取得しないときは
-    ``(False, "", 理由)`` を返し、第3要素で外した理由を返す（外さないときは空文字）。
-    理由は「予定外」/「当日取得済」の2値で、``select_targets()`` の内訳ログに使う
-    （両方「スケジュール行は有るが今回は取らない」ケースの細分）。
+    取得しないときは ``(False, "", 理由)`` を返し、第3要素で外した理由を返す
+    （外さないときは空文字）。理由は「予定外」/「当日取得済」の2値で、
+    ``select_targets()`` の内訳ログに使う。
 
     判定ロジック:
 
@@ -85,8 +83,6 @@ def _matched_schedule_key(
     # スケジュール行が無いレポートは ``due_rules`` が空になり、取らない。警告ログは
     # ``select_targets()`` 側で出す。 ``is_due()`` と ``rules_by_report.get()`` は
     # ここで 1 回ずつだけ評価し、 戻り値（``due_rules``）から後の判定を組み立てる
-    # ——元の実装は ``due_rules`` のリスト内包と末尾の ``any(...)`` で同じ評価を
-    # 2 回ずつ走らせていた
     rules = rules_by_report.get(entry.key, ())
     due_rules: list[ScheduleRule] = [rule for rule in rules if rule.is_due(current)]
     succeeded = _succeeded_schedule_keys(rules, history_path, current)
@@ -156,19 +152,14 @@ def select_targets(
 ]:
     """定期取得の対象を「有効」かつ「取得すべき」レポートに絞る。
 
-    ``download_scheduled()`` から対象選定ロジックだけを抜き出したヘルパー。
-    関数本体が複雑にならないように分離している（``download_scheduled`` 自体は
-    既に10近くの分岐があり、複雑度の上限に近い）。
+    ``download_scheduled()`` から対象選定ロジックだけを抜き出したヘルパー
+    （関数本体が複雑にならないように分離している）。
 
     **失敗したレポートも再問い合わせする。** 当日中の取り直しを止める仕組みは
     無い。判定材料になるのは「成功した履歴」だけなので、取得に失敗した行には
     成功履歴が残らず、同じ日の 2 回目の実行でもその行は再び対象になる。
-    2000 件超で打ち切られたレポート（``SalesforceReportTruncatedError``）も
-    取り直しはしないので、次の実行でまた Report API へ問い合わせることになる
-    （管理表の「SOQL」か「2000件超」を `○` にして対処する運用）。
 
     **「スケジュール」シートに行が無いレポートは取得しない。**
-    ``_matched_schedule_key()`` が ``(False, "", ...)`` を返し、ここでは対象外になる。
     ただし「有効」なレポートのうちスケジュール行が 1 つも無いものがあれば、
     1 回の実行につき警告ログを 1 件出す（黙って取らなくなると気づけないため）。
     対象は「有効」なレポートだけ（``enabled=False`` は対象外）。
@@ -176,19 +167,11 @@ def select_targets(
     戻り値の ``targets`` は ``(ReportEntry, schedule_key, ScheduleRule | None)``
     の3要素タプル。``ScheduleRule`` を一緒に運ぶのは、唯一の出力ファイル名に
     スケジュール時刻を埋め込むために ``start_time`` が必要だから。
-    ``_matched_schedule_key()`` が ``True`` を返すケースは
-    ``rules_by_report`` に 1 つ以上の ``ScheduleRule`` があるときだけなので、
-    この関数が作る ``targets`` の ``ScheduleRule`` は必ず ``None`` 以外。
 
     戻り値の ``skipped_by_reason`` は「対象外にした管理番号」を理由ごとに分けた
     ``dict``。キーは「有効×」「スケジュール行なし」「予定外」「当日取得済」の
     4 値で、値は該当する管理番号のリスト。呼び出し側で 1 実行 1 行の INFO
     内訳ログと、1 件ごとの DEBUG ログに使う。
-
-    Returns:
-        ``(targets, skipped_by_reason)``。``targets`` は実際に取得を試みる
-        ``(ReportEntry, schedule_key, ScheduleRule | None)`` のリスト。
-        ``skipped_by_reason`` は対象外理由を管理番号で引ける ``dict``。
     """
     targets: list[tuple[ReportEntry, str, ScheduleRule | None]] = []
     unscheduled_enabled: list[str] = []
@@ -213,9 +196,7 @@ def select_targets(
             entry, rules_by_report, current, history_path
         )
         if not is_due:
-            # 予定外 / 当日取得済 のどちらかを ``skip_reason`` で返す。
-            # 旧コードは区別していなかったが、内訳ログで「2 回実行しても
-            # 取れていない」を見える化したいため、ここで分ける
+            # 予定外 / 当日取得済 のどちらかを ``skip_reason`` で返す
             skipped[skip_reason].append(entry.key)
             continue
         # ``schedule_key`` は取得後に履歴へ記録し、``schedule_succeeded_today()``
