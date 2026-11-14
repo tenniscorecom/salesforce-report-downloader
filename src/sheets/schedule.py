@@ -66,8 +66,9 @@ class ScheduleRule(MasterRow):
             `FREQUENCY_MONTHLY` / `FREQUENCY_BUSINESS_DAY` のいずれか。
         start_time: 列「取得開始時刻」。毎日・毎週・毎月・毎営業日の実行開始時刻
             （この時刻を過ぎたら取得してよい）。空欄可。
-        desired_time: 列「取得時刻」。このレポートが何時までに欲しいかの目安
-            （記録用）。判定には使わない。
+        desired_time: 列「取得時刻」。出力ファイル名の時刻（``HHMM``）に使う値。
+            取得するかどうかの判定には使わない（判定は「取得開始時刻」）。
+            空欄のときの扱いは管理表の「上書き」列の値による。
         raw_weekday: 列「曜日」。`frequency` が毎週のときだけ使う
             （下の `weekday` property で 0=月〜6=日 に変換）。
         raw_day_of_month: 列「日付」。`frequency` が毎月のときだけ使う
@@ -107,8 +108,10 @@ class ScheduleRule(MasterRow):
     desired_time: dt.time | None = column(
         "取得時刻",
         default=None,
-        help="このレポートが何時までに欲しいかの目安（記録用）。"
-        "取得の判定には使いません（判定に使うのは「取得開始時刻」）。空欄可",
+        help="出力ファイル名の時刻（{管理番号}_{YYYYMMDD_HHMM}.csv の HHMM）に使う値。"
+        "取得の判定には使いません（判定に使うのは「取得開始時刻」）。"
+        "空欄のときは管理表の「上書き」が「○」なら「取得開始時刻」を使い、"
+        "「×」（空欄を含む）なら実行した時刻になります。空欄可",
     )
     # `choices` で読み込み時に「月〜日」に絞り込まれる（ドロップダウンは `column_specs()` 経由で
     # `apply_schedule_dropdowns()` が付与する）

@@ -156,9 +156,10 @@ def output_path(
       （同じ ``HHMM`` なら翌日に上書きされる。日付は入らない）
 
     時刻は ``schedule_run_time``（スケジュール行の「取得時刻」）を今日の日付と合成して
-    使い、無ければ ``now``（省略時は現在時刻）を使う。**「取得時刻」は記録用の希望時刻
-    だが、ファイル名の時刻にはそのまま使う**（``overwrite=True`` のときは
-    ``HHMM`` 部、``overwrite=False`` のときは ``YYYYMMDD_HHMM`` 部）。
+    使い、無ければ ``now``（省略時は現在時刻）を使う。**「取得時刻」はファイル名の
+    時刻に使う値**（``overwrite=True`` のときは ``HHMM`` 部、``overwrite=False`` の
+    ときは ``YYYYMMDD_HHMM`` 部）。「取得時刻」が空欄のときは「上書き」○ なら
+    「取得開始時刻」を渡し、× なら実行時刻（``now``）になる。
 
     **「上書き」○ のときは「取得時刻」が空欄なら「取得開始時刻」を渡す。**
     呼び出し側（``src.service.attempt`` の ``_download()``）が「取得時刻」か
@@ -171,11 +172,10 @@ def output_path(
     Args:
         entry: レポート管理表の1行。
         schedule_run_time: 今回の取得の根拠になったスケジュール行の「取得時刻」
-            （``ScheduleRule.desired_time``）。判定には使われない記録用の希望時刻で、
-            ファイル名の ``HHMM`` 部（``overwrite=True`` のとき）または
-            ``YYYYMMDD_HHMM`` 部（``overwrite=False`` のとき）に使う。無ければ
-            ``now`` にフォールバックする（``overwrite=True`` のときは
-            「取得開始時刻」を渡す）。
+            （``ScheduleRule.desired_time``）。判定には使われず、ファイル名の
+            ``HHMM`` 部（``overwrite=True`` のとき）または ``YYYYMMDD_HHMM`` 部
+            （``overwrite=False`` のとき）に使う。無ければ ``now`` にフォールバック
+            する（``overwrite=True`` のときは「取得開始時刻」を渡す）。
         now: ``schedule_run_time`` が無いときに使う時刻。省略時は現在時刻
             （``comken.core.dates.now()`` を使う）。
 

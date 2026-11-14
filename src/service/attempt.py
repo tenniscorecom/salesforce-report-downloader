@@ -544,9 +544,9 @@ def _download(
 ) -> Path:
     """1件を取得して保存し、成否を履歴に残す。
 
-    ``schedule_run_time`` はスケジュール行の「取得時刻」（記録用の希望時刻）、
-    ``schedule_start_time`` は「取得開始時刻」。出力ファイル名に埋め込む時刻は
-    ``_resolve_run_time()`` が決める（``save_report()`` まで運ぶ）。
+    ``schedule_run_time`` はスケジュール行の「取得時刻」、``schedule_start_time``
+    は「取得開始時刻」。出力ファイル名に埋め込む時刻は ``_resolve_run_time()`` が
+    決める（``save_report()`` まで運ぶ）。
 
     ``current`` は ``_download_scheduled_locked()`` 冒頭で固定した ``clock_now()``。
     ``save_report()`` 経由でファイル名に、``_Attempt`` 経由で履歴の「実行日時」に渡す。
@@ -590,9 +590,8 @@ def _resolve_run_time(
 ) -> dt.time | None:
     """出力ファイル名に埋め込む時刻（``HHMM``）を決める。
 
-    - **「上書き」×**: スケジュールの「取得時刻」（記録用の希望時刻）をそのまま
-      使う。空欄なら ``None`` を返し、``output_path()`` 側で実行時刻に
-      フォールバックさせる（従来の動き）
+    - **「上書き」×**: スケジュールの「取得時刻」をそのまま使う。空欄なら
+      ``None`` を返し、``output_path()`` 側で実行時刻にフォールバックさせる
     - **「上書き」○**: 「取得時刻」が空欄なら「取得開始時刻」を使う。両方が
       空欄だとファイル名を決められない（実行時刻で毎回別のファイルができる）ため、
       ``OverwriteTimeMissingError`` で取得前に止める
