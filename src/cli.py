@@ -20,7 +20,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from comken.exceptions import ComkenError
+from comken.exceptions import ComkenError, SheetNotFoundError
 
 from src.paths import MASTER_PATH
 from src.sheets.group_settings import load_group_settings
@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
             print(message, file=sys.stderr)
         print(
             f"\n相互参照エラー: {len(cross_errors)} 件（管理表を開いて直してから"
-            "もう一度 sfdl check を実行してください）",
+            "もう一度 python -m src.cli check を実行してください）",
             file=sys.stderr,
         )
         return 1
@@ -96,19 +96,50 @@ def _run_check(args: argparse.Namespace) -> list[str]:
 
     - 「スケジュール」のレポートキーが「管理表」の ID に無いか
     - 「管理表」で有効な行のグループが「設定」に無いか
+    - 「上書き」○ のレポートで、スケジュールの時刻が両方とも空欄でないか
+
+    **「設定」シートが無い管理表でも、1 件目で止めない。** 設定シートが無いことを
+    相互参照エラーの1件として出したうえで、残りの検査も続けて全部出す。
 
     見つかったエラーをすべて ``list[str]`` で返す（件数表示と終了コードは ``main()``）。
     """
     path = args.path or MASTER_PATH
     entries = load_master(path)  # 書き方の誤りはここで例外になる
     rules = load_schedule(path)
-    settings = load_group_settings(path)
+    settings, settings_error = _load_settings_for_check(path)
 
     _print_summary(path, entries, rules, settings)
     _print_reference_notes(entries, rules)
 
     # 相互参照エラーは全て集めて返す
-    return _collect_cross_errors(entries, rules, settings)
+    cross_errors = _collect_cross_errors(entries, rules, settings)
+    if settings_error is not None:
+        # 設定シートの不在は原因の根なので、先頭に出して残りの検査も続けて見せる
+        cross_errors.insert(0, settings_error)
+    return cross_errors
+
+
+def _load_settings_for_check(path: Path) -> tuple[dict[str, Path], str | None]:
+    """設定シートを読んで、シートが無いときの相互参照エラー文言も返す。
+
+    **「設定」シートが無い管理表でも、1 件目のエラーで検査を止めない。**
+    設定は空として扱い、シートが無いことを1件のエラーとして出す（残りの検査は
+    そのまま続けて全部出す）。
+
+    ``load_group_settings()`` 自体の挙動（シートが無ければ例外）は変えない。
+    ここで受けるだけ。
+
+    Returns:
+        ``(設定シートの内容, 相互参照エラー文言)``。シートが無くてもエラー文言の
+        ほうは空文字にならない。
+    """
+    try:
+        return load_group_settings(path), None
+    except SheetNotFoundError:
+        return (
+            {},
+            f"管理表に「設定」シートがありません（出力先のベースパスを登録できません）: {path}",
+        )
 
 
 def _run_init(args: argparse.Namespace) -> list[str]:
@@ -218,15 +249,30 @@ def _collect_cross_errors(
                 f"{rule.schedule_key}（→ {rule.report_key}）"
             )
 
-    missing_groups = sorted(
-        {entry.group for entry in entries.values() if entry.enabled} - set(settings)
-    )
-    for group in missing_groups:
+    for group, keys in _missing_groups(entries, settings).items():
         cross_errors.append(
-            f"管理表で使われているグループが「設定」シートに登録されていません: {group}"
+            f"管理表で使われているグループが「設定」シートに登録されていません: "
+            f"{group}（管理番号: {'、'.join(keys)}）"
         )
     cross_errors.extend(_overwrite_time_errors(entries, rules))
     return cross_errors
+
+
+def _missing_groups(
+    entries: dict[str, ReportEntry],
+    settings: dict[str, Path],
+) -> dict[str, list[str]]:
+    """「設定」シートに登録されていないグループと、その管理番号を返す。
+
+    管理番号も一緒に返すのは、管理表を開いたときに「どのレポートのせいか」を
+    すぐ確認できるようにするため（グループ名だけでは対象が分からない）。
+    """
+    used: dict[str, list[str]] = {}
+    for entry in entries.values():
+        if not entry.enabled:
+            continue
+        used.setdefault(entry.group, []).append(entry.key)
+    return {group: keys for group, keys in sorted(used.items()) if group not in settings}
 
 
 def _overwrite_time_errors(
